@@ -2229,6 +2229,8 @@ def start_setup_process() -> None:
             default=False,
             style=QSTYLE,
         ).ask()
+        if add_more is None:
+            raise KeyboardInterrupt
         if not add_more:
             break
         create_environment_wizard()

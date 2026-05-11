@@ -383,11 +383,15 @@ def handle_env_edit(args: Namespace) -> int:
             default=True,
             style=QSTYLE,
         ).ask()
+        if configure_gw4 is None:
+            raise KeyboardInterrupt
         if configure_gw4:
             gw4_uri = questionary.text(
                 "Gateway4 API URI (e.g., http://gateway-host:8083)",
                 style=QSTYLE,
             ).ask()
+            if gw4_uri is None:
+                raise KeyboardInterrupt
             if gw4_uri:
                 env.gateway4_uri = gw4_uri
                 changed = True
@@ -397,6 +401,8 @@ def handle_env_edit(args: Namespace) -> int:
                 default="admin@itential",
                 style=QSTYLE,
             ).ask()
+            if gw4_user is None:
+                raise KeyboardInterrupt
             if gw4_user:
                 env.gateway4_username = gw4_user
                 changed = True
@@ -406,6 +412,8 @@ def handle_env_edit(args: Namespace) -> int:
                     "Gateway4 Password (hidden)",
                     style=QSTYLE,
                 ).ask()
+                if gw4_pass is None:
+                    raise KeyboardInterrupt
                 if gw4_pass:
                     try:
                         from platform_atlas.core.credentials import (

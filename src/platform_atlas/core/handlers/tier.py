@@ -263,8 +263,12 @@ def _persist_tier(new_tier: str) -> int:
         console.print(f"  [{theme.error}]Could not read config: {exc}[/{theme.error}]")
         return 1
 
-    old_tier = data.get("tier", "extended")
-    if old_tier == new_tier:
+    # The effective (displayed) tier is what the context resolved — it may
+    # differ from config.json when an environment overlay overrides it.
+    effective_old_tier = ctx().tier
+    config_old_tier = data.get("tier", "extended")
+
+    if effective_old_tier == new_tier:
         console.print(
             f"  [{theme.text_dim}]Tier already set to '{new_tier}'.[/{theme.text_dim}]"
         )
@@ -277,9 +281,26 @@ def _persist_tier(new_tier: str) -> int:
         console.print(f"  [{theme.error}]Could not write config: {exc}[/{theme.error}]")
         return 1
 
+    # If the active environment has its own tier field it takes precedence over
+    # config.json (env overlay is priority 3, config.json is priority 4).
+    # Update the env file too so the change isn't silently overridden on reload.
+    active_env = ctx().config.active_environment
+    if active_env:
+        try:
+            from platform_atlas.core.environment import get_environment_manager
+            mgr = get_environment_manager()
+            if mgr.exists(active_env):
+                env = mgr.load(active_env)
+                if env.tier:
+                    env.tier = new_tier
+                    mgr.save(env)
+        except Exception as exc:
+            logger.debug("Could not propagate tier to active environment: %s", exc)
+
+    old_display = effective_old_tier
     console.print(
         f"\n  [{theme.success}]✓ Tier updated:[/{theme.success}] "
-        f"[bold]{old_tier}[/bold] → [bold]{new_tier}[/bold]\n"
+        f"[bold]{old_display}[/bold] → [bold]{new_tier}[/bold]\n"
         f"  [{theme.text_dim}]Run [bold]platform-atlas tier show[/bold] to verify.[/{theme.text_dim}]\n"
     )
     return 0

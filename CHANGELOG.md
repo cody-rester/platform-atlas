@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.7.1] - 2026-05-11
+
+### Fixed
+
+- `tier set` now correctly persists when the active environment has its own `tier` field. Previously, the environment overlay (which takes precedence over `config.json` at load time) would silently overwrite the updated value on every subsequent invocation, making the command appear to succeed while the effective tier remained unchanged. The fix propagates the new tier to the environment file when the active environment carries an explicit `tier` override.
+- `env edit` Gateway4 setup prompts now correctly raise `KeyboardInterrupt` on Ctrl-C. Previously, pressing Ctrl-C at any of the Gateway4 URI, username, or password prompts would silently skip that field and continue to the next prompt, trapping the user mid-flow.
+- `config init` "Create another environment?" loop now correctly raises `KeyboardInterrupt` on Ctrl-C. Previously, `if not add_more:` treated a `None` return from questionary as `True`, causing the loop to break silently rather than exit with the standard interrupt signal.
+
 ## [1.7.0] - 2026-05-03
 
 > **Note:** WebUI changes (themes, daemon mode, security hardening, route fixes, etc.) ship in [`platform-atlas-webui` 1.0.0](webui/CHANGELOG.md), released alongside this version.
@@ -19,8 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Outbound drift notifications** — Slack incoming webhooks and generic JSON webhooks (with optional HMAC-SHA256 signing via `X-Atlas-Signature`). Per-environment channels persisted on the env overlay, fired only on alert-state transitions (new alerts and re-opened acked alerts) so persistent unacked drift doesn't spam every cycle. CLI: `continuous-audit notify add|list|remove|test`
 - **Continuous-audit robustness pass** — fcntl-locked atomic appends + 10MB rotation on `events.ndjson`; centralized atomic-write helper used across runs, status, and alerts; `prune_runs` now repoints `latest.json` if the pointed-at run was pruned; `make_run_id` gains a microsecond + nonce suffix to prevent collisions; drift comparator handles unhashable list items, cross-type coercion, and treats `True != 1` at every nesting level; `previous_unreadable` flag surfaced in run reports and the heartbeat when prior runs exist on disk but can't be read; endpoint planner warns on malformed/unmapped `platform.*` paths; macOS launchd install confirms plist-on-disk before bootstrapping
 - **Standard / Extended tier system** — Atlas now ships with two distinct audit modes:
-  - **Standard** — Platform OAuth + optional IAG4 API (~54 rules). No SSH, MongoDB, or Redis required. Designed for quick application-layer audits or environments where infrastructure access is restricted.
-  - **Extended** — Full infrastructure audit via SSH, MongoDB, Redis, Kubernetes, and Gateways (~107 rules). The default for all installs upgraded from 1.6.x.
+  - **Standard** — Platform OAuth + optional IAG4 API (~55 rules). No SSH, MongoDB, or Redis required. Designed for quick application-layer audits or environments where infrastructure access is restricted.
+  - **Extended** — Full infrastructure audit via SSH, MongoDB, Redis, Kubernetes, and Gateways (~108 rules). The default for all installs upgraded from 1.6.x.
 - **Tier CLI commands** — `tier show`, `tier set [standard|extended]`, `tier upgrade`, `tier downgrade` for managing the active tier interactively or non-interactively
 - **`--tier` global flag** — Override the active tier for a single command without changing the persisted setting
 - Sessions now bind a tier at creation time (alongside environment, ruleset, and profile)
