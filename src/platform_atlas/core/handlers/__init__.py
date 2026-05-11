@@ -5,9 +5,11 @@ from platform_atlas.core.registry import registry
 from platform_atlas.core.handlers import (
     session,
     ruleset,
-    customer,
     config,
     preflight,
     guide,
     env,
+    tier,
+    continuous,
+    fleet,
 )

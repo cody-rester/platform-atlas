@@ -92,7 +92,13 @@ def _find_export() -> Path | None:
 
 
 def _load_and_validate(path: Path) -> dict[str, Any] | None:
-    """Parse and minimally validate an exported architecture JSON file."""
+    """Parse and minimally validate an exported architecture JSON file.
+
+    Pulls ``environment_name`` from either the wrapper or the inner block so
+    the import path can detect cross-env exports. The returned dict has the
+    shape the architecture_store expects (completed, skipped, status, plus
+    optional environment_name).
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
@@ -107,45 +113,114 @@ def _load_and_validate(path: Path) -> dict[str, Any] | None:
         )
         return None
 
+    # Promote environment_name onto the inner block if the form put it on the
+    # wrapper. Either location is honored on read.
+    if "environment_name" not in arch and isinstance(data, dict):
+        embedded = data.get("environment_name")
+        if embedded:
+            arch["environment_name"] = embedded
     return arch
 
 
-def _persist(data: dict[str, Any]) -> None:
-    """Write imported data to ~/.atlas/architecture.json (the canonical location)."""
-    from platform_atlas.capture.collectors.manual import ATLAS_ARCHITECTURE_FILE
+def _persist(data: dict[str, Any], environment: str = "") -> None:
+    """Write imported architecture data under ~/.atlas/architecture/<env>.json."""
+    from platform_atlas.core import architecture_store
     try:
-        ATLAS_ARCHITECTURE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        ATLAS_ARCHITECTURE_FILE.write_text(
-            json.dumps(data, indent=2, default=str),
-            encoding="utf-8",
+        architecture_store.save(environment, data)
+        logger.debug(
+            "Architecture data persisted for env=%s",
+            environment or architecture_store.DEFAULT_ENV_KEY,
         )
-        logger.debug("Architecture data persisted to %s", ATLAS_ARCHITECTURE_FILE)
-    except OSError as e:
+    except (OSError, ValueError) as e:
         logger.warning("Could not persist architecture data: %s", e)
+
+
+def _form_url_for(html_path: Path, environment: str, organization: str = "") -> str:
+    """Build the file:// URL with the env (and optional org) as query strings."""
+    base = html_path.as_uri()
+    if not environment and not organization:
+        return base
+    # The form reads URLSearchParams to display the env in its header and
+    # pre-fill the company/organization field on first load.
+    from urllib.parse import quote, urlencode
+    params: list[tuple[str, str]] = []
+    if environment:
+        params.append(("env", environment))
+    if organization:
+        params.append(("org", organization))
+    return f"{base}?{urlencode(params, quote_via=quote)}"
+
+
+def _lookup_organization_name(environment: str) -> str:
+    """Resolve the organization name to pre-fill into the HTML form.
+
+    Reads from the active env's environment file first, falling back to the
+    global config.json. Returns empty string when neither is available — the
+    form silently no-ops the pre-fill in that case.
+    """
+    if environment:
+        try:
+            from platform_atlas.core.environment import get_environment_manager
+            mgr = get_environment_manager()
+            if mgr.exists(environment):
+                env = mgr.load(environment)
+                if env.organization_name:
+                    return env.organization_name
+        except Exception:
+            pass
+    try:
+        from platform_atlas.core.paths import ATLAS_CONFIG_FILE
+        if ATLAS_CONFIG_FILE.is_file():
+            cfg = json.loads(ATLAS_CONFIG_FILE.read_text(encoding="utf-8"))
+            return (cfg.get("organization_name") or "").strip()
+    except Exception:
+        pass
+    return ""
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def launch_architecture_form() -> dict[str, Any] | None:
+def launch_architecture_form(environment: str = "") -> dict[str, Any] | None:
     """Open the HTML architecture form, wait for the export, and import it.
+
+    Args:
+        environment: target environment for the answers. The form receives this
+            via ``?env=<name>``; the import refuses an export whose
+            ``environment_name`` (when set) doesn't match, so users can't
+            accidentally overwrite the wrong env.
 
     Return values:
         dict  — raw content of the exported JSON (has 'completed', 'skipped',
                 'status' keys).  Caller should use result['completed'].
         {}    — user explicitly skipped; caller should treat as no data.
         None  — user chose CLI fallback; caller should run CLI collector.
+
+    Raises TierViolationError if invoked while the active tier is Standard —
+    architecture review is an Extended-only feature.
     """
+    from platform_atlas.core.context import require_extended
+    require_extended(
+        "architecture form",
+        hint="Architecture & maintenance review is part of Extended Mode.",
+    )
+
     try:
         html_path = _get_form_path()
     except FileNotFoundError as e:
         console.print(f"\n[{theme.warning}]{e}[/{theme.warning}]")
         return None
 
+    organization = _lookup_organization_name(environment)
+
     console.print(
         f"\n[bold {theme.primary}]Architecture Collector — HTML Form[/]\n"
         f"[{theme.text_dim}]Opening form in your browser …[/{theme.text_dim}]"
     )
-    webbrowser.open(html_path.as_uri())
+    if environment:
+        console.print(
+            f"[{theme.text_dim}]Filling out for environment: [bold]{environment}[/bold][/{theme.text_dim}]"
+        )
+    webbrowser.open(_form_url_for(html_path, environment, organization))
 
     console.print(
         f"\n[{theme.text_dim}]Fill out the form, then click "
@@ -172,9 +247,9 @@ def launch_architecture_form() -> dict[str, Any] | None:
         found = _find_export()
         if found is not None:
             data = _load_and_validate(found)
-            if data is not None:
+            if data is not None and _env_mismatch_check(data, environment):
                 console.print(f"\n  [{theme.success}]✓ Loaded {found}[/{theme.success}]")
-                _persist(data)
+                _persist(data, environment)
                 return data
 
         # ── Auto-detect failed — ask for path ─────────────────────────────────
@@ -205,7 +280,32 @@ def launch_architecture_form() -> dict[str, Any] | None:
             continue
 
         data = _load_and_validate(custom)
-        if data is not None:
+        if data is not None and _env_mismatch_check(data, environment):
             console.print(f"\n  [{theme.success}]✓ Loaded {custom}[/{theme.success}]")
-            _persist(data)
+            _persist(data, environment)
             return data
+
+
+def _env_mismatch_check(data: dict[str, Any], expected_env: str) -> bool:
+    """Confirm an env-mismatched export before letting it overwrite this env.
+
+    The form embeds ``environment_name`` in the export when launched with
+    ``?env=`` set. If the user re-uses an old export from a different env,
+    we warn and let them decide rather than silently clobbering.
+    Returns True when import should proceed.
+    """
+    embedded = str(data.get("environment_name") or "").strip()
+    if not embedded or not expected_env:
+        return True
+    if embedded == expected_env:
+        return True
+    console.print(
+        f"\n  [{theme.warning}]The export was generated for env "
+        f"[bold]{embedded}[/bold] but you're filling in env "
+        f"[bold]{expected_env}[/bold].[/{theme.warning}]"
+    )
+    answer = console.input(
+        f"  Import anyway and overwrite [bold]{expected_env}[/bold]'s answers? "
+        f"[bold]y[/bold]/N: "
+    ).strip().lower()
+    return answer in ("y", "yes")

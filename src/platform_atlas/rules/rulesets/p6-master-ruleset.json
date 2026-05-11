@@ -3,11 +3,11 @@
   "ruleset": {
     "id": "p6-master-ruleset",
     "name": "Platform 6 Master Ruleset",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "Master ruleset for Platform 6 — all rules, all systems",
     "author": "Itential",
     "target_product": "Platform_6",
-    "updated_at": "2026-03-01"
+    "updated_at": "2026-05-10"
   },
   "rules": [
     {
@@ -187,7 +187,8 @@
         "type": "bool"
       },
       "created_at": "2026-02-12",
-      "updated_at": "2026-02-12"
+      "updated_at": "2026-02-12",
+      "tier": "extended"
     },
     {
       "category": "gateway4",
@@ -207,7 +208,8 @@
         "type": "int"
       },
       "created_at": "2026-02-12",
-      "updated_at": "2026-02-12"
+      "updated_at": "2026-02-12",
+      "tier": "extended"
     },
     {
       "category": "gateway4",
@@ -227,7 +229,8 @@
         "type": "int"
       },
       "created_at": "2026-02-12",
-      "updated_at": "2026-02-12"
+      "updated_at": "2026-02-12",
+      "tier": "extended"
     },
     {
       "category": "gateway4",
@@ -247,7 +250,8 @@
         "type": "int"
       },
       "created_at": "2026-02-12",
-      "updated_at": "2026-02-12"
+      "updated_at": "2026-02-12",
+      "tier": "extended"
     },
     {
       "category": "gateway5",
@@ -863,7 +867,8 @@
       "messages": {
         "pass": "The built-in default user account is disabled, which is the recommended security posture",
         "fail": "The built-in default user account is still enabled — this account should be disabled in production and replaced with named user accounts for audit traceability"
-      }
+      },
+      "alt_path": "platform.config_file.default_user_enabled"
     },
     {
       "rule_number": "PLAT-002",
@@ -885,7 +890,8 @@
       },
       "enabled": true,
       "created_at": "2026-01-27",
-      "updated_at": "2026-01-27"
+      "updated_at": "2026-01-27",
+      "alt_path": "platform.config_file.log_level"
     },
     {
       "rule_number": "PLAT-003",
@@ -1013,7 +1019,8 @@
       },
       "enabled": true,
       "created_at": "2026-01-27",
-      "updated_at": "2026-01-27"
+      "updated_at": "2026-01-27",
+      "alt_path": "platform.config_file.server_id"
     },
     {
       "rule_number": "PLAT-009",
@@ -1056,7 +1063,8 @@
       },
       "enabled": true,
       "created_at": "2026-01-28",
-      "updated_at": "2026-01-28"
+      "updated_at": "2026-01-28",
+      "alt_path": "system.kubernetes.platform_release_version"
     },
     {
       "rule_number": "PLAT-011",
@@ -1079,7 +1087,8 @@
       },
       "enabled": true,
       "created_at": "2026-01-28",
-      "updated_at": "2026-01-28"
+      "updated_at": "2026-01-28",
+      "alt_path": "system.kubernetes.node_version"
     },
     {
       "rule_number": "PLAT-012",
@@ -1139,7 +1148,8 @@
       },
       "enabled": true,
       "created_at": "2026-01-28",
-      "updated_at": "2026-01-28"
+      "updated_at": "2026-01-28",
+      "alt_path": "platform.config_file.log_max_files"
     },
     {
       "rule_number": "PLAT-015",
@@ -1182,7 +1192,8 @@
       },
       "enabled": true,
       "created_at": "2026-01-28",
-      "updated_at": "2026-01-28"
+      "updated_at": "2026-01-28",
+      "alt_path": "platform.config_file.log_max_file_size"
     },
     {
       "rule_number": "PLAT-017",
@@ -1262,7 +1273,8 @@
       },
       "enabled": true,
       "created_at": "2026-01-29",
-      "updated_at": "2026-01-29"
+      "updated_at": "2026-01-29",
+      "alt_path": "platform.config_file.webserver_https_enabled"
     },
     {
       "rule_number": "PLAT-021",
@@ -1282,7 +1294,8 @@
       },
       "enabled": true,
       "created_at": "2026-01-29",
-      "updated_at": "2026-01-29"
+      "updated_at": "2026-01-29",
+      "alt_path": "platform.config_file.webserver_http_enabled"
     },
     {
       "rule_number": "PLAT-022",
@@ -1302,7 +1315,8 @@
       },
       "enabled": true,
       "created_at": "2026-01-29",
-      "updated_at": "2026-01-29"
+      "updated_at": "2026-01-29",
+      "alt_path": "platform.config_file.webserver_timeout"
     },
     {
       "rule_number": "PLAT-023",
@@ -1342,7 +1356,8 @@
       },
       "enabled": true,
       "created_at": "2026-01-29",
-      "updated_at": "2026-01-29"
+      "updated_at": "2026-01-29",
+      "alt_path": "platform.config_file.mongo_auth_enabled"
     },
     {
       "rule_number": "PLAT-025",
@@ -1423,7 +1438,8 @@
       },
       "enabled": true,
       "created_at": "2026-01-30",
-      "updated_at": "2026-01-30"
+      "updated_at": "2026-01-30",
+      "alt_path": "platform.config_file.mongo_tls_enabled"
     },
     {
       "rule_number": "PLAT-029",
@@ -1683,6 +1699,7 @@
       },
       "name": "Gateway Manager Version Check",
       "path": "platform.application_status.results.GatewayManager.version",
+      "alt_path": "system.kubernetes.installed_services.app-ag_manager.version",
       "rule_number": "PLAT-041",
       "severity": "warning",
       "validation": {
@@ -1820,6 +1837,26 @@
       },
       "created_at": "2026-02-19",
       "updated_at": "2026-02-19"
+    },
+    {
+      "category": "platform",
+      "description": "Validate Template Builder execution timeout is not set too high",
+      "enabled": true,
+      "messages": {
+        "pass": "Template Builder execution timeout is within the recommended limit of 10000ms",
+        "fail": "Template Builder execution timeout exceeds 10000ms — high values can cause long-running template executions that degrade platform performance"
+      },
+      "name": "Template Builder Execution Timeout",
+      "path": "platform.application_props.results.TemplateBuilder.properties.templateExecutionTimeout",
+      "rule_number": "PLAT-048",
+      "severity": "warning",
+      "validation": {
+        "expected": 10000,
+        "operator": "lte",
+        "type": "int"
+      },
+      "created_at": "2026-05-10",
+      "updated_at": "2026-05-10"
     },
     {
       "rule_number": "RDS-001",

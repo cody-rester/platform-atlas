@@ -13,6 +13,7 @@ from rich.console import Console
 
 # ATLAS Imports
 from platform_atlas.core._version import __version__
+from platform_atlas.core.utils import split_path
 
 _MISSING = object()
 _MAX_PIPELINE_DEPTH = 100
@@ -205,11 +206,18 @@ def filter_capture_by_rules(
         data: dict[str, Any],
         rules_doc: dict[str, Any] | list[dict[str, Any]],
         *,
-        keep_roots: bool = True
+        keep_roots: bool = True,
+        passthrough_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Rebuild a nested dict containing ONLY the fields referenced by rules[].name
-    while preserving the original structure
+    while preserving the original structure.
+
+    ``passthrough_paths`` lists dot-notation sections that should survive the
+    filter even when no rule references them — used for log-analysis blocks,
+    runtime_config fallbacks for ``alt_path`` resolution, and similar wholesale
+    payloads that downstream consumers (operational reports, the diff renderer)
+    need but aren't exhaustively enumerated by individual rules.
     """
     rules = rules_doc["rules"] if isinstance(rules_doc, dict) else rules_doc
 
@@ -225,19 +233,31 @@ def filter_capture_by_rules(
         if not dotted:
             continue
 
-        path = dotted.split(".")
+        # Use the same quote-aware splitter as the validation engine so a
+        # rule path like ``adapters."My Adapter".enabled`` resolves to the
+        # same tokens here as it does at evaluation time. Plain str.split
+        # would shred the quoted segment.
+        path = split_path(dotted)
         value = get_by_path(data, path)
 
         # If primary path failed and alt_path exists, try that
         if value is _MISSING and rule.get("alt_path"):
             alt_dotted = rule["alt_path"]
-            path = alt_dotted.split(".")
+            path = split_path(alt_dotted)
             value = get_by_path(data, path)
 
         if value is _MISSING:
             continue
 
         set_by_path(result, path, value, source=data)
+
+    for dotted in (passthrough_paths or ()):
+        path = split_path(dotted)
+        value = get_by_path(data, path)
+        if value is _MISSING:
+            continue
+        set_by_path(result, path, value, source=data)
+
     return result
 
 def normalize_acl_entries(raw_acl_list: list) -> list[list]:

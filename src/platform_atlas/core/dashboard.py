@@ -2,67 +2,180 @@
 """
 ATLAS // Dashboard
 
-Redesigned in v1.5 to show session bindings as a visual relationship:
-    Environment ──▸ Session ◂── Ruleset + Profile
+The dashboard is the user's first impression of Platform Atlas — the welcome
+screen, the status board, and the wayfinder. Three goals shape the design:
 
-The active session hero panel displays the full context at a glance.
-The sessions table shows recent sessions with their bindings, pipeline
-progress, and results.
+    1. Make the active session immediately legible at a glance.
+    2. Show the C → V → R pipeline state visually, not just textually.
+    3. Surface the next action so the user always knows what to run next.
+
+Layout (top to bottom):
+    Banner ........ wordmark + honeycomb mark + context strip
+    Hero .......... active session card with compliance bar + next-step chip
+    Warnings ...... mismatch banners (env / ruleset / profile drift)
+    Sessions ...... 6-column table of the 5 most recent sessions
+    Footer ........ quick-switch + help command lanes
 """
 
 import datetime
 import json
+
 from rich import box
+from rich.console import Console
 from rich.panel import Panel
-from rich.text import Text
 from rich.table import Table
-from rich.rule import Rule
-from rich.align import Align
-from rich.columns import Columns
-from rich.console import Console, Group
-from rich.padding import Padding
+from rich.text import Text
 
 from platform_atlas.core._version import __version__
-from platform_atlas.core.context import ctx
 from platform_atlas.core import ui
+from platform_atlas.core.context import ctx
 from platform_atlas.core.session_manager import get_session_manager, NoActiveSessionError
 from platform_atlas.core.ruleset_manager import get_ruleset_manager
-from platform_atlas.core.exceptions import ConfigError
 
 theme = ui.theme
 console = Console()
 
-# ── Helpers ──────────────────────────────────────────────────────
+
+# ── Status palette ────────────────────────────────────────────────
 
 STATUS_COLORS = {
-    "created": "text_dim",
-    "capturing": "primary",
-    "captured": "info",
+    "created":    "text_dim",
+    "capturing":  "primary",
+    "captured":   "info",
     "validating": "warning",
-    "validated": "success",
-    "reported": "success_glow",
-    "failed": "error",
+    "validated":  "success",
+    "reported":   "success_glow",
+    "failed":     "error",
 }
 
+
 def _sc(status: str) -> str:
-    """Get the theme color string for a session status."""
+    """Theme color string for a session status."""
     return getattr(theme, STATUS_COLORS.get(status, "text_dim"))
 
 
-def _dot(done: bool) -> str:
-    return f"[{theme.success}]●[/{theme.success}]" if done else f"[{theme.text_ghost}]○[/{theme.text_ghost}]"
+# ── Color helpers ─────────────────────────────────────────────────
+
+def _hex_to_rgb(h: str) -> tuple[int, int, int]:
+    h = h.lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
-def _pipeline(meta) -> str:
-    """Build the C → V → R pipeline string from session metadata."""
-    return (
-        f"{_dot(meta.capture_completed)} C  "
-        f"[{theme.text_ghost}]→[/{theme.text_ghost}]  "
-        f"{_dot(meta.validation_completed)} V  "
-        f"[{theme.text_ghost}]→[/{theme.text_ghost}]  "
-        f"{_dot(meta.report_completed)} R"
-    )
+def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    return "#" + "".join(f"{c:02x}" for c in rgb)
 
+
+def _gradient(text: str, *stops: str, bold: bool = True) -> Text:
+    """Render text with a smooth color gradient across the given hex stops.
+
+    Used for the wordmark — three color stops let us fade from primary_glow
+    through primary into secondary, giving the title a subtle depth without
+    looking gimmicky.
+    """
+    out = Text()
+    chars = list(text)
+    if not chars or not stops:
+        out.append(text)
+        return out
+    if len(stops) == 1 or len(chars) == 1:
+        out.append(text, style=f"bold {stops[0]}" if bold else stops[0])
+        return out
+
+    rgb_stops = [_hex_to_rgb(c) for c in stops]
+    n_chars = len(chars)
+    n_segs = len(rgb_stops) - 1
+
+    for i, ch in enumerate(chars):
+        if ch == " ":
+            out.append(" ")
+            continue
+        t = i / (n_chars - 1)
+        seg = min(int(t * n_segs), n_segs - 1)
+        local = (t * n_segs) - seg
+        a = rgb_stops[seg]
+        b = rgb_stops[seg + 1]
+        c = tuple(round(a[k] + (b[k] - a[k]) * local) for k in range(3))
+        out.append(ch, style=f"bold {_rgb_to_hex(c)}" if bold else _rgb_to_hex(c))
+    return out
+
+
+# ── Pipeline glyphs ───────────────────────────────────────────────
+
+def _stage_color(done: bool) -> str:
+    return theme.success if done else theme.text_ghost
+
+
+def _stage_glyph(done: bool) -> str:
+    return "◉" if done else "◯"
+
+
+def _pipeline_chain(meta) -> Text:
+    """Render the C━V━R pipeline as a connected chain.
+
+    Connectors between stages light up green only when both endpoints are
+    complete — so a half-done pipeline reads at a glance: filled, green link,
+    filled, dim link, hollow.
+    """
+    out = Text()
+    stages = [
+        meta.capture_completed,
+        meta.validation_completed,
+        meta.report_completed,
+    ]
+    labels = ["C", "V", "R"]
+    for i, done in enumerate(stages):
+        if i > 0:
+            link_done = stages[i - 1] and done
+            out.append("━━━", style=theme.success if link_done else theme.text_ghost)
+        out.append(_stage_glyph(done), style=f"bold {_stage_color(done)}")
+        out.append(f" {labels[i]}", style=theme.text_secondary if done else theme.text_ghost)
+    return out
+
+
+def _pipeline_compact(meta) -> Text:
+    """Tight 3-glyph pipeline chain for the sessions table — no labels."""
+    out = Text()
+    stages = [
+        meta.capture_completed,
+        meta.validation_completed,
+        meta.report_completed,
+    ]
+    for i, done in enumerate(stages):
+        if i > 0:
+            link_done = stages[i - 1] and done
+            out.append("─", style=theme.success if link_done else theme.text_ghost)
+        out.append(_stage_glyph(done), style=f"bold {_stage_color(done)}")
+    return out
+
+
+# ── Compliance bar ────────────────────────────────────────────────
+
+def _compliance_bar(passed: int, failed: int, skipped: int, width: int = 22) -> Text:
+    """A horizontal segmented bar — pass green, fail red, skip ghost.
+
+    The bar is exactly `width` cells. Uses round() per segment then squeezes
+    the skip segment to absorb rounding error, so the bar always sums to width.
+    """
+    total = passed + failed + skipped
+    out_bar = Text()
+    if total == 0:
+        out_bar.append("─" * width, style=theme.text_ghost)
+        return out_bar
+
+    p_w = round(passed / total * width)
+    f_w = round(failed / total * width)
+    s_w = max(0, width - p_w - f_w)
+
+    if p_w:
+        out_bar.append("█" * p_w, style=theme.success)
+    if f_w:
+        out_bar.append("█" * f_w, style=theme.error)
+    if s_w:
+        out_bar.append("░" * s_w, style=theme.text_ghost)
+    return out_bar
+
+
+# ── Time formatting ───────────────────────────────────────────────
 
 def _time_ago(dt: datetime.datetime) -> str:
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -77,10 +190,10 @@ def _time_ago(dt: datetime.datetime) -> str:
 
 
 def _next_step(meta) -> tuple[str, str]:
-    """Return (description, command) for the next pipeline step."""
+    """(description, command) for the next pipeline step."""
     status = str(meta.status)
     next_map = {
-        "created":    ("Run data capture",        "session run capture"),
+        "created":    ("Run data capture",         "session run capture"),
         "capturing":  ("Resume capture",           "session run capture"),
         "captured":   ("Run validation",           "session run validate"),
         "validating": ("Resume validation",        "session run validate"),
@@ -91,328 +204,412 @@ def _next_step(meta) -> tuple[str, str]:
     return next_map.get(status, ("Continue", "session --help"))
 
 
-# ── Main dashboard ───────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# BANNER
+# ══════════════════════════════════════════════════════════════════
 
-def show_dashboard():
-    """Show Atlas info dashboard when no arguments provided"""
+def _build_banner() -> Panel:
+    """Three-line stylized banner: honeycomb hex mark + wordmark + context strip."""
 
-    console.clear()
+    # Honeycomb — 3 rows of unicode hex glyphs.
+    # Outer hexes use the glow color, inner ring uses primary, center uses accent.
+    # The result reads as a tight 7-hex cluster that recalls a network/grid motif.
+    hex_mark = Text()
+    hex_mark.append(" ⬢ ⬢", style=f"bold {theme.primary_glow}")
+    hex_mark.append("\n")
+    hex_mark.append("⬢ ", style=f"bold {theme.primary}")
+    hex_mark.append("⬢", style=f"bold {theme.accent}")
+    hex_mark.append(" ⬢", style=f"bold {theme.primary}")
+    hex_mark.append("\n")
+    hex_mark.append(" ⬢ ⬢", style=f"bold {theme.primary_glow}")
 
-    session_mgr = get_session_manager()
-    ruleset_mgr = get_ruleset_manager()
-
-    # ═══════════════════════════════════════════════════════════════
-    # HEADER BANNER
-    # ═══════════════════════════════════════════════════════════════
-    banner_text = Text(justify="center")
-    banner_text.append("⬡ ", style=f"bold {theme.primary_glow}")
-    banner_text.append("Platform Atlas", style=f"bold {theme.banner_fg}")
-    banner_text.append(f"  v{__version__}", style=theme.text_muted)
-
-    subtitle_text = Text(
-        "Itential Platform Configuration Auditing & Validation",
-        style=theme.text_dim,
-        justify="center",
+    # Wordmark with a 3-stop gradient: glow → primary → secondary
+    wordmark = _gradient(
+        "PLATFORM ATLAS",
+        theme.primary_glow,
+        theme.primary,
+        theme.secondary,
     )
 
-    banner = Panel(
-        Group(
-            Align.center(banner_text),
-            Align.center(subtitle_text),
-        ),
+    # Right column: title row, tagline, context strip
+    right = Text()
+    right.append(wordmark)
+    right.append("    ")
+    right.append(f"v{__version__}", style=theme.text_muted)
+    right.append("\n")
+    right.append(
+        "Itential Platform — Configuration Audit & Validation",
+        style=theme.text_dim,
+    )
+    right.append("\n")
+
+    # Context strip — mode • env • theme • now
+    active_ctx = _ctx_safe()
+    env_name = active_ctx.active_environment if active_ctx else None
+    theme_id = active_ctx.config.theme if active_ctx else None
+    tier_name = active_ctx.tier if active_ctx else None
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    parts: list[str] = []
+    if tier_name:
+        tier_color = theme.tier_standard if tier_name == "standard" else theme.tier_extended
+        parts.append(
+            f"[{tier_color}]{tier_name.capitalize()}[/{tier_color}] "
+            f"[{theme.text_ghost}]mode[/{theme.text_ghost}]"
+        )
+    if env_name:
+        parts.append(f"[{theme.primary}]{env_name}[/{theme.primary}] [{theme.text_ghost}]env[/{theme.text_ghost}]")
+    else:
+        parts.append(f"[{theme.text_ghost}]no environment[/{theme.text_ghost}]")
+    if theme_id:
+        parts.append(f"[{theme.text_dim}]{theme_id}[/{theme.text_dim}] [{theme.text_ghost}]theme[/{theme.text_ghost}]")
+    parts.append(f"[{theme.text_dim}]{now}[/{theme.text_dim}]")
+
+    sep = f"  [{theme.text_ghost}]·[/{theme.text_ghost}]  "
+    right.append(Text.from_markup(sep.join(parts)))
+
+    # Side-by-side layout: hex mark | wordmark+tagline+strip
+    layout = Table(box=None, show_header=False, padding=(0, 0), expand=True)
+    layout.add_column(width=8, no_wrap=True)
+    layout.add_column(width=2)  # spacer
+    layout.add_column(ratio=1)
+    layout.add_row(hex_mark, "", right)
+
+    return Panel(
+        layout,
         box=box.HEAVY,
         border_style=theme.banner_rule,
         style=f"on {theme.banner_bg}",
         padding=(1, 2),
         expand=True,
     )
-    console.print(banner)
 
-    # ═══════════════════════════════════════════════════════════════
-    # ACTIVE SESSION HERO
-    # ═══════════════════════════════════════════════════════════════
 
+def _ctx_safe():
+    """Return ctx() or None if context isn't initialized."""
     try:
-        active_session = session_mgr.get_active()
-    except NoActiveSessionError:
-        active_session = None
+        return ctx()
+    except Exception:
+        return None
 
-    if active_session:
-        meta = active_session.metadata
-        sc = _sc(str(meta.status))
 
-        # ── Build a clean key-value details table ─────────────────
-        details = Table(
-            box=None,
-            show_header=False,
-            padding=(0, 2),
-            expand=False,
-        )
-        details.add_column("label", style=theme.text_ghost, min_width=14)
-        details.add_column("value")
+# ══════════════════════════════════════════════════════════════════
+# ACTIVE SESSION HERO
+# ══════════════════════════════════════════════════════════════════
 
+def _build_hero(active_session) -> Panel:
+    """The hero card: full session context at a glance."""
+    meta = active_session.metadata
+    sc = _sc(str(meta.status))
+
+    details = Table(
+        box=None,
+        show_header=False,
+        padding=(0, 2),
+        expand=True,
+    )
+    details.add_column("label", style=theme.text_ghost, min_width=14, no_wrap=True)
+    details.add_column("value", ratio=1)
+
+    # Status row — status text, then chained pipeline glyph
+    status_line = Text()
+    status_line.append(str(meta.status), style=f"bold {sc}")
+    status_line.append("    ")
+    status_line.append(_pipeline_chain(meta))
+    details.add_row("Status", status_line)
+
+    if meta.organization_name:
         details.add_row(
-            "Status",
-            f"[{sc} bold]{meta.status}[/{sc} bold]    {_pipeline(meta)}"
+            "Organization",
+            Text(meta.organization_name, style="bold"),
         )
 
-        if meta.organization_name:
-            details.add_row(
-                "Organization",
-                f"[bold]{meta.organization_name}[/bold]"
-            )
+    # Session tier — Standard (blue) vs Extended (orange).
+    # Pre-1.7 sessions don't carry a tier field — fall back to Extended.
+    session_tier = (getattr(meta, "tier", None) or "extended").lower()
+    if session_tier == "standard":
+        tier_label = "Standard"
+        tier_style = f"bold {theme.tier_standard}"
+    else:
+        tier_label = "Extended"
+        tier_style = f"bold {theme.tier_extended}"
+    details.add_row("Mode", Text(tier_label, style=tier_style))
 
-        if meta.environment:
-            details.add_row(
-                "Environment",
-                f"[{theme.primary}]{meta.environment}[/{theme.primary}]"
-            )
-
-        if meta.ruleset_id:
-            rs_display = f"[{theme.secondary}]{meta.ruleset_id}[/{theme.secondary}]"
-            if meta.ruleset_profile:
-                rs_display += f"  [{theme.text_ghost}]+[/{theme.text_ghost}]  [{theme.warning}]{meta.ruleset_profile}[/{theme.warning}]"
-            details.add_row("Ruleset", rs_display)
-
-        # Results row (only if validated)
-        if meta.validation_completed and meta.total_rules > 0:
-            evaluated = meta.pass_count + meta.fail_count
-            rate = round(meta.pass_count / evaluated * 100, 1) if evaluated else 0
-            details.add_row(
-                "Results",
-                f"[{theme.success} bold]{meta.pass_count}[/{theme.success} bold] "
-                f"[{theme.text_dim}]pass[/{theme.text_dim}]  "
-                f"[{theme.error} bold]{meta.fail_count}[/{theme.error} bold] "
-                f"[{theme.text_dim}]fail[/{theme.text_dim}]  "
-                f"[{theme.text_ghost}]{meta.skip_count}[/{theme.text_ghost}] "
-                f"[{theme.text_dim}]skip[/{theme.text_dim}]  "
-                f"[{theme.text_ghost}]·[/{theme.text_ghost}]  "
-                f"[bold]{rate}%[/bold] [{theme.text_dim}]compliance[/{theme.text_dim}]"
-            )
-
-        # Next step row
-        label, cmd = _next_step(meta)
+    if meta.environment:
         details.add_row(
-            "Next",
-            f"[{theme.accent}]→[/{theme.accent}] {label}:  "
-            f"[bold {theme.primary}]{cmd}[/bold {theme.primary}]"
+            "Environment",
+            Text(meta.environment, style=f"bold {theme.primary}"),
         )
 
-        console.print(Panel(
-            details,
-            title=(
-                f"[bold {theme.primary}]Active Session[/bold {theme.primary}]"
-                f"  [{theme.text_ghost}]·[/{theme.text_ghost}]  "
-                f"[bold]{meta.name}[/bold]"
-            ),
-            title_align="left",
-            border_style=f"{theme.primary}",
-            box=box.ROUNDED,
-            style=f"on {theme.tint_primary}",
-            padding=(1, 2),
-            expand=True,
-        ))
+    if meta.ruleset_id:
+        rs = Text()
+        rs.append(meta.ruleset_id, style=theme.secondary)
+        if meta.ruleset_profile:
+            rs.append("  +  ", style=theme.text_ghost)
+            rs.append(meta.ruleset_profile, style=theme.warning)
+        details.add_row("Ruleset", rs)
 
-    # ═══════════════════════════════════════════════════════════════
-    # NO SESSION — GETTING STARTED
-    # ═══════════════════════════════════════════════════════════════
+    # Compliance bar — visceral pass/fail/skip distribution.
+    # Two-line layout so it never wraps: bar + percentage on row 1, counts on row 2.
+    if meta.validation_completed and meta.total_rules > 0:
+        evaluated = meta.pass_count + meta.fail_count
+        rate = round(meta.pass_count / evaluated * 100, 1) if evaluated else 0.0
+        rate_color = (
+            theme.success if rate >= 90
+            else theme.warning if rate >= 70
+            else theme.error
+        )
 
-    if not active_session:
-        all_sessions = session_mgr.list()
+        compliance = Text()
+        compliance.append(_compliance_bar(meta.pass_count, meta.fail_count, meta.skip_count, width=24))
+        compliance.append("   ")
+        compliance.append(f"{rate:>5.1f}%", style=f"bold {rate_color}")
+        compliance.append("\n")
+        compliance.append(f"{meta.pass_count}", style=f"bold {theme.success}")
+        compliance.append(" pass", style=theme.text_dim)
+        compliance.append("  ·  ", style=theme.text_ghost)
+        compliance.append(f"{meta.fail_count}", style=f"bold {theme.error}")
+        compliance.append(" fail", style=theme.text_dim)
+        compliance.append("  ·  ", style=theme.text_ghost)
+        compliance.append(f"{meta.skip_count}", style=theme.text_ghost)
+        compliance.append(" skip", style=theme.text_dim)
+        details.add_row("Compliance", compliance)
 
-        if all_sessions:
-            body = (
-                f"  [{theme.text_dim}]No active session.[/{theme.text_dim}]\n"
-                f"  Switch to an existing session or create a new one:\n\n"
-                f"    [bold {theme.primary}]session switch[/bold {theme.primary}]"
-                f"        [{theme.text_dim}]Pick from existing sessions[/{theme.text_dim}]\n"
-                f"    [bold {theme.primary}]session create <n>[/bold {theme.primary}]"
-                f"   [{theme.text_dim}]Start a new audit[/{theme.text_dim}]"
-            )
+    # Spacer row before the next-step chip — gives the chip room to breathe
+    details.add_row("", "")
+
+    # Next-step — description on one line, command on its own indented line
+    label, cmd = _next_step(meta)
+    next_block = Text()
+    next_block.append("→ ", style=f"bold {theme.accent}")
+    next_block.append(label, style=theme.text_primary)
+    next_block.append("\n  ")
+    next_block.append("▎ ", style=f"bold {theme.accent}")
+    next_block.append(f"$ {cmd}", style=f"bold {theme.primary}")
+    details.add_row("Next", next_block)
+
+    # Title combines static label with session name + status pill
+    title = Text()
+    title.append(" ACTIVE SESSION ", style=f"bold {theme.bg_primary} on {theme.primary}")
+    title.append("  ")
+    title.append(meta.name, style=f"bold {theme.text_primary}")
+    title.append("  ")
+    title.append(f" {meta.status} ", style=f"bold {theme.bg_primary} on {sc}")
+
+    return Panel(
+        details,
+        title=title,
+        title_align="left",
+        border_style=theme.primary,
+        box=box.ROUNDED,
+        style=f"on {theme.tint_primary}",
+        padding=(1, 2),
+        expand=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════
+# GETTING STARTED (no active session)
+# ══════════════════════════════════════════════════════════════════
+
+def _build_getting_started(has_sessions: bool) -> Panel:
+    if has_sessions:
+        body = (
+            f"  [{theme.text_dim}]No active session.[/{theme.text_dim}]\n"
+            f"  Switch to an existing session or create a new one:\n\n"
+            f"    [{theme.accent}]▎[/{theme.accent}] [bold {theme.primary}]session switch[/bold {theme.primary}]"
+            f"        [{theme.text_dim}]Pick from existing sessions[/{theme.text_dim}]\n"
+            f"    [{theme.accent}]▎[/{theme.accent}] [bold {theme.primary}]session create <name>[/bold {theme.primary}]"
+            f"   [{theme.text_dim}]Start a new audit[/{theme.text_dim}]"
+        )
+    else:
+        body = (
+            f"  [{theme.text_dim}]No sessions yet. Create one to get started:[/{theme.text_dim}]\n\n"
+            f"    [{theme.text_dim}]1.[/{theme.text_dim}]  "
+            f"[bold {theme.primary}]session create <name>[/bold {theme.primary}]"
+            f"   [{theme.text_dim}]Create a session (selects env + ruleset)[/{theme.text_dim}]\n"
+            f"    [{theme.text_dim}]2.[/{theme.text_dim}]  "
+            f"[bold {theme.primary}]session run all[/bold {theme.primary}]"
+            f"        [{theme.text_dim}]Run the full pipeline[/{theme.text_dim}]"
+        )
+
+    title = Text()
+    title.append(" GETTING STARTED ", style=f"bold {theme.bg_primary} on {theme.primary}")
+
+    return Panel(
+        body,
+        title=title,
+        title_align="left",
+        border_style=theme.primary,
+        box=box.ROUNDED,
+        style=f"on {theme.tint_primary}",
+        padding=(1, 2),
+        expand=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════
+# MISMATCH WARNINGS
+# ══════════════════════════════════════════════════════════════════
+
+def _build_warnings(active_session) -> Panel | None:
+    if not active_session.capture_file.exists():
+        return None
+
+    ruleset_mgr = get_ruleset_manager()
+    active_ruleset = ruleset_mgr.get_active_ruleset_id()
+    active_profile = ruleset_mgr.get_active_profile_id()
+    env_name = ctx().active_environment
+
+    capture_meta = {}
+    try:
+        with open(active_session.capture_file, encoding="utf-8") as f:
+            capture_data = json.load(f)
+        capture_meta = capture_data.get("_atlas", {}).get("metadata", {})
+    except Exception:
+        pass
+
+    warnings: list[str] = []
+
+    session_ruleset = getattr(active_session.metadata, "ruleset_id", None)
+    if session_ruleset and active_ruleset and session_ruleset != active_ruleset:
+        warnings.append(
+            f"  [{theme.warning}]⚠[/{theme.warning}]  Session was captured with ruleset "
+            f"[bold]{session_ruleset}[/bold] but [{theme.accent}]{active_ruleset}[/{theme.accent}] is now loaded"
+        )
+
+    capture_profile = capture_meta.get("ruleset_profile", "")
+    if capture_profile and active_profile and capture_profile != active_profile:
+        warnings.append(
+            f"  [{theme.warning}]⚠[/{theme.warning}]  Session was captured with profile "
+            f"[bold]{capture_profile}[/bold] but [{theme.accent}]{active_profile}[/{theme.accent}] is now active"
+        )
+
+    capture_env = capture_meta.get("environment") or capture_meta.get("active_environment")
+    if capture_env and env_name and capture_env != env_name:
+        warnings.append(
+            f"  [{theme.warning}]⚠[/{theme.warning}]  Session was captured under environment "
+            f"[bold]{capture_env}[/bold] but [{theme.accent}]{env_name}[/{theme.accent}] is now active"
+        )
+
+    if not warnings:
+        return None
+
+    title = Text()
+    title.append(" BINDING DRIFT ", style=f"bold {theme.bg_primary} on {theme.warning}")
+
+    return Panel(
+        "\n".join(warnings),
+        title=title,
+        title_align="left",
+        border_style=theme.warning,
+        box=box.ROUNDED,
+        style=f"on {theme.tint_warning}",
+        padding=(0, 1),
+        expand=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════
+# SESSIONS TABLE
+# ══════════════════════════════════════════════════════════════════
+
+def _build_sessions_panel(all_sessions, active_name: str | None) -> Panel:
+    recent = sorted(
+        all_sessions,
+        key=lambda s: s.metadata.updated_at,
+        reverse=True,
+    )[:5]
+
+    table = Table(
+        box=box.SIMPLE,
+        show_header=True,
+        header_style=f"bold {theme.text_dim}",
+        padding=(0, 1),
+        expand=True,
+        row_styles=["", f"on {theme.bg_secondary}"],
+    )
+    # 6 columns. Dropped Organization (in hero) and the standalone marker column —
+    # the active row's accent bar is rendered inline with the session name. Every
+    # column has a fixed width that fits its header at 80-col terminal widths.
+    table.add_column("Session", min_width=14, no_wrap=True)
+    table.add_column("Environment", min_width=11, no_wrap=True)
+    table.add_column("State", min_width=10, no_wrap=True)
+    table.add_column("Pipeline", justify="center", min_width=8, no_wrap=True)
+    table.add_column("Results", justify="right", min_width=8, no_wrap=True)
+    table.add_column("Last", justify="right", min_width=7, no_wrap=True)
+
+    for sess in recent:
+        is_active = sess.name == active_name
+        m = sess.metadata
+
+        # Session — accent bar + name, bold + accent color when active
+        name_text = Text()
+        if is_active:
+            name_text.append("▎", style=f"bold {theme.accent}")
+            name_text.append(m.name, style=f"bold {theme.accent}")
         else:
-            body = (
-                f"  [{theme.text_dim}]No sessions yet. Create one to get started:[/{theme.text_dim}]\n\n"
-                f"    [{theme.text_dim}]1.[/{theme.text_dim}]  "
-                f"[bold {theme.primary}]session create <n>[/bold {theme.primary}]"
-                f"   [{theme.text_dim}]Create a session (selects env + ruleset)[/{theme.text_dim}]\n"
-                f"    [{theme.text_dim}]2.[/{theme.text_dim}]  "
-                f"[bold {theme.primary}]session run all[/bold {theme.primary}]"
-                f"        [{theme.text_dim}]Run the full pipeline[/{theme.text_dim}]"
-            )
+            name_text.append(" ", style=theme.text_ghost)
+            name_text.append(m.name, style=theme.text_primary)
 
-        console.print(Panel(
-            body,
-            title=f"[bold {theme.primary}]Getting Started[/bold {theme.primary}]",
-            title_align="left",
-            border_style=theme.primary,
-            box=box.ROUNDED,
-            style=f"on {theme.tint_primary}",
-            padding=(1, 2),
-            expand=True,
-        ))
-
-    # ═══════════════════════════════════════════════════════════════
-    # MISMATCH WARNINGS
-    # ═══════════════════════════════════════════════════════════════
-
-    if active_session and active_session.capture_file.exists():
-        active_ruleset = ruleset_mgr.get_active_ruleset_id()
-        active_profile = ruleset_mgr.get_active_profile_id()
-        env_name = ctx().active_environment
-        warnings = []
-
-        capture_meta = {}
-        try:
-            with open(active_session.capture_file, encoding="utf-8") as f:
-                capture_data = json.load(f)
-            capture_meta = capture_data.get("_atlas", {}).get("metadata", {})
-        except Exception:
-            pass
-
-        session_ruleset = getattr(active_session.metadata, "ruleset_id", None)
-        if session_ruleset and active_ruleset and session_ruleset != active_ruleset:
-            warnings.append(
-                f"[{theme.warning}]⚠[/{theme.warning}]  Session was captured with ruleset "
-                f"[bold]{session_ruleset}[/bold] but [{theme.accent}]{active_ruleset}[/{theme.accent}] is now loaded"
-            )
-
-        capture_profile = capture_meta.get("ruleset_profile", "")
-        if capture_profile and active_profile and capture_profile != active_profile:
-            warnings.append(
-                f"[{theme.warning}]⚠[/{theme.warning}]  Session was captured with profile "
-                f"[bold]{capture_profile}[/bold] but [{theme.accent}]{active_profile}[/{theme.accent}] is now active"
-            )
-
-        capture_env = capture_meta.get("environment") or capture_meta.get("active_environment")
-        if capture_env and env_name and capture_env != env_name:
-            warnings.append(
-                f"[{theme.warning}]⚠[/{theme.warning}]  Session was captured under environment "
-                f"[bold]{capture_env}[/bold] but [{theme.accent}]{env_name}[/{theme.accent}] is now active"
-            )
-
-        if warnings:
-            warn_content = "\n".join(f"  {w}" for w in warnings)
-            console.print(Panel(
-                warn_content,
-                border_style=theme.warning,
-                box=box.ROUNDED,
-                style=f"on {theme.tint_warning}",
-                padding=(0, 1),
-                expand=True,
-            ))
-
-    # ═══════════════════════════════════════════════════════════════
-    # RECENT SESSIONS TABLE (5 most recent)
-    # ═══════════════════════════════════════════════════════════════
-    all_sessions = session_mgr.list()
-
-    if all_sessions:
-        recent = sorted(
-            all_sessions,
-            key=lambda s: s.metadata.updated_at,
-            reverse=True,
-        )[:5]
-
-        sessions_table = Table(
-            box=box.SIMPLE_HEAVY,
-            show_header=True,
-            header_style=f"bold {theme.text_dim}",
-            padding=(0, 1),
-            expand=True,
+        # Environment
+        env_text = (
+            Text(m.environment, style=theme.primary)
+            if m.environment
+            else Text("—", style=theme.text_ghost)
         )
-        sessions_table.add_column("", width=2)
-        sessions_table.add_column("Session", style=theme.text_primary, ratio=3)
-        sessions_table.add_column("Environment", ratio=2)
-        sessions_table.add_column("Organization", ratio=2)
-        sessions_table.add_column("Profile", ratio=2)
-        sessions_table.add_column("Status", justify="center", ratio=1)
-        sessions_table.add_column("Pipeline", justify="center", ratio=2)
-        sessions_table.add_column("Results", justify="right", ratio=2)
-        sessions_table.add_column("Updated", justify="right", ratio=1)
 
-        active_name = session_mgr.get_active_session_name()
+        # State
+        sc = _sc(str(m.status))
+        status_text = Text(str(m.status), style=sc)
 
-        for sess in recent:
-            is_active = sess.name == active_name
-            m = sess.metadata
+        # Pipeline (compact chain)
+        pipe = _pipeline_compact(m)
 
-            # Marker
-            marker = f"[{theme.success}]▸[/{theme.success}]" if is_active else ""
+        # Results
+        if m.validation_completed:
+            results = Text()
+            results.append(f"{m.pass_count}", style=f"bold {theme.success}")
+            results.append("✓ ", style=theme.success)
+            results.append(f"{m.fail_count}", style=f"bold {theme.error}")
+            results.append("✗", style=theme.error)
+        else:
+            results = Text("—", style=theme.text_ghost)
 
-            # Name
-            name_text = (
-                f"[bold {theme.accent}]{m.name}[/bold {theme.accent}]"
-                if is_active
-                else m.name
-            )
+        # Updated
+        updated = Text(_time_ago(m.updated_at), style=theme.text_ghost)
 
-            # Environment
-            env_text = (
-                f"[{theme.primary}]{m.environment}[/{theme.primary}]"
-                if m.environment
-                else f"[{theme.text_ghost}]—[/{theme.text_ghost}]"
-            )
+        table.add_row(
+            name_text, env_text, status_text,
+            pipe, results, updated,
+        )
 
-            # Organization
-            org_text = m.organization_name or f"[{theme.text_ghost}]—[/{theme.text_ghost}]"
+    total = len(all_sessions)
 
-            # Profile
-            if m.ruleset_profile:
-                rs_text = f"[{theme.secondary}]{m.ruleset_profile}[/{theme.secondary}]"
-            else:
-                rs_text = f"[{theme.text_ghost}]—[/{theme.text_ghost}]"
+    title = Text()
+    title.append(" SESSIONS ", style=f"bold {theme.bg_primary} on {theme.text_secondary}")
+    if total > 5:
+        title.append(f"   {total} total · 5 most recent", style=theme.text_ghost)
 
-            # Status
-            sc = _sc(str(m.status))
-            status_text = f"[{sc}]{m.status}[/{sc}]"
+    return Panel(
+        table,
+        title=title,
+        title_align="left",
+        box=box.ROUNDED,
+        border_style=theme.border_dim,
+        style=f"on {theme.tint_neutral}",
+        padding=(0, 1),
+        expand=True,
+    )
 
-            # Pipeline
-            pipe = (
-                f"{_dot(m.capture_completed)} C "
-                f"{_dot(m.validation_completed)} V "
-                f"{_dot(m.report_completed)} R"
-            )
 
-            # Results
-            if m.validation_completed:
-                results = (
-                    f"[{theme.success}]{m.pass_count}[/{theme.success}]✓ "
-                    f"[{theme.error}]{m.fail_count}[/{theme.error}]✗"
-                )
-            else:
-                results = f"[{theme.text_ghost}]—[/{theme.text_ghost}]"
+# ══════════════════════════════════════════════════════════════════
+# FOOTER
+# ══════════════════════════════════════════════════════════════════
 
-            # Updated
-            updated = f"[{theme.text_ghost}]{_time_ago(m.updated_at)}[/{theme.text_ghost}]"
-
-            sessions_table.add_row(
-                marker, name_text, env_text, org_text,
-                rs_text, status_text, pipe, results, updated,
-            )
-
-        # Title with count
-        total = len(all_sessions)
-        title_suffix = f"  [{theme.text_ghost}]({total} total — showing 5 most recent)[/{theme.text_ghost}]" if total > 5 else ""
-
-        console.print(Panel(
-            Group(
-                Text.from_markup(
-                    f"  [bold {theme.text_secondary}]Sessions[/bold {theme.text_secondary}]"
-                    f"{title_suffix}"
-                ),
-                sessions_table,
-            ),
-            box=box.ROUNDED,
-            border_style=theme.border_dim,
-            style=f"on {theme.tint_neutral}",
-            padding=(1, 0),
-            expand=True,
-        ))
-
-    # ═══════════════════════════════════════════════════════════════
-    # QUICK SWITCH & HELP FOOTER
-    # ═══════════════════════════════════════════════════════════════
-    sep = f"  [{theme.text_ghost}]│[/{theme.text_ghost}]  "
+def _build_footer() -> Panel:
+    """Quick-switch and help command lanes, separated by light dot bullets."""
+    sep = f"  [{theme.text_ghost}]·[/{theme.text_ghost}]  "
 
     switch_cmds = sep.join([
         f"[{theme.primary}]session switch[/{theme.primary}]",
@@ -428,16 +625,55 @@ def show_dashboard():
         f"[{theme.primary}]guide[/{theme.primary}]",
     ])
 
-    footer_text = (
-        f"[{theme.text_dim}]Quick:[/{theme.text_dim}]   {switch_cmds}\n"
-        f"[{theme.text_dim}]Help:[/{theme.text_dim}]    {help_cmds}"
+    body = (
+        f"[{theme.text_ghost}]quick[/{theme.text_ghost}]   {switch_cmds}\n"
+        f"[{theme.text_ghost}]help[/{theme.text_ghost}]    {help_cmds}"
     )
 
-    console.print(Panel(
-        footer_text,
+    return Panel(
+        body,
         box=box.SIMPLE,
+        border_style=theme.border_ghost,
         style=f"on {theme.tint_neutral}",
         padding=(0, 2),
         expand=True,
-    ))
+    )
+
+
+# ══════════════════════════════════════════════════════════════════
+# MAIN ENTRY POINT
+# ══════════════════════════════════════════════════════════════════
+
+def show_dashboard():
+    """Show Atlas info dashboard when no arguments provided."""
+    console.clear()
+
+    session_mgr = get_session_manager()
+
+    # Banner
+    console.print(_build_banner())
+
+    # Active session hero (or getting-started panel)
+    try:
+        active_session = session_mgr.get_active()
+    except NoActiveSessionError:
+        active_session = None
+
+    if active_session:
+        console.print(_build_hero(active_session))
+        warning_panel = _build_warnings(active_session)
+        if warning_panel is not None:
+            console.print(warning_panel)
+    else:
+        all_sessions_for_gs = session_mgr.list()
+        console.print(_build_getting_started(has_sessions=bool(all_sessions_for_gs)))
+
+    # Recent sessions table
+    all_sessions = session_mgr.list()
+    if all_sessions:
+        active_name = session_mgr.get_active_session_name()
+        console.print(_build_sessions_panel(all_sessions, active_name))
+
+    # Footer
+    console.print(_build_footer())
     console.print()

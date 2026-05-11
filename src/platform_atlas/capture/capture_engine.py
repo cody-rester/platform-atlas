@@ -7,7 +7,6 @@ from __future__ import annotations
 import logging
 from time import time
 from collections.abc import Mapping
-from socket import gethostname
 from typing import Any, Callable, TypeVar, Iterator
 from contextlib import AbstractContextManager
 from datetime import datetime, timezone
@@ -16,7 +15,6 @@ from rich.console import Console
 from rich.live import Live
 
 # ATLAS Imports
-from platform_atlas.core._version import __version__
 
 from platform_atlas.core.context import ctx
 from platform_atlas.core.config import Config
@@ -162,7 +160,6 @@ def execute_module(
         func: Callable,
         state: CaptureState,
         results: dict[str, Any],
-        manifest: dict[str, Any],
         warning_capture: WarningCapture,
         debug: bool = False,
 ) -> bool:
@@ -178,7 +175,6 @@ def execute_module(
 
         duration_ms = (time() - start_time) * 1000
         results[name] = result
-        manifest[name] = "successful"
         state.complete_module(name, duration_ms, result)
 
         # Process any warnings that occurred during this module
@@ -190,7 +186,6 @@ def execute_module(
         error_msg = f"{type(e).__name__}: {e}"
 
         results[name] = {}
-        manifest[name] = f"failed: {error_msg}"
         state.fail_module(name, error_msg, duration_ms)
         logger.debug("Module %s failed: %s", name, error_msg, exc_info=True)
         return False
@@ -202,7 +197,7 @@ def _resolve_modules(
         log_until=None,
 ) -> ResolvedModules:
     """Discover targets, build collectors, and filter to user selection"""
-    state = CaptureState()
+    target_errors: list[tuple[str, str]] = []
 
     targets = config.targets or [{"name": "local", "transport": "local"}]
     all_modules: dict[str, Callable] = {}
@@ -219,7 +214,7 @@ def _resolve_modules(
             )
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e}"
-            state.errors.append((target_name, error_msg))
+            target_errors.append((target_name, error_msg))
             logger.debug("Skipping target '%s': %s", target_name, error_msg)
             continue
 
@@ -246,18 +241,8 @@ def _resolve_modules(
         is_subset=is_subset,
         deferred_ssh_modules=tuple(all_deferred),
         ssh_fallbacks=all_ssh_fallbacks,
+        target_errors=target_errors,
     )
-
-def _init_manifest() -> dict[str, Any]:
-    """Build the initial manifest metadata dict"""
-    return {
-        "manifest": {
-            "version": "atlas/1.0",
-            "atlas": __version__,
-            "created": str(round(time()*1000)),
-            "hostname": gethostname()
-        }
-    }
 
 def finalize_capture(
     structured_data: dict[str, Any],
@@ -265,6 +250,7 @@ def finalize_capture(
     ruleset: Any,
     config: Any,
     modules_ran: list[str],
+    failed_modules: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """
     Post-process structured capture data into final capture format.
@@ -272,7 +258,23 @@ def finalize_capture(
     Takes the reshaped (nested) capture data, filters by ruleset paths,
     then injects Atlas metadata and derived adapter/application data.
     """
-    limited = filter_capture_by_rules(structured_data, rules)
+    # Sections that ride along with the filtered output regardless of whether
+    # specific rule paths reference them. These either feed the operational/
+    # diff renderers or back ``alt_path`` fallbacks during validation.
+    _PASSTHROUGH = (
+        "redis.runtime_config",
+        "redis.sentinel_runtime",
+        "gateway4.runtime_config",
+        "gateway4.api_status",
+        "platform.log_analysis",
+        "platform.webserver_logs",
+        "mongo.log_analysis",
+    )
+    limited = filter_capture_by_rules(
+        structured_data,
+        rules,
+        passthrough_paths=list(_PASSTHROUGH),
+    )
 
     # ── Atlas internal metadata (under _atlas prefix) ─────────────
     system_data = structured_data.get("system", {})
@@ -287,7 +289,9 @@ def finalize_capture(
             "ruleset_version": ruleset.ruleset["version"],
             "ruleset_profile": ctx().manager.get_active_profile_id() or "",
             "modules_ran": modules_ran,
+            "failed_modules": failed_modules or [],
             "captured_at": timestamp,
+            "tier": config.tier,
         },
     }
 
@@ -335,33 +339,6 @@ def finalize_capture(
     except Exception as e:
         logger.debug("Redis ACL extraction failed: %s", e)
 
-    # ── Redis runtime config (CONFIG GET fallback for alt_path) ──
-    try:
-        runtime_config = structured_data.get("redis", {}).get("runtime_config")
-        if runtime_config:
-            limited.setdefault("redis", {})["runtime_config"] = runtime_config
-    except Exception as e:
-        logger.debug("Redis runtime config passthrough failed: %s", e)
-
-    # ── Sentinel runtime config (SENTINEL MASTERS fallback) ──────
-    try:
-        sentinel_runtime = structured_data.get("redis", {}).get("sentinel_runtime")
-        if sentinel_runtime:
-            limited.setdefault("redis", {})["sentinel_runtime"] = sentinel_runtime
-    except Exception as e:
-        logger.debug("Sentinel runtime config passthrough failed: %s", e)
-
-    # ── Gateway4 API runtime config (ipsdk fallback for alt_path) ─
-    try:
-        gw4_runtime = structured_data.get("gateway4", {}).get("runtime_config")
-        if gw4_runtime:
-            limited.setdefault("gateway4", {})["runtime_config"] = gw4_runtime
-        gw4_status = structured_data.get("gateway4", {}).get("api_status")
-        if gw4_status:
-            limited.setdefault("gateway4", {})["api_status"] = gw4_status
-    except Exception as e:
-        logger.debug("Gateway4 API passthrough failed: %s", e)
-
     # ── Replica set derivation (manual capture path) ──────────────
     try:
         mongo_data = limited.get("mongo", {})
@@ -397,22 +374,6 @@ def finalize_capture(
     except Exception as e:
         logger.debug("Gateway4 path extraction failed: %s", e)
 
-    # ── Log data passthrough ──────────────────────────────────────
-    try:
-        log_analysis = structured_data.get("platform", {}).get("log_analysis")
-        if log_analysis:
-            limited.setdefault("platform", {})["log_analysis"] = log_analysis
-
-        webserver_logs = structured_data.get("platform", {}).get("webserver_logs")
-        if webserver_logs:
-            limited.setdefault("platform", {})["webserver_logs"] = webserver_logs
-
-        mongo_log_analysis = structured_data.get("mongo", {}).get("log_analysis")
-        if mongo_log_analysis:
-            limited.setdefault("mongo", {})["log_analysis"] = mongo_log_analysis
-    except Exception as e:
-        logger.debug("Log data passthrough failed: %s", e)
-
     # ── Standalone checks passthrough ────────────────────────────
     # The checks section (python_version, etc.) contains small dicts
     # from standalone collectors.  Passthrough the full section so
@@ -432,6 +393,225 @@ def finalize_capture(
 # Main Capture Orchestrator
 # =================================================
 
+# Specs driving the interactive retry-with-custom-path flow for each log
+# module. Same pattern for all three — only the wording, env-override field,
+# and collector kwarg name differ. Kept here so capture_engine, the WebUI
+# service, and tests share one source of truth.
+LOG_MODULE_RETRY_SPECS: dict[str, dict[str, str]] = {
+    "platform_logs": {
+        "label": "Platform log capture",
+        "kind_label": "Platform log directory",
+        "instruction": "(absolute path, e.g. /opt/itential/log) ",
+        "hint": (
+            "The default log directory was unreachable or contained no "
+            ".log files. You can supply a custom path and retry."
+        ),
+        "env_field": "log_path_override",
+        "collector_method": "get_platform_logs",
+        "path_kwarg": "log_dir",
+    },
+    "webserver_logs": {
+        "label": "Webserver log capture",
+        "kind_label": "Webserver log file",
+        "instruction": "(absolute file path, e.g. /var/log/itential/platform/webserver.log) ",
+        "hint": (
+            "The default webserver log file was unreachable or unreadable. "
+            "You can supply a custom file path and retry."
+        ),
+        "env_field": "webserver_log_path_override",
+        "collector_method": "get_webserver_logs",
+        "path_kwarg": "log_path",
+    },
+    "mongo_logs": {
+        "label": "MongoDB log capture",
+        "kind_label": "MongoDB log file",
+        "instruction": "(absolute file path, e.g. /var/log/mongodb/mongod.log) ",
+        "hint": (
+            "The default MongoDB log file was unreachable or unreadable. "
+            "You can supply a custom file path and retry."
+        ),
+        "env_field": "mongo_log_path_override",
+        "collector_method": "get_mongo_logs",
+        "path_kwarg": "log_path",
+    },
+}
+
+
+def retry_log_module_with_custom_path(
+        *,
+        module_name: str,
+        target_dict: dict,
+        custom_path: str,
+        log_since,
+        log_until,
+) -> dict[str, Any]:
+    """Run the collector for ``module_name`` against ``custom_path`` once.
+
+    Pure I/O — no UI, no state mutation. Returns the collector's raw result
+    so callers (CLI retry prompt, WebUI retry endpoint) can decide how to
+    surface success/failure. Raises whatever the collector raises on
+    failure; the caller is responsible for handling exceptions.
+    """
+    spec = LOG_MODULE_RETRY_SPECS.get(module_name)
+    if spec is None:
+        raise ValueError(f"No retry spec for module '{module_name}'")
+
+    from platform_atlas.core.transport import transport_from_config
+    from platform_atlas.capture.collectors.filesystem import FileSystemInfoCollector
+
+    transport = None
+    try:
+        transport = transport_from_config(target_dict)
+        fs = FileSystemInfoCollector(transport=transport)
+        collector_method = getattr(fs, spec["collector_method"])
+        kwargs = {
+            "since": log_since,
+            "until": log_until,
+            spec["path_kwarg"]: custom_path,
+        }
+        return collector_method(**kwargs)
+    finally:
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
+
+
+def _target_for_module(
+        module_name: str,
+        resolved: ResolvedModules,
+        config: Config,
+) -> dict | None:
+    """Look up the target dict that owned ``module_name`` during capture."""
+    _, target_name = resolved.transport_map.get(module_name, ("ssh", ""))
+    for t in (config.targets or []):
+        if t.get("name") == target_name:
+            return t
+    return None
+
+
+def find_target_for_log_module(
+        module_name: str,
+        config: Config,
+) -> dict | None:
+    """Resolve modules against ``config`` and return the target that would
+    have hosted ``module_name`` during capture.
+
+    Public wrapper around ``_resolve_modules`` + ``_target_for_module`` so
+    post-capture consumers (the WebUI retry endpoint, future tooling) can
+    rebuild transports without depending on private engine helpers.
+    """
+    resolved = _resolve_modules(config, user_modules=None)
+    return _target_for_module(module_name, resolved, config)
+
+
+def _retry_log_module_with_prompt(
+        *,
+        module_name: str,
+        state: CaptureState,
+        resolved: ResolvedModules,
+        config: Config,
+        full_capture_json: dict[str, Any],
+        log_since,
+        log_until,
+) -> None:
+    """Interactive post-capture retry flow for one failed log module.
+
+    Triggered after main capture when ``module_name`` is in FAILED state
+    and we're running interactively. Asks the user for a custom path,
+    re-runs the collector, patches the flat capture JSON on success, and
+    optionally persists the path to the active environment so subsequent
+    captures pick it up automatically.
+    """
+    import questionary
+
+    spec = LOG_MODULE_RETRY_SPECS[module_name]
+    failure_msg = (state.modules[module_name].error_message or "").strip()
+    console.print()
+    console.print(
+        f"[bold {theme.warning}]{spec['label']} failed[/bold {theme.warning}]"
+    )
+    if failure_msg:
+        console.print(f"  [{theme.text_dim}]{failure_msg}[/{theme.text_dim}]")
+    console.print(f"  [{theme.text_dim}]{spec['hint']}[/{theme.text_dim}]")
+
+    if not questionary.confirm(
+        f"Retry with a custom {spec['kind_label'].lower()}?",
+        default=True,
+    ).ask():
+        return
+
+    target_dict = _target_for_module(module_name, resolved, config)
+    if target_dict is None:
+        _, target_name = resolved.transport_map.get(module_name, ("ssh", ""))
+        console.print(
+            f"  [{theme.error}]Could not locate target '{target_name}' "
+            f"to retry against.[/{theme.error}]"
+        )
+        return
+
+    custom_path = (questionary.text(
+        f"Custom {spec['kind_label']}:",
+        instruction=spec["instruction"],
+    ).ask() or "").strip()
+    if not custom_path:
+        console.print(f"  [{theme.text_dim}]Cancelled[/{theme.text_dim}]")
+        return
+
+    try:
+        retry_result = retry_log_module_with_custom_path(
+            module_name=module_name,
+            target_dict=target_dict,
+            custom_path=custom_path,
+            log_since=log_since,
+            log_until=log_until,
+        )
+    except Exception as exc:  # noqa: BLE001
+        console.print(
+            f"  [{theme.error}]Retry failed: {type(exc).__name__}: {exc}[/{theme.error}]"
+        )
+        return
+
+    full_capture_json[module_name] = retry_result
+    state.start_module(module_name)
+    state.complete_module(module_name, duration_ms=0)
+    console.print(
+        f"  [{theme.success}]✓ Recovered {module_name} from "
+        f"[bold]{custom_path}[/bold][/{theme.success}]"
+    )
+
+    # Auto-persist the working path to the active environment so the next
+    # capture picks it up without re-prompting. Skipped only when there's
+    # no active env (nothing to write to) — the path stayed in this run's
+    # capture either way.
+    active_env = getattr(config, "active_environment", None)
+    if not active_env:
+        console.print(
+            f"  [{theme.text_dim}]No active environment — path was not "
+            f"persisted. Set --env or activate one to remember this choice.[/{theme.text_dim}]"
+        )
+        return
+
+    env_field = spec["env_field"]
+    try:
+        from platform_atlas.core.environment import get_environment_manager
+        mgr = get_environment_manager()
+        env = mgr.load(active_env)
+        setattr(env, env_field, custom_path)
+        mgr.save(env)
+        console.print(
+            f"  [{theme.success}]✓ Saved {env_field} to "
+            f"[bold]{active_env}[/bold] — future captures will use this path "
+            f"automatically.[/{theme.success}]"
+        )
+    except Exception as exc:  # noqa: BLE001
+        console.print(
+            f"  [{theme.error}]Could not save to env: "
+            f"{type(exc).__name__}: {exc}[/{theme.error}]"
+        )
+
+
 def run_capture(
         user_modules: list[str] | None = None,
         skip_guided: bool = False,
@@ -439,8 +619,14 @@ def run_capture(
         headless: bool = False,
         log_since=None,
         log_until=None,
+        on_raw_capture: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Orchestrator for capture modules"""
+
+    # Shadow the module-level console with a quiet one when running headless
+    # (WebUI jobs) so the Rich Live panels and progress output don't bleed into
+    # the server's stdout/terminal.
+    console = Console(quiet=headless)  # noqa: F841 — intentional local shadow
 
     # Initialize Atlas Context
     config = ctx().config
@@ -452,9 +638,10 @@ def run_capture(
     state.begin()
     capture_ui = CaptureUI(state)
 
-    # Initialize data structures
+    # Initialize data structures. Per-module status lives in ``state.modules``
+    # (CaptureState); the parallel ``manifest`` dict that used to be built
+    # here was redundant and never reached the output, so it was removed.
     full_capture_json: dict[str, Any] = {}
-    manifest = _init_manifest()
 
     with WarningCapture(state) as warning_capture:
         resolved = _resolve_modules(config, user_modules, log_since=log_since, log_until=log_until)
@@ -464,12 +651,12 @@ def run_capture(
         # Guard: if all targets failed, nothing to capture
         if not resolved.modules:
             console.print(f"\n[bold {theme.error}]No modules available to run[/bold {theme.error}]")
-            if state.errors:
+            if resolved.target_errors:
                 console.print(f"[{theme.warning}]Target errors:[/{theme.warning}]")
-                for err in state.errors:
+                for err in resolved.target_errors:
                     console.print(f"  • {err}")
             console.print(f"\n[{theme.text_dim}]Check connectivity with 'platform-atlas preflight' and try again[/{theme.text_dim}]\n")
-            return {"errors": state.errors}
+            return {"errors": resolved.target_errors}
 
         # Collect all module names first
         module_list = list(iter_module_functions(resolved.modules))
@@ -480,36 +667,91 @@ def run_capture(
             module_list = [(name, func) for name, func in module_list if name not in log_modules]
             logger.debug("Skipping log modules (--skip-logs)")
 
+        # Modules whose connection type depends on which transport the target uses
+        # (system, filesystem, etc.). Protocol collectors always use their own
+        # label regardless of transport. For these, preserve "local" when the
+        # target is a local-transport node instead of overriding with "ssh".
+        _TRANSPORT_BOUND = frozenset({"system", "filesystem", "gateway4", "gateway5", "mongo_logs"})
+
         for name, _ in module_list:
             transport_kind, target_name = resolved.transport_map.get(name, ("ssh", "unknown"))
-            transport_kind = COLLECTOR_TRANSPORT.get(name, transport_kind)
+            if name not in _TRANSPORT_BOUND or transport_kind != "local":
+                transport_kind = COLLECTOR_TRANSPORT.get(name, transport_kind)
             state.register_module(
                 name,
                 transport_type=transport_kind,
                 target_name=target_name,
             )
 
-        # Print Capture Headers
-        show_premium_header()
+        # Print Capture Headers (CLI only — suppressed in headless/WebUI mode)
+        if not headless:
+            show_premium_header()
         console.print()
 
-        # Execute modules with Rich Live display and warning capture
-        with Live(capture_ui.render(), console=console, refresh_per_second=10, transient=False) as live:
-            for name, func in module_list:
-                # Mark as running and update the display BEFORE executing
-                state.start_module(name)
-                live.update(capture_ui.render())
+        # Execute modules with Rich Live display and warning capture.
+        #
+        # Targets are independent — running them in parallel across separate
+        # SSH connections / protocol clients halves wall-clock time on
+        # multi-node topologies. Within a target we keep order so the
+        # transport (paramiko, pymongo, redis-py) doesn't have to be
+        # re-entered concurrently — most aren't thread-safe per connection.
+        from collections import defaultdict
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Lock
 
+        groups: dict[str, list[tuple[str, Callable]]] = defaultdict(list)
+        for name, func in module_list:
+            _, target_name = resolved.transport_map.get(name, ("ssh", "local"))
+            groups[target_name].append((name, func))
+
+        results_lock = Lock()
+        # Cap concurrency at 8 so a 50-node topology doesn't open 50 SSH
+        # connections at once — keeps memory and FD count bounded.
+        max_workers = min(8, max(1, len(groups)))
+
+        def _run_target_group(items: list[tuple[str, Callable]]) -> None:
+            for name, func in items:
+                with results_lock:
+                    state.start_module(name)
+                # execute_module mutates ``state`` and ``results`` — both are
+                # safe under the lock; the heavy I/O happens outside it.
+                local_results: dict[str, Any] = {}
                 execute_module(
                     name=name,
                     func=func,
                     state=state,
-                    results=full_capture_json,
-                    manifest=manifest,
+                    results=local_results,
                     warning_capture=warning_capture,
                     debug=config.debug,
                 )
-                live.update(capture_ui.render())
+                with results_lock:
+                    full_capture_json.update(local_results)
+
+        with Live(capture_ui.render(), console=console, refresh_per_second=10, transient=False) as live:
+            if max_workers == 1:
+                # Single target — keep the simple path so semantics match
+                # exactly when there's no parallelism to gain.
+                for items in groups.values():
+                    _run_target_group(items)
+                    live.update(capture_ui.render())
+            else:
+                with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="atlas-cap") as ex:
+                    futures = [ex.submit(_run_target_group, items) for items in groups.values()]
+                    while not all(f.done() for f in futures):
+                        live.update(capture_ui.render())
+                        # Coarse refresh — Rich's own refresh_per_second handles fine cadence.
+                        try:
+                            for f in futures:
+                                if f.done():
+                                    f.result(timeout=0)
+                        except Exception:
+                            pass
+                        time_module = __import__("time")
+                        time_module.sleep(0.1)
+                    # Surface any worker exceptions deterministically.
+                    for f in futures:
+                        f.result()
+            live.update(capture_ui.render())
 
         console.print()
 
@@ -555,6 +797,16 @@ def run_capture(
             except Exception:
                 # If topology access fails, be safe and remove gateway4
                 _PROTOCOL_CONF.pop("gateway4_conf", None)
+
+        # Only verify conf data for collectors that actually ran. In Standard
+        # tier, mongo and redis collectors are never registered, so mongo_conf
+        # and redis_conf must not be treated as failures — they are simply not
+        # part of a Standard capture.
+        _ran_module_names = set(resolved.modules.keys())
+        _PROTOCOL_CONF = {
+            k: v for k, v in _PROTOCOL_CONF.items()
+            if v[0] in _ran_module_names
+        }
 
         _is_k8s = config.is_kubernetes
         for conf_name, (source_key, data_key, desc) in _PROTOCOL_CONF.items():
@@ -610,6 +862,34 @@ def run_capture(
                     duration_ms=0,
                 )
 
+        # ========= LOG PATH RETRY (interactive) =========
+        # When a log module failed because its default path was missing,
+        # unreadable, or empty, give the user one inline shot at re-running
+        # with a custom path before we hand off to file-based guided recovery.
+        # Skipped in headless / --skip-guided so WebUI jobs and CI runs stay
+        # non-interactive — the WebUI surfaces its own retry UI on the
+        # session detail page using the persisted ``failed_modules`` metadata.
+        if not skip_guided and not headless:
+            for _log_module in LOG_MODULE_RETRY_SPECS:
+                if (
+                    _log_module in state.modules
+                    and state.modules[_log_module].status == ModuleStatus.FAILED
+                ):
+                    try:
+                        _retry_log_module_with_prompt(
+                            module_name=_log_module,
+                            state=state,
+                            resolved=resolved,
+                            config=config,
+                            full_capture_json=full_capture_json,
+                            log_since=log_since,
+                            log_until=log_until,
+                        )
+                    except KeyboardInterrupt:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("%s retry helper failed: %s", _log_module, exc)
+
         # ========= GUIDED FALLBACK FOR FAILED MODULES =========
         if not skip_guided and not headless and state.failed_count > 0:
             from platform_atlas.capture.guided_collector import recover_failed_modules
@@ -633,6 +913,17 @@ def run_capture(
         # ========= RESHAPE INTO NESTED HIERARCHY =========
         structured = reshape_capture(full_capture_json)
 
+        # ========= DEBUG RAW EXPORT =========
+        # Fire after reshape, before filter — callers use this to drop
+        # 01_raw_capture.json with the same nested shape rules consume but
+        # without ruleset-based pruning, so rule authors can trace any
+        # dot-notation path that came back from the collectors.
+        if on_raw_capture is not None:
+            try:
+                on_raw_capture(structured)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Raw capture export callback failed: %s", exc)
+
         # ========= FINALIZE =========
         limited_capture_json = finalize_capture(
             structured_data=structured,
@@ -640,6 +931,7 @@ def run_capture(
             ruleset=ruleset,
             config=config,
             modules_ran=state.successful_module_names,
+            failed_modules=state.failed_modules_summary,
         )
 
         return limited_capture_json

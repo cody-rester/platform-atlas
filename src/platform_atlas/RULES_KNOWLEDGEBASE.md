@@ -3,6 +3,15 @@
 > This document serves as the authoritative reference for all Platform Atlas
 > validation rules.
 
+## Tier coverage
+
+Each rule belongs to a category, and each category maps to a tier:
+
+- **Standard tier** evaluates rules in the `platform` and `gateway4` categories that are not explicitly tagged `tier: extended` (~55 rules — application-only).
+- **Extended tier** evaluates every rule (~108 rules — application plus Mongo, Redis, system, filesystem, Kubernetes, and the SSH-derived Gateway4 checks like sync_config and db_sizes).
+
+Rules that depend on Extended-only capture data are filtered out before evaluation in Standard mode, not skipped at runtime.
+
 ---
 
 # PLAT-001: Platform Default User
@@ -636,6 +645,19 @@ Validates if TLS is enabled for Redis
 2. Locate or add the option named `redis_tls`.
 3. Set the value to an empty object of `{}`.
 4. Restart the platform for the change to take effect.
+
+# PLAT-048: Template Builder Execution Timeout
+
+## Purpose
+
+Validate Template Builder execution timeout is not set too high
+
+## How to Fix
+
+1. In Admin Essentials, open the Application settings for Template Builder
+2. Locate the setting for `templateExecutionTimeout`
+3. Either remove this setting completely, or adjust it to 10 seconds or less.
+4. Restart the Template Builder Application for the change to take effect.
 
 # IAG-001: Logging Level
 

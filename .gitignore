@@ -99,6 +99,12 @@ poetry.toml
 tests/
 BACKUP/
 design/
+webui/
+scripts/
+
+# Vendored Tailwind v4 standalone CLI binary — platform-specific, large,
+# downloaded by scripts/tailwind-install.sh on each dev machine.
+bin/
 
 # Claude
 .claude/

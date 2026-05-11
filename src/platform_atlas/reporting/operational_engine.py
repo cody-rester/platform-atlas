@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Callable
 
 from rich.console import Console
 
@@ -154,9 +154,14 @@ class OperationalReport:
 def run_operational_pipelines(
     collector: MongoCollector,
     pipeline_dir: Path | None = None,
+    pipeline_names: list[str] | None = None,
+    *,
+    on_pipeline_start: Callable[[int, int, Pipeline], None] | None = None,
+    on_pipeline_complete: Callable[[int, int, "PipelineResult"], None] | None = None,
+    use_console: bool = True,
 ) -> OperationalReport:
     """
-    Discover and execute all operational pipelines.
+    Discover and execute operational pipelines.
 
     Shows per-pipeline progress to the user and handles Ctrl+C
     gracefully — any pipelines that completed before the interrupt
@@ -166,6 +171,19 @@ def run_operational_pipelines(
     Args:
         collector: An already-connected MongoCollector instance.
         pipeline_dir: Override pipeline directory (defaults to ATLAS_PIPELINES_DIR).
+        pipeline_names: When provided, only pipelines whose ``name`` appears in
+            this list are executed. Pass ``None`` (the default) to run all
+            discovered pipelines.
+        on_pipeline_start: Optional callback fired before each pipeline runs,
+            invoked as ``(idx, total, pipeline)``. Used by non-CLI callers
+            (e.g. WebUI) to mirror the per-pipeline progress the Rich console
+            shows in the terminal.
+        on_pipeline_complete: Optional callback fired after each pipeline
+            finishes, invoked as ``(idx, total, result)``. Receives the same
+            ``PipelineResult`` that's added to the report.
+        use_console: When False, suppresses the Rich console output (banner +
+            spinners + status lines). Non-CLI callers set this to False so the
+            spinner doesn't fight with their own progress display.
 
     Returns:
         OperationalReport with results from each pipeline.
@@ -174,6 +192,10 @@ def run_operational_pipelines(
     directory = pipeline_dir or ATLAS_PIPELINES_DIR
     pipelines = discover_pipelines(directory)
 
+    if pipeline_names:
+        name_set = set(pipeline_names)
+        pipelines = [p for p in pipelines if p.name in name_set]
+
     if not pipelines:
         logger.warning("No operational pipelines found in %s", directory)
         return OperationalReport()
@@ -181,29 +203,43 @@ def run_operational_pipelines(
     total = len(pipelines)
     logger.info("Found %d operational pipeline(s) in %s", total, directory)
 
-    console.print(
-        f"  [{theme.text_dim}]Running {total} pipeline(s) from {directory}[/{theme.text_dim}]"
-    )
-    console.print(
-        f"  [{theme.text_dim}]Press Ctrl+C to cancel — completed pipelines will be kept[/{theme.text_dim}]\n"
-    )
+    if use_console:
+        console.print(
+            f"  [{theme.text_dim}]Running {total} pipeline(s) from {directory}[/{theme.text_dim}]"
+        )
+        console.print(
+            f"  [{theme.text_dim}]Press Ctrl+C to cancel — completed pipelines will be kept[/{theme.text_dim}]\n"
+        )
 
     report = OperationalReport()
 
     for idx, pipeline in enumerate(pipelines, 1):
         prefix = f"  [{idx}/{total}]"
 
+        if on_pipeline_start is not None:
+            try:
+                on_pipeline_start(idx, total, pipeline)
+            except Exception:  # noqa: BLE001 — observer must never break the loop
+                logger.exception("on_pipeline_start callback raised")
+
         try:
-            result = _execute_pipeline(collector, pipeline, prefix)
+            result = _execute_pipeline(collector, pipeline, prefix, use_console=use_console)
         except KeyboardInterrupt:
-            console.print(
-                f"\n  [{theme.warning}]Cancelled by user after "
-                f"{report.pipeline_count}/{total} pipeline(s)[/{theme.warning}]"
-            )
+            if use_console:
+                console.print(
+                    f"\n  [{theme.warning}]Cancelled by user after "
+                    f"{report.pipeline_count}/{total} pipeline(s)[/{theme.warning}]"
+                )
             report.cancelled = True
             break
 
         report.add(result)
+
+        if on_pipeline_complete is not None:
+            try:
+                on_pipeline_complete(idx, total, result)
+            except Exception:  # noqa: BLE001
+                logger.exception("on_pipeline_complete callback raised")
 
     logger.info(
         "Operational pipelines complete: %d/%d succeeded (%d total rows)",
@@ -256,6 +292,8 @@ def _execute_pipeline(
     collector: MongoCollector,
     pipeline: Pipeline,
     prefix: str = "",
+    *,
+    use_console: bool = True,
 ) -> PipelineResult:
     """Execute a single pipeline with a spinner and status output.
 
@@ -264,14 +302,26 @@ def _execute_pipeline(
     showing row count and duration. If the user presses Ctrl+C during
     execution, the KeyboardInterrupt propagates up to the main loop
     which decides whether to keep partial results.
+
+    When ``use_console`` is False, the Rich spinner and status print are
+    suppressed — used by non-CLI callers (e.g. WebUI) that drive their own
+    progress display via the callbacks on :func:`run_operational_pipelines`.
     """
     start = perf_counter()
 
-    with console.status(
-        f"{prefix} [bold]{pipeline.name}[/bold]  "
-        f"[{theme.text_dim}]→ {pipeline.collection}[/{theme.text_dim}]",
-        spinner="dots",
-    ):
+    # Wrap with the spinner only when we actually want terminal UI; otherwise
+    # use a no-op context so the rest of the body stays identical.
+    if use_console:
+        status_cm = console.status(
+            f"{prefix} [bold]{pipeline.name}[/bold]  "
+            f"[{theme.text_dim}]→ {pipeline.collection}[/{theme.text_dim}]",
+            spinner="dots",
+        )
+    else:
+        from contextlib import nullcontext
+        status_cm = nullcontext()
+
+    with status_cm:
         try:
             rows = collector.run_pipeline(pipeline)
             duration = (perf_counter() - start) * 1000
@@ -281,10 +331,11 @@ def _execute_pipeline(
                 pipeline.name, len(rows), duration,
             )
 
-            console.print(
-                f"{prefix} [{theme.success}]✓[/{theme.success}] {pipeline.name}  "
-                f"[{theme.text_dim}]{len(rows)} rows · {duration:.0f} ms[/{theme.text_dim}]"
-            )
+            if use_console:
+                console.print(
+                    f"{prefix} [{theme.success}]✓[/{theme.success}] {pipeline.name}  "
+                    f"[{theme.text_dim}]{len(rows)} rows · {duration:.0f} ms[/{theme.text_dim}]"
+                )
 
             return PipelineResult(
                 name=pipeline.name,
@@ -299,10 +350,11 @@ def _execute_pipeline(
             # Re-raise so the outer loop handles it — print a
             # cancellation note so the spinner doesn't leave a gap
             duration = (perf_counter() - start) * 1000
-            console.print(
-                f"{prefix} [{theme.warning}]⚠[/{theme.warning}] {pipeline.name}  "
-                f"[{theme.text_dim}]cancelled after {duration:.0f} ms[/{theme.text_dim}]"
-            )
+            if use_console:
+                console.print(
+                    f"{prefix} [{theme.warning}]⚠[/{theme.warning}] {pipeline.name}  "
+                    f"[{theme.text_dim}]cancelled after {duration:.0f} ms[/{theme.text_dim}]"
+                )
             raise
 
         except Exception as e:
@@ -312,10 +364,11 @@ def _execute_pipeline(
             # Full details go to the log file only — not the console
             logger.debug("Pipeline '%s' failed after %.1f ms: %s", pipeline.name, duration, e)
 
-            console.print(
-                f"{prefix} [{theme.error}]✗[/{theme.error}] {pipeline.name}  "
-                f"[{theme.text_dim}]{friendly} ({duration:.0f} ms)[/{theme.text_dim}]"
-            )
+            if use_console:
+                console.print(
+                    f"{prefix} [{theme.error}]✗[/{theme.error}] {pipeline.name}  "
+                    f"[{theme.text_dim}]{friendly} ({duration:.0f} ms)[/{theme.text_dim}]"
+                )
 
             return PipelineResult(
                 name=pipeline.name,

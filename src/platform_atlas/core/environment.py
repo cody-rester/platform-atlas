@@ -34,14 +34,19 @@ __all__ = [
     "Environment",
     "EnvironmentManager",
     "get_environment_manager",
+    "propagate_ssh_key",
     "resolve_active_environment",
     "ensure_valid_environment",
 ]
 
 logger = logging.getLogger(__name__)
 
-# Valid environment name: alphanumeric, hyphens, underscores, 1-64 chars
-_ENV_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]?$")
+# Valid environment name: any printable string up to 128 chars, but never
+# anything that would break the filesystem (path separators, null bytes) or
+# look like a parent-dir trick. Spaces, capitals, mixed case, and unicode
+# are all allowed — the env name shows up in UIs verbatim and is fine on
+# any reasonable filesystem.
+_ENV_NAME_FORBIDDEN = ("/", "\\", "\x00", "..")
 
 
 @dataclass
@@ -52,6 +57,12 @@ class Environment:
     Stored as ~/.atlas/environments/<n>.json.
     Contains all the connection and topology details that were previously
     embedded directly in config.json.
+
+    Standard-tier environments only require ``platform_uri`` and
+    ``platform_client_id`` (and optionally ``gateway4_uri`` /
+    ``gateway4_username``). All Extended-only fields (deployment topology,
+    Kubernetes paths, etc.) are left at their defaults and ignored by
+    Standard-tier capture flows.
     """
     name: str
     description: str = ""
@@ -63,6 +74,33 @@ class Environment:
     legacy_profile: str | None = ""
     gateway4_uri: str = ""
     gateway4_username: str = ""
+    # Tier — overlays the global config.tier when this env is active.
+    # Stored as None when not explicitly set so it stays out of the overlay
+    # and the global default is preserved.
+    tier: str | None = None
+    # SSH key path — applies to all SSH-connected nodes in this environment.
+    # Stored here as a top-level convenience field; propagated into
+    # deployment.ssh_defaults.key_path and each node's ssh_key when saved
+    # so the transport layer can always read it directly from the node dict.
+    ssh_key: str = ""
+    # Override for the Platform log directory when the deployment uses a
+    # non-default location (i.e. log4js-rotated to /opt/itential/log,
+    # custom syslog targets, etc.). Falls back to PLATFORM6_LOG_PATH_ROOT
+    # when empty. Set interactively via the post-capture log_path prompt
+    # or by editing the env file directly.
+    log_path_override: str = ""
+    # Override for the Platform webserver log file (single file path, not
+    # directory). Falls back to PLATFORM6_WEBSERVER_LOG_PATH when empty.
+    # Set interactively via the post-capture retry prompt.
+    webserver_log_path_override: str = ""
+    # Override for the MongoDB log file (single file path, not directory).
+    # Falls back to MONGO_LOG_PATH when empty. Set interactively via the
+    # post-capture retry prompt.
+    mongo_log_path_override: str = ""
+    # Debug: when True, capture also writes 01_raw_capture.json — the full
+    # reshaped capture before ruleset-based filtering. Used to trace
+    # dot-notation paths when authoring new rules.
+    debug_export_raw_capture: bool = False
     # Kubernetes-specific fields
     values_yaml_path: str = ""
     iag5_values_yaml_path: str = ""
@@ -112,6 +150,17 @@ class Environment:
             overlay["gateway4_uri"] = self.gateway4_uri
         if self.gateway4_username:
             overlay["gateway4_username"] = self.gateway4_username
+        # Tier — only overlay when explicitly set on the env file.
+        if self.tier:
+            overlay["tier"] = self.tier
+        if self.log_path_override:
+            overlay["log_path_override"] = self.log_path_override
+        if self.webserver_log_path_override:
+            overlay["webserver_log_path_override"] = self.webserver_log_path_override
+        if self.mongo_log_path_override:
+            overlay["mongo_log_path_override"] = self.mongo_log_path_override
+        if self.debug_export_raw_capture:
+            overlay["debug_export_raw_capture"] = self.debug_export_raw_capture
         # Kubernetes-specific fields
         if self.values_yaml_path:
             overlay["values_yaml_path"] = self.values_yaml_path
@@ -129,9 +178,64 @@ class Environment:
         return f"Environment(name={self.name!r}, platform_uri={self.platform_uri!r})"
 
 
+def propagate_ssh_key(deployment: dict, ssh_key: str) -> dict:
+    """Sync ssh_key into a deployment dict so the transport layer can read it.
+
+    Updates two places:
+      • ``deployment["ssh_defaults"]["key_path"]`` — fallback for any node
+        that doesn't carry an explicit key (e.g. nodes added after initial setup)
+      • ``deployment["nodes"][*]["ssh_key"]`` — per-node value for all
+        SSH-transport nodes (transport != "kubernetes")
+
+    Passing an empty string clears both, letting SSH fall back to the agent.
+    """
+    if not isinstance(deployment, dict):
+        return deployment
+
+    # -- ssh_defaults fallback ------------------------------------------------
+    defaults = deployment.setdefault("ssh_defaults", {})
+    if ssh_key:
+        defaults["key_path"] = ssh_key
+    else:
+        defaults.pop("key_path", None)
+    if not defaults:
+        deployment.pop("ssh_defaults", None)
+
+    # -- per-node values -------------------------------------------------------
+    for node in deployment.get("nodes", []):
+        if node.get("transport") in ("kubernetes", "local", "control_master"):
+            continue  # K8s, local, and ControlMaster nodes don't use a SSH key path
+        if ssh_key:
+            node["ssh_key"] = ssh_key
+        else:
+            node.pop("ssh_key", None)
+
+    return deployment
+
+
+_ENV_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9 _.\-]*$")
+
+
 def validate_env_name(name: str) -> bool:
-    """Check if an environment name is valid."""
-    return bool(_ENV_NAME_RE.match(name))
+    """Check if an environment name is valid.
+
+    The name has to be safe for every downstream consumer at once: filename
+    (env file, ``architecture/<env>.json``), keyring service suffix,
+    URL/query-string param, JSON key, and display string. The intersection
+    of those rules is alphanumerics + space + ``.`` + ``_`` + ``-``, with a
+    leading alnum and ≤128 characters.
+
+    Punctuation that previously slipped through (``!``, ``#``, ``?``, ``/``,
+    ``..``) is rejected here so we never end up with envs the architecture
+    store can't load, keyring entries that some backends mangle, or URLs
+    that need fragile escaping.
+    """
+    s = (name or "").strip()
+    if not s or len(s) > 128:
+        return False
+    if any(token in s for token in _ENV_NAME_FORBIDDEN):
+        return False
+    return bool(_ENV_NAME_RE.match(s))
 
 
 class EnvironmentManager:
@@ -361,8 +465,24 @@ def ensure_valid_environment(env_override: str | None = None) -> None:
     # Active environment is stale (file was deleted)
     available = mgr.list_names()
 
-    # Non-interactive — can't prompt, just clear the stale reference
-    if not sys.stdin.isatty():
+    # Non-interactive — can't prompt, just clear the stale reference.
+    #
+    # We treat both "no TTY" AND "already inside an asyncio loop" as
+    # non-interactive. The WebUI is started from a terminal (so stdin is
+    # a TTY) but its startup hook runs inside uvicorn's loop; firing up
+    # questionary there explodes with "asyncio.run() cannot be called
+    # from a running event loop". When we hit that, we want to silently
+    # heal the stale reference and let the WebUI start in an
+    # uninitialised state, not crash.
+    in_running_loop = False
+    try:
+        import asyncio as _asyncio
+        _asyncio.get_running_loop()
+        in_running_loop = True
+    except RuntimeError:
+        pass
+
+    if in_running_loop or not sys.stdin.isatty():
         logger.warning(
             "Active environment '%s' not found (non-interactive) — clearing stale reference",
             active_name,

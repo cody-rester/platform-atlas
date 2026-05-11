@@ -16,6 +16,93 @@ Each step builds on the previous one. Once you've completed the initial setup, d
 
 ---
 
+## What's New in v1.7
+
+v1.7 is the largest release since v1.5. The headline changes are below; each one has its own
+section later in the guide.
+
+### Standard and Extended tiers
+
+Platform Atlas now ships with two distinct audit modes. You choose the tier once — it applies
+globally until you change it.
+
+**Standard** collects data only from the Platform API (OAuth) and the Automation Gateway 4 API.
+No SSH, no MongoDB, no Redis. Setup takes about five minutes. If you have a Platform URI and
+OAuth credentials, you're ready to run. The report covers ~54 rules focused on the application
+layer.
+
+**Extended** is the full infrastructure audit that existed in previous versions — SSH into every
+server, collect MongoDB and Redis configuration, run all collectors. ~107 rules, full coverage.
+
+Fresh installs default to Standard. Upgrades from 1.6.x default to Extended (nothing changes
+for you unless you explicitly switch).
+
+```bash
+platform-atlas tier show
+platform-atlas tier set standard
+platform-atlas tier set extended
+```
+
+A `--tier` global flag overrides the active tier for one command without touching the persisted
+setting (e.g. `platform-atlas --tier standard preflight`). Sessions bind their tier at
+creation time, so cross-tier comparisons are flagged in `session diff`.
+
+### Continuous Audit
+
+Atlas can now monitor an environment between formal audits. The `continuous-audit` family of
+commands re-runs a Platform-OAuth-only capture against the active ruleset on a schedule and
+records any rule whose observed value drifts from the prior run as an **alert**. Alerts persist
+until you ack them, OS-level scheduling (systemd-user / launchd) keeps runs going across
+reboots, and you can pipe alert transitions out to Slack or generic webhooks. See *Continuous
+Audit* below.
+
+### Fleet dashboard
+
+`platform-atlas fleet status` (and `/fleet` in the WebUI) reads the local cache to show every
+configured environment side-by-side: tier, last session age, pass rate, continuous-audit state,
+and any unacked alerts. Read-only — it never triggers a capture. See *Fleet*.
+
+### ControlMaster and Local transports
+
+Two new options for environments where direct SSH key-based access to the Platform server isn't
+possible:
+
+- **ControlMaster** — Atlas multiplexes through an OpenSSH ControlMaster session you open by
+  hand, so privileged-access gateways like CyberArk PSMP authenticate once with their normal
+  MFA flow and Atlas runs without ever holding the underlying credentials.
+- **Local** — when Atlas is installed *on* the Platform server, it can collect IAP data through
+  the local filesystem instead of SSH. MongoDB, Redis, and IAG nodes still use SSH.
+
+See `SSH_SETUP_GUIDE.md` for both.
+
+### What's New page
+
+After upgrading, the first run of `platform-atlas` prints a short upgrade summary in the
+terminal and opens a detailed HTML page in your browser. Suppress the page with
+`--no-whats-new`; reopen it later with `platform-atlas whats-new`.
+
+### Vault credential improvements
+
+`VaultBackend` now introspects the token's TTL on every connect, refreshes it transparently
+when fewer than 5 minutes remain, and surfaces the remaining time in `config credentials`.
+AppRole, Token (file), Token (env), and renewable Token auth all refresh without user action;
+AppRole-Wrapped and non-renewable Token raise a clear error pointing at the rotation step.
+
+### Optional WebUI
+
+A browser-based interface ships as a separate optional wheel.
+
+```bash
+pip install platform_atlas_webui-1.7.0-py3-none-any.whl
+platform-atlas-webui
+```
+
+It self-signs a TLS certificate, binds to your OS user, and opens your default browser at a
+one-time login URL. It shares `~/.atlas/` with the CLI — no separate setup. See *WebUI* below
+for the full walkthrough including daemon mode, themes, and the security model.
+
+---
+
 ## What's New in v1.5
 
 If you're upgrading from an earlier version of Platform Atlas, here are the key changes in v1.5:
@@ -50,10 +137,15 @@ Platform Atlas is distributed as a Python wheel file. You'll need Python 3.11 or
 
 ### Install from a wheel file
 
-Your team lead or Itential contact will provide you with a `.whl` file. Install it with pip:
+Your team lead or Itential contact will provide one or two `.whl` files. The core CLI is
+required; the WebUI is optional.
 
 ```bash
-pip install platform_atlas-1.5-py3-none-any.whl
+# Required — core CLI
+pip install platform_atlas-1.7.0-py3-none-any.whl
+
+# Optional — browser-based interface
+pip install platform_atlas_webui-1.7.0-py3-none-any.whl
 ```
 
 Once installed, the `platform-atlas` command is available in your terminal. Verify it works:
@@ -62,7 +154,7 @@ Once installed, the `platform-atlas` command is available in your terminal. Veri
 platform-atlas --version
 ```
 
-You should see something like `platform-atlas 1.5`.
+You should see something like `platform-atlas 1.7.0`.
 
 ### A note about your system
 
@@ -106,6 +198,8 @@ Atlas needs to store sensitive values like your Platform client secret and datab
 - Windows: Credential Locker (built-in, no extra setup)
 - Linux: Requires `gnome-keyring` with D-Bus, or the `keyrings.alt` package for headless/server environments
 
+> **Updating or rotating credentials later:** Use `platform-atlas config credentials` at any time to add, change, or rotate any stored credential without recreating the environment. This is the right command whenever a credential is rotated upstream, when retrofitting a credential that wasn't collected during the original setup (e.g. a Gateway4 password on an existing env), or when populating the keyring on a new machine after restoring `~/.atlas/` from backup. Credentials live outside `~/.atlas/`, so they don't travel with the config directory.
+
 **HashiCorp Vault** — If your organization manages secrets in Vault, Atlas can read credentials from a KV v2 secrets engine. In this mode, Atlas only *reads* from Vault — it never writes secrets. Your Vault administrator manages the actual credentials. Atlas supports several authentication methods: a static token, AppRole (role_id + secret_id), and three automated options designed for environments where credentials rotate — see the *Vault Integration* section in the FAQ for details on choosing the right one.
 
 #### Connection Credentials
@@ -128,9 +222,16 @@ Atlas needs to know how this environment's IAP deployment is set up so it knows 
 
 **HA2** — A highly available setup with multiple IAP nodes, a MongoDB replica set (typically 3 members), and Redis Sentinel (typically 3 members). You'll be asked for the hostname or IP of each server.
 
+**Kubernetes** — IAP is deployed via the Itential Helm chart. Atlas reads `values.yaml` directly and uses `kubectl` for system info, log tail, and service-status checks. No SSH involved.
+
 **Custom** — A free-form layout where you manually assign roles and modules to each node.
 
-For each server in your topology, you'll configure SSH access (username, key file, port). Atlas uses SSH to read configuration files and run lightweight commands on each server. The SSH user needs read access to config files in `/etc/` and `/opt/` — it does not need root access, though passwordless sudo is used as a fallback if a file can't be read directly.
+For each server, the wizard asks how Atlas should connect to it. The default is **SSH** (key-based, recommended). When configuring the **Platform (IAP) server** specifically, you'll also see two alternatives:
+
+- **ControlMaster** — Pick this when direct SSH to the IAP server is not possible (CyberArk PSMP, jump hosts that require MFA, etc.). You open one `ssh -M` master session by hand before running Atlas, and Atlas multiplexes through that socket. The wizard asks for the socket path and the full SSH destination string. MongoDB and Redis nodes still use direct SSH.
+- **Local** — Pick this when Atlas itself is installed on the IAP server. Atlas reads config files and runs system commands through the local filesystem instead of SSH. MongoDB, Redis, and Gateway nodes still use SSH.
+
+For SSH targets, the wizard collects the username, key file, and port. Atlas uses these to read configuration files and run lightweight commands. The SSH user needs read access to config files in `/etc/` and `/opt/` — it does not need root access, though passwordless sudo is used as a fallback if a file can't be read directly. See `SSH_SETUP_GUIDE.md` for ControlMaster and Local transport details.
 
 ### Creating Additional Environments
 
@@ -160,6 +261,162 @@ Sensitive values are masked by default. If you need to see the actual values (fo
 ```bash
 platform-atlas config show --full
 ```
+
+---
+
+## Choosing a Tier
+
+Before you run your first audit, decide which tier fits your environment.
+
+### Standard tier
+
+Use Standard if:
+- You only need to audit the Platform application layer
+- You don't have (or don't want to provide) SSH access to the servers
+- You want a fast setup — just a Platform URI and OAuth credentials
+
+Standard runs capture entirely over HTTPS using Platform OAuth and (optionally) the IAG4 REST
+API. No SSH keys, no MongoDB URI, no Redis URI needed.
+
+To set Standard tier:
+
+```bash
+platform-atlas tier set standard
+```
+
+### Extended tier
+
+Use Extended if:
+- You need full infrastructure coverage (MongoDB, Redis, config files, system info)
+- You are conducting a formal quarterly health assessment
+- You already have SSH access and database credentials set up
+
+Extended is the default for upgrades from 1.6.x.
+
+To set Extended tier:
+
+```bash
+platform-atlas tier set extended
+```
+
+### Switching tiers
+
+You can switch tiers at any time. Existing sessions are not affected — each session stores the
+tier it was created with. New sessions will use the current global tier.
+
+```bash
+platform-atlas tier show        # see the current tier
+platform-atlas tier upgrade     # guided Standard → Extended with explanations
+platform-atlas tier downgrade   # guided Extended → Standard with explanations
+```
+
+---
+
+## WebUI
+
+The optional WebUI package (`platform-atlas-webui` 1.0.0) is a browser-based interface for
+managing sessions, running audits, viewing reports, and operating Continuous Audit and the
+fleet view. It's a thin presentation layer over the same engines the CLI uses — there is no
+duplicated logic. Both interfaces read and write the same `~/.atlas/` directory; what you do
+in one shows up immediately in the other.
+
+The WebUI is **local-only** — it serves on `localhost` over self-signed TLS and authenticates
+the OS user that started it. It is not a multi-tenant remote console. You run it on the same
+machine as your `~/.atlas/`.
+
+### Installing and first launch
+
+```bash
+pip install platform_atlas_webui-1.7.0-py3-none-any.whl
+platform-atlas-webui
+```
+
+On first launch you'll see something like:
+
+```
+[atlas-webui] Self-signed TLS certificate written to ~/.atlas/.webui-cert.pem
+[atlas-webui] Certificate fingerprint (SHA-256): 7a:33:…
+[atlas-webui] Listening on https://127.0.0.1:8765
+[atlas-webui] One-time login URL: https://127.0.0.1:8765/auth?nonce=…
+```
+
+Atlas opens that URL in your default browser automatically. The first request consumes the
+nonce and sets a signed session cookie; subsequent navigation just works.
+
+If you've never set Atlas up before, the WebUI redirects to `/setup` and walks you through
+the same wizard you'd see in `platform-atlas config init`. Existing CLI installs skip
+straight to the dashboard.
+
+### Daemon mode
+
+For a long-running install — typically on a workstation that should always have the WebUI
+available — run it detached:
+
+```bash
+platform-atlas-webui --daemon         # double-fork, write PID to ~/.atlas/webui.pid
+platform-atlas-webui status            # is it running? on which port? since when?
+platform-atlas-webui restart           # rotate the process; sessions survive
+platform-atlas-webui stop              # clean shutdown
+```
+
+In daemon mode the login URL is tucked into `~/.atlas/webui.log`. To mint a fresh URL after
+a restart without grepping the log:
+
+```bash
+platform-atlas-webui login-url
+```
+
+Daemon mode supports Linux and macOS; on Windows, run the foreground command in a terminal you
+keep open.
+
+### Security model
+
+| Layer | What it does |
+|---|---|
+| **TLS** | Self-signed certificate at `~/.atlas/.webui-cert.pem` (regenerate with `--reset-tls`). Browsers will warn about the certificate the first time — accept it for `localhost`. |
+| **OS-user binding** | The WebUI reads a token file from `~/.atlas/.webui-token` (mode 0600). Only processes running as the same OS user can read it. Browser sessions are signed cookies derived from that token plus a separate cookie secret at `~/.atlas/.webui-cookie-secret`. Rotating either file invalidates every outstanding cookie (`--reset-token`). |
+| **CSRF** | Stateless HMAC tokens injected into every form and required on AJAX `POST` / `PATCH` / `DELETE`. |
+| **CSP & headers** | Strict response headers (CSP, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, HSTS, `Referrer-Policy`). HTML reports themselves render under a sandboxed CSP — captured data cannot reach back into the WebUI's authenticated origin. |
+| **Audit log** | Every state-changing request appends one JSON line to `~/.atlas/webui-audit.log` (rotates at 10 MB) — OS user, path, status, redacted form payload. |
+
+### Page-by-page tour
+
+When the dashboard loads, the left sidebar lists every page; the topbar shows the active
+**ORG**, **ENV**, and **TIER** pills, plus a continuous-audit state pill and an alert bell
+when there are unacked alerts.
+
+| Page | What you do here |
+|---|---|
+| **Dashboard** (`/`) | KPI tiles and an audit-activity heatmap of the last 48 h. Empty tiles show a one-line teaching helper instead of a bare zero. |
+| **Sessions** (`/sessions`) | Create, activate, run capture/validate/report, and delete sessions. Each running stage streams live output via Server-Sent Events; a force-kill button appears on jobs that run more than 60 s. |
+| **Environments** (`/environments`) | Create, edit, activate, and delete environments. Activation atomically restores tier, ruleset, and profile alongside the active environment, matching the CLI. The form pane covers tier, deployment topology (including ControlMaster IAP transport), Kubernetes settings, and Gateway 4 connection details. |
+| **Credentials** (`/credentials`) | Reconfigure the active environment's credential backend (Keyring or Vault). All five Vault auth methods are supported — Token, AppRole, AppRole (Wrapped), Token (file), Token (env). |
+| **Reports** (`/reports`) | Direct links to every session's compliance, operational, and architecture HTML reports. |
+| **Tier** (`/tier`) | Side-by-side cards for Standard and Extended with a "when to use" hint. The active tier is highlighted; switching opens a confirmation modal that explains what changes. |
+| **Fleet** (`/fleet`) | The same data as `fleet status` rendered as a sortable card grid — tier, last session age, pass rate, continuous-audit state, unacked alerts. Read-only; never triggers a capture. |
+| **Continuous** (`/continuous`) | Status, settings, and run history for the active environment's continuous audit. Buttons for run-now, enable, disable, and an Alerting block with `alert_policy` selector and a chip editor for the watchlist. |
+| **Alerts** (`/alerts`) | Drift timeline with ack and ack-all. The bell icon in the topbar shows unacked count and links here. |
+| **Notifications** (`/notifications`) | Add, edit, test, and remove Slack and webhook channels. HMAC signing toggle for webhooks. |
+| **Settings** (`/settings`) | Theme picker (Aurora and Horizon palettes with mini-palette previews), light/dark mode segmented control, and the editable scope hints next to each fieldset. |
+
+### Themes — Aurora and Horizon
+
+Theme palette and light/dark mode are independent axes:
+
+- **Aurora** — confident, technical (deep navy + electric blue). Default.
+- **Horizon** — warm, editorial (charcoal + terracotta).
+
+The moon/sun toggle in the topbar swaps light/dark and preserves your palette choice. Settings
+persist in `config.json` under `webui_theme`, `webui_accent`, and `webui_mode`. Legacy values
+from earlier dev builds (`cyan`, `amber`, `violet`, `lime`, `mono`) migrate transparently the
+first time a recent build reads them.
+
+### Notes
+
+- The WebUI must be on the same machine as your `~/.atlas/` directory. It does not support remote Atlas installations.
+- Run only one capture per session at a time, regardless of which interface starts it. CLI and WebUI write to the same session directory.
+- Tier, environment, ruleset, and profile changes made in the WebUI are immediately reflected in the CLI and vice versa.
+- The WebUI exposes everything the CLI does for day-to-day operations. Setup wizards that don't fit a web form (custom topology, manual capture import) are still CLI-only — the WebUI tells you which command to run.
 
 ---
 
@@ -476,6 +733,137 @@ You'll be asked to confirm. To skip the confirmation prompt, add `--force`.
 
 ---
 
+## Continuous Audit
+
+A formal session run is a point-in-time snapshot. Continuous Audit fills the gap between
+formal runs by re-executing a Platform-OAuth-only capture against the active ruleset on a
+schedule and recording any rule whose observed value drifted from the prior run as an alert.
+
+The pieces:
+
+- **Captures** are locked to Platform OAuth regardless of your tier. Continuous Audit never
+  touches MongoDB, Redis, SSH, or kubectl — drift detection is fast and uses the Platform API
+  exclusively, so it works in Standard and Extended without any extra access.
+- **Endpoints** are pruned to only what the active ruleset actually references. If you switch
+  rulesets, the endpoint set updates on the next run.
+- **Reports** for each run are written to `~/.atlas/continuous/<env>/runs/<run_id>.json` —
+  bare JSON for external alerting systems to scrape.
+- **Alerts** are surfaced when a rule's observed value changes between runs. They persist in
+  `alerts.json` until you ack them. Acked alerts re-open if drift recurs.
+- **Events** stream into an append-only `events.ndjson` timeline (rotated at 10 MB).
+
+### One-shot test
+
+Before enabling the schedule, run one capture on demand to confirm the OAuth path works and
+to seed the prior-run state:
+
+```bash
+platform-atlas continuous-audit run-once
+```
+
+This is required at least once before Atlas will let you enable the OS scheduler.
+
+### Enabling the scheduler
+
+```bash
+platform-atlas continuous-audit enable
+```
+
+On Linux this installs a `systemctl --user` timer; on macOS it installs a `launchctl` user
+agent. Both keep running across reboots. Atlas's in-process scheduler defers when an OS
+scheduler is active, so you never get duplicate runs.
+
+### Status, alerts, and ack
+
+```bash
+platform-atlas continuous-audit status      # last run, next scheduled run, alert counts
+platform-atlas continuous-audit alerts      # list unacked alerts
+platform-atlas continuous-audit ack <id>    # ack a single alert
+platform-atlas continuous-audit ack --all   # ack everything
+```
+
+A banner at the top of every Atlas command shows whether continuous audit is enabled for the
+active environment.
+
+### Alert policy and watchlist
+
+By default, every rule-state change becomes an alert (`alert_policy = any`). Switch to
+regression-only — alert only when a rule transitions PASS → FAIL — when you only want to hear
+about new problems:
+
+```bash
+platform-atlas continuous-audit policy regression
+platform-atlas continuous-audit policy any        # back to default
+```
+
+The watchlist filters notifications and the alert list down to specific rule numbers.
+Everything still goes to the events timeline, but only watched rules raise alerts and fire
+notifications:
+
+```bash
+platform-atlas continuous-audit watch add 12 47
+platform-atlas continuous-audit watch list
+platform-atlas continuous-audit watch remove 12
+platform-atlas continuous-audit watch clear
+```
+
+### Notifications
+
+Per-environment outbound channels deliver alert-state transitions to Slack or any HTTP
+receiver. Notifications fire only on **state transitions** — newly opened alerts and re-opened
+alerts after ack — so a persistent unacked drift doesn't spam your channel every cycle.
+
+```bash
+platform-atlas continuous-audit notify add slack          # interactive: paste webhook URL
+platform-atlas continuous-audit notify add webhook        # generic JSON receiver
+platform-atlas continuous-audit notify list
+platform-atlas continuous-audit notify test <channel-id>  # send a synthetic alert
+platform-atlas continuous-audit notify remove <channel-id>
+```
+
+Webhooks support optional HMAC-SHA256 signing — Atlas signs the payload with a shared secret
+and your receiver verifies the `X-Atlas-Signature` header. Slack URLs, signing secrets, and
+custom headers are stored in the OS keyring under `platform-atlas/<env>`, never in the env
+JSON.
+
+> **Notification payloads carry rule identity only** — number, name, severity, alert ID. The
+> previous and current observed values stay local. This means a misconfigured channel cannot
+> exfiltrate captured Platform secrets like client IDs or token values.
+
+### Disabling
+
+```bash
+platform-atlas continuous-audit disable
+```
+
+Removes the OS scheduler. Existing runs, alerts, and event history stay on disk — re-enabling
+picks up where you left off.
+
+---
+
+## Fleet
+
+The fleet command is a read-only overview of every environment Atlas knows about. It reads the
+local cache only — it never triggers a capture, hits the Platform API, or opens an SSH
+connection. Use it to see the current state of all environments at once:
+
+```bash
+platform-atlas fleet status
+platform-atlas fleet status --json   # for piping into jq / monitoring
+```
+
+For each environment you'll see:
+
+- Current tier (Standard / Extended)
+- Most recent session and its age
+- Pass rate from that session
+- Continuous-audit state (disabled / enabled / running / failed) and last-run age
+- Count of unacked alerts
+
+The same data renders at `/fleet` in the WebUI as a sortable card grid.
+
+---
+
 ## Updating Your Configuration
 
 You don't need to re-run the full setup wizard to make changes. Atlas has targeted commands for common updates.
@@ -761,11 +1149,14 @@ When using the OS keyring, credentials for each environment are stored under a s
 
 Everything lives under `~/.atlas/` in your home directory:
 
-- `config.json` — Global configuration (default org name, theme, debug settings — no secrets)
+- `config.json` — Global configuration (default org name, theme, debug settings, WebUI appearance — no secrets)
 - `settings.json` — Active ruleset and profile pointers
-- `environments/` — One file per named deployment target (production.json, dev.json, etc.), each with its own org name, credentials backend, and topology
-- `sessions/` — One folder per audit session containing capture data, validation results, reports, and a `session.json` with the session's bound environment, ruleset, and profile
+- `environments/` — One file per named deployment target (production.json, dev.json, etc.), each with its own org name, credentials backend, topology, tier, and notification channel index
+- `sessions/` — One folder per audit session containing capture data, validation results, reports, and a `session.json` with the session's bound environment, ruleset, profile, and tier
+- `continuous/` — Per-env continuous-audit state: `runs/<run_id>.json` per scheduled run, `alerts.json` (aggregate state), `events.ndjson` (append-only timeline), `status.json` (heartbeat). Files mode `0600`.
+- `architecture-form.html` — Bundled architecture overview form (synced from the package on first use)
 - `atlas.log` — Application log (rotated at 5 MB)
+- `webui-audit.log`, `webui.log`, `webui.pid`, `.webui-cert.pem`, `.webui-token`, `.webui-cookie-secret` — WebUI runtime files (only present when the WebUI is installed)
 
 **Q: How do I get debug output for troubleshooting?**
 
@@ -796,3 +1187,126 @@ platform-atlas session run capture --manual --import-dir /data/atlas-capture/
 ```
 
 Make sure your credential store works in non-interactive environments. On Linux, this typically means using `keyrings.alt` (encrypted file backend) or Vault instead of `gnome-keyring`, which requires a D-Bus session.
+
+---
+
+### Tiers
+
+**Q: Which tier should I use?**
+
+Start with **Standard** if you just have a Platform URI and OAuth credentials and want a quick
+audit. It covers ~54 application-layer rules with zero server access needed. Switch to
+**Extended** when you need full coverage — MongoDB config, Redis config, system info, SSH-based
+checks, and ~107 rules total.
+
+**Q: Can I switch tiers without breaking existing sessions?**
+
+Yes. Sessions store the tier they were created with. Switching the global tier only affects new
+sessions. Old sessions stay on their original tier, and diff reports flag cross-tier comparisons
+with a notice banner.
+
+**Q: I want to audit a Kubernetes-only deployment but I'm in Standard.**
+
+The Standard ruleset covers the application layer using the Platform OAuth API only — that
+works on Kubernetes deployments without any extra setup. If you need infrastructure rules too,
+switch to Extended (`platform-atlas tier set extended`) and pick **Kubernetes** as the
+deployment mode during topology setup. The Extended ruleset has 13 kubectl-based fallbacks
+that close most of the gap from inaccessible MongoDB / Redis / SSH on K8s.
+
+### Continuous Audit and Notifications
+
+**Q: Does Continuous Audit work with both tiers?**
+
+Yes. Continuous Audit captures via the Platform OAuth API regardless of tier, and validates
+against your active ruleset. It will silently SKIP rules that need data outside the OAuth API
+(MongoDB config, Redis config, SSH-based collectors). You'll see those skips in any normal
+session report; the continuous-audit run reports list only the rules that actually had data.
+
+**Q: My continuous-audit timer fires but the run reports are empty.**
+
+Check `~/.atlas/atlas.log` first. If you see "endpoint planner: 0 endpoints to fetch" the
+ruleset references no `platform.*` paths — usually because no ruleset is loaded for the active
+environment. Run `platform-atlas ruleset setup` to fix that.
+
+**Q: Slack or webhook notifications never fire even though I have unacked alerts.**
+
+Notifications fire only on **state transitions** — newly opened alerts, or acked alerts that
+re-open. A persistent unacked alert won't re-notify on every cycle by design. To force a test:
+`platform-atlas continuous-audit notify test <channel-id>`.
+
+**Q: Can I send a webhook to an internal Jenkins or Slack-on-prem URL?**
+
+By default Atlas blocks webhook URLs that resolve to private, loopback, link-local, or
+cloud-metadata addresses to prevent SSRF. Set `ATLAS_ALLOW_PRIVATE_WEBHOOKS=1` in the
+environment that runs Atlas (and your scheduler unit) to opt out.
+
+### ControlMaster and Local transports
+
+**Q: When should I pick ControlMaster over plain SSH?**
+
+When direct key-based SSH to the Platform server isn't available — typically because all SSH
+goes through CyberArk PSMP or another PAM gateway that requires interactive MFA. Open one
+master session by hand (which performs the MFA tap), then Atlas multiplexes through the
+socket. Plain SSH is still recommended whenever it's possible — it's simpler.
+
+**Q: Can I use ControlMaster for the MongoDB and Redis nodes too?**
+
+Yes via the CLI wizard — the standalone and HA2 wizards apply your ControlMaster choice to
+every node when you select it for IAP. The WebUI form, by design, only exposes the IAP
+transport selector; on a no-op WebUI save the existing CM transport on Mongo/Redis is
+preserved. To add or change CM on Mongo/Redis after the fact, use `platform-atlas config
+deployment` from the CLI.
+
+**Q: My Atlas runs are slow and the master keeps timing out mid-capture.**
+
+Increase `ControlPersist` on the master command. The 10-minute default is comfortable for a
+Standard capture but tight for a full Extended capture on a slow link:
+
+```bash
+ssh -M -S /tmp/atlas-cm.sock -o ControlPersist=30m -fN <user>@<target>@<gateway>
+```
+
+**Q: When should I use the Local transport?**
+
+Only when Atlas itself is installed on the IAP server. It bypasses SSH entirely for the IAP
+node — config files are read directly from the local filesystem. MongoDB, Redis, and IAG
+nodes still need their normal SSH or protocol access. Avoid Local when SSH works — keeping
+Atlas on a separate workstation is the cleaner deployment.
+
+### WebUI
+
+**Q: I installed the WebUI but the `platform-atlas-webui` command isn't found.**
+
+Check that the Python `bin` or `Scripts` directory is in your PATH. If you installed into a
+virtual environment, activate it first. Try `python -m platform_atlas_webui` as a fallback.
+
+**Q: Can I run the WebUI and CLI at the same time?**
+
+Yes. Both read and write the same `~/.atlas/` directory. Be aware that if you run a capture
+in the CLI while a WebUI capture is also running, they will both write to the same session
+directory — only run one capture at a time per session.
+
+**Q: My browser warns me about the certificate.**
+
+That's expected — the WebUI generates a self-signed cert on first launch. Accept it for
+`localhost`. If you want to verify, the SHA-256 fingerprint is printed to stderr at startup
+and is also at the top of `~/.atlas/webui.log` when running in daemon mode. To regenerate:
+`platform-atlas-webui --reset-tls`.
+
+**Q: How do I get back into the WebUI after a daemon restart?**
+
+`platform-atlas-webui login-url` mints a fresh nonce-signed URL on demand. Or open
+`~/.atlas/webui.log` to find the URL printed at last startup.
+
+**Q: Does the WebUI require any additional configuration beyond the CLI setup?**
+
+No. Install the WebUI wheel, run `platform-atlas-webui`, and it uses whatever the CLI already
+has configured — environments, credentials, sessions, tier. The first launch on a fresh
+install redirects to a setup wizard that mirrors `platform-atlas config init`.
+
+**Q: Is the WebUI safe on a shared workstation?**
+
+The WebUI binds to your OS user via a token file at mode 0600. Another user on the same box
+can't read your token, can't forge a session cookie, and can't reach the listening socket
+without copying both the token file and the cookie-secret file. Rotate either with
+`--reset-token` to invalidate every outstanding browser session.

@@ -2,7 +2,7 @@
   Platform Atlas — Operational Report Template
 -->
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -54,30 +54,60 @@
   --gradient-surface: linear-gradient(180deg,var(--bg-surface),var(--bg-base))
 }
 
+/* Light theme — pinned to the WebUI's Itential tokens (atlas.css :root[data-theme="itential"])
+   so opening this report from the WebUI feels like the same surface. The
+   header gets a navy band via [data-theme="light"] .header below. Dark mode
+   is unchanged. */
 [data-theme="light"] {
-  --bg-base: #f4f6f9;
+  --bg-base: #fff;
   --bg-surface: #fff;
-  --bg-elevated: #f8f9fb;
-  --bg-overlay: #eef1f5;
+  --bg-elevated: #f5f7fa;
+  --bg-overlay: #eef2f6;
+  --bg-input: rgba(16,22,37,.04);
   --bg-glass: rgba(255,255,255,.88);
   --text-primary: #101625;
-  --text-secondary: #4a5568;
-  --text-muted: #8494a7;
-  --text-ghost: rgba(132,148,167,.5);
-  --accent: #0e7bb5;
-  --accent-ghost: rgba(14,123,181,.06);
-  --accent-glow: rgba(14,123,181,.12);
-  --status-pass: #5fa822;
-  --status-pass-bg: rgba(95,168,34,.08);
-  --status-fail: #d94a1f;
-  --status-fail-bg: rgba(217,74,31,.06);
-  --border-subtle: rgba(0,0,0,.05);
-  --border-default: rgba(0,0,0,.08);
-  --border-strong: rgba(0,0,0,.14);
-  --shadow-sm: 0 1px 3px rgba(0,0,0,.06);
-  --shadow-md: 0 4px 16px rgba(0,0,0,.06);
-  --gradient-brand: linear-gradient(135deg,#0e7bb5,#a01d72);
+  --text-secondary: #3a4254;
+  --text-muted: #6b7280;
+  --text-ghost: rgba(107,114,128,.5);
+  --accent: #1b93d2;
+  --accent-hover: #1782bc;
+  --accent-ghost: rgba(27,147,210,.12);
+  --accent-glow: rgba(27,147,210,.18);
+  --status-pass: #6fa22c;
+  --status-pass-bg: rgba(111,162,44,.10);
+  --status-fail: #c0392b;
+  --status-fail-bg: rgba(192,57,43,.08);
+  --status-warn: #e55a2a;
+  --status-warn-bg: rgba(229,90,42,.08);
+  --border-subtle: rgba(16,22,37,.06);
+  --border-default: rgba(16,22,37,.10);
+  --border-strong: rgba(16,22,37,.20);
+  --border-sep: rgba(16,22,37,.20);
+  --shadow-sm: 0 1px 3px rgba(16,22,37,.06);
+  --shadow-md: 0 4px 16px rgba(16,22,37,.08);
+  --gradient-brand: linear-gradient(135deg,#1b93d2,#c5258f);
   --gradient-surface: linear-gradient(180deg,var(--bg-surface),var(--bg-base))
+}
+
+/* Light-mode navy header band — matches the WebUI's Itential sidebar.
+   Re-declares the relevant tokens at .header scope so descendants
+   (brand, brand-link, icon-btn, report-nav) flip to white-on-navy
+   automatically. Dark mode untouched. */
+[data-theme="light"] .header {
+  --bg-glass: #101625;
+  --bg-input: rgba(255,255,255,.04);
+  --text-primary: #fff;
+  --text-secondary: #bfcbdd;
+  --text-muted: #8595ac;
+  --text-ghost: rgba(133,149,172,.5);
+  --border-subtle: rgba(255,255,255,.06);
+  --border-default: rgba(255,255,255,.10);
+  --border-strong: rgba(255,255,255,.20);
+  --accent-ghost: rgba(27,147,210,.22);
+  box-shadow: 0 1px 0 rgba(0,0,0,.10), 0 4px 16px rgba(16,22,37,.06)
+}
+[data-theme="light"] .header.scrolled {
+  box-shadow: 0 2px 0 rgba(0,0,0,.12), 0 6px 20px rgba(16,22,37,.10)
 }
 
 *,*::before,*::after {
@@ -1423,6 +1453,9 @@ body {
       <div class="hero-org">{{ORGANIZATION_NAME}}</div>
       <h1 class="hero-title">{{TITLE}}</h1>
       <div class="hero-pills">
+        <span class="hero-label">Mode:</span>
+        <span class="hero-value" style="background:{{TIER_COLOR}};color:#fff;padding:2px 10px;border-radius:4px;font-weight:700;letter-spacing:0.5px;">{{TIER_LABEL}}</span>
+        <span class="sep">|</span>
         <span class="hero-label">Session:</span>
         <span class="hero-value">{{SUBTITLE}}</span>
         <span class="sep">|</span>

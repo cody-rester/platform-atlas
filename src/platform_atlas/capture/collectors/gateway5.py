@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from platform_atlas.core.context import require_extended
 from platform_atlas.core.preflight import CheckResult
 from platform_atlas.core.transport import Transport
 
@@ -123,6 +124,10 @@ class Gateway5Collector:
     """Collects Gateway5 environment variables over SSH"""
 
     def __init__(self, transport: Transport) -> None:
+        require_extended(
+            "Gateway5Collector",
+            hint="Gateway5 collection requires Extended Mode.",
+        )
         self._transport = transport
 
     def __repr__(self) -> str:

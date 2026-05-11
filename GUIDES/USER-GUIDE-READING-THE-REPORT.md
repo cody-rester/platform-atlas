@@ -8,26 +8,61 @@ If you haven't run an audit yet, see the companion guide: [User Guide: Installat
 
 ## What the Report Is
 
-The Platform Atlas compliance report is a self-contained HTML file — no internet connection, no special software. Open it in any modern browser. It is saved at:
+`session run report` generates **three** linked HTML reports in a single pass — every session
+produces all three. They share a header navigation bar so you can switch between them in the
+browser without leaving the page:
+
+| File | What it covers |
+|---|---|
+| `03_report.html` | **Compliance** — overall score, results table, extended validation. The compliance report is what this guide focuses on. |
+| `04_operational.html` | **Operational** — platform / webserver / MongoDB log analysis, plus optional MongoDB aggregation pipelines. Covers operational hygiene, not configuration compliance. |
+| `05_arch.html` | **Architecture & Maintenance** — adapter states, Redis ACL coverage, index status, IAG paths, and the architecture overview from `architecture-form.html`. |
+
+All three are self-contained HTML files — no internet connection, no special software. Open
+them in any modern browser. They live alongside the session metadata at:
 
 ```
-~/.atlas/sessions/<session-name>/03_report.html
+~/.atlas/sessions/<session-name>/
 ```
 
-The report captures a point-in-time snapshot of your IAP deployment's configuration health. It does not make any changes to your environment — it only reports on what was found. Running a new audit and generating a new report is always safe.
+The compliance report opens automatically when generation finishes; the other two are linked
+in its header.
+
+The report captures a point-in-time snapshot of your IAP deployment's configuration health.
+It does not make any changes to your environment — it only reports on what was found.
+Running a new audit and generating a new report is always safe.
+
+### Tier banner
+
+Reports generated in v1.7+ show a **TIER** chip in the header — Standard or Extended.
+
+- **Standard** runs the application-layer subset (~54 rules) over Platform OAuth only. Rules
+  that need MongoDB / Redis / SSH simply aren't part of the Standard ruleset, so you won't see
+  them as SKIPs and there is **no partial-capture obelisk (†)** in Standard reports — a
+  limited module set is the full expected capture in Standard, not a deficiency.
+- **Extended** runs the full ~107-rule ruleset. Anything that couldn't be reached during
+  capture appears as SKIP (see below).
+
+If you `session diff` two sessions captured under different tiers, the diff report shows a
+banner explaining that the comparison spans tiers and the score gap may simply reflect
+different rule coverage.
 
 ---
 
 ## Report Layout at a Glance
 
-The report opens with a header showing the organization name, environment, audit date, and the ruleset used. Below that, everything is organized into four areas:
+The compliance report (`03_report.html`) opens with a header showing the organization name,
+environment, audit date, ruleset, and tier. Below that, everything is organized into four
+areas:
 
 1. **Compliance Score** — the overall health percentage and a breakdown by category
 2. **Results Table** — every rule that was evaluated, with its status and message
 3. **Extended Validation** — pattern-based checks that go beyond single-value rules
-4. **Log Analysis** — a breakdown of platform log error groups and frequencies
+4. **Log Analysis** — a breakdown of platform log error groups and frequencies (full content lives in `04_operational.html`)
 
-Read the report top-to-bottom on first review. The score gives you the headline. The results table tells you exactly what passed and what didn't. Extended validation surfaces patterns that individual rules can't catch. Log analysis is the operational pulse.
+Read the report top-to-bottom on first review. The score gives you the headline. The results
+table tells you exactly what passed and what didn't. Extended validation surfaces patterns
+that individual rules can't catch. Log analysis is the operational pulse.
 
 ---
 
@@ -324,3 +359,29 @@ platform-atlas session diff <original-session> <follow-up-session>
 ```
 
 The diff report highlights which rules improved, which regressed, and which stayed the same — giving you a clear record of progress.
+
+If the original and follow-up sessions were captured under different tiers, the diff report
+shows a banner noting the cross-tier comparison and the score delta should be read with that
+in mind.
+
+---
+
+## Continuous Audit and Drift Alerts
+
+For environments where you want to monitor drift between formal audits, Continuous Audit
+re-runs a Platform-OAuth-only capture against the active ruleset on a schedule and surfaces
+any rule whose observed value drifted from the prior run.
+
+Continuous-audit results live outside the session directory at
+`~/.atlas/continuous/<env>/`. Each run writes a bare JSON report at `runs/<run_id>.json`
+(suitable for scraping by external alerting), an append-only `events.ndjson` timeline, and
+an aggregate `alerts.json` for the unacked alerts UI.
+
+In the WebUI, drift surfaces in three places:
+
+- **Topbar pill** — current state (idle / running / failed) and last-run age.
+- **Bell icon** — shows the unacked alert count and links to `/alerts`.
+- **`/continuous` page** — full status, run history, and the policy / watchlist controls.
+
+Continuous Audit pairs naturally with the compliance report — the report tells you the state
+at a point in time, drift alerts tell you when that state has changed since.

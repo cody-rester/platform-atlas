@@ -1,7 +1,7 @@
 {
   "profile_id": "p6-prod-kubernetes",
   "profile_name": "Platform 6 Prod (Kubernetes)",
-  "description": "Kubernetes deployment of Platform 6. Disables rules that require SSH access (config files, systemd services, on-disk binaries) and rules that assume self-hosted MongoDB/Redis (getCmdLineOpts, Sentinel). K8s-specific health checks (KBS-*) are enabled.",
+  "description": "Kubernetes deployment of Platform 6",
   "rules": {
     "IAG-001": { "enabled": false },
     "IAG-002": { "enabled": false },

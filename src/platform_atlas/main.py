@@ -67,6 +67,8 @@ def main() -> int:
 
     # Extract the --env override if provided
     env_override = getattr(args, "env_override", None)
+    # Extract the --tier override if provided
+    tier_override = getattr(args, "tier_override", None)
 
     # Don't require valid config to run the setup wizard
     command_path = get_command_path(args)
@@ -130,9 +132,13 @@ def main() -> int:
             console.print("\n[bold yellow]Setup interrupted. No changes saved.[/bold yellow]")
             return 1
 
-    # Load configuration (with environment overlay if --env was passed)
+    # Load configuration (with environment overlay if --env was passed,
+    # and tier override if --tier was passed)
     try:
-        context = init_context(env_override=env_override)
+        context = init_context(
+            env_override=env_override,
+            tier_override=tier_override,
+        )
     except Exception as e:
         console.print(f"[bold red][PREFLIGHT][/bold red] {e}")
         return 1
@@ -155,6 +161,15 @@ def main() -> int:
             maybe_show_whats_new()
         except Exception:
             pass  # Never block startup for a cosmetic feature
+
+    # ── Always-on continuous-audit reminder ────────────────────────
+    # Printed on every invocation (including subcommands) when the active
+    # environment has continuous audit enabled. Decorative — never blocks.
+    try:
+        from platform_atlas.continuous.banner import print_banner
+        print_banner(context.active_environment)
+    except Exception:
+        pass
 
     #----############## DISPATCH ##############----#
     return dispatch(args)

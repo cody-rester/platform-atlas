@@ -285,7 +285,7 @@ class CaptureUI:
         preview_data = truncate_data(data)
 
         try:
-            preview_text = json.dumps(preview_data, indent=2, default=str)
+            preview_text = json.dumps(preview_data, indent=2, default=str, ensure_ascii=False)
             # Limit total lines
             lines = preview_text.split('\n')
             if len(lines) > 12:

@@ -21,6 +21,7 @@ from typing import Any, Callable
 
 import psutil
 
+from platform_atlas.core.context import require_extended
 from platform_atlas.core.preflight import CheckResult
 from platform_atlas.core.transport import Transport, LocalTransport
 
@@ -42,6 +43,10 @@ class SystemInfoCollector:
             include_top_processes: int = 0,
             cpu_percent_interval: float = 0.0,
     ) -> None:
+        require_extended(
+            "SystemInfoCollector",
+            hint="System info collection requires Extended Mode.",
+        )
         self._transport = transport or LocalTransport()
         self.include_per_cpu = include_per_cpu
         self.include_disks = include_disks

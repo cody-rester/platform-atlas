@@ -83,23 +83,25 @@
         },
 
         "architecture": {
-          "description": "Deployment topology and configuration collected during the architecture interview. All nine section keys are always present — null means the section was not captured or does not apply to this deployment.",
+          "description": "Deployment topology and configuration collected during the architecture interview, scoped per environment. All ten section keys are always present — null means the section was not captured or does not apply to this deployment.",
           "type": "object",
           "required": [
             "environment", "platform", "gateway4", "gateway5",
-            "mongodb", "redis", "load_balancer", "kubernetes", "network_security"
+            "mongodb", "redis", "load_balancer", "kubernetes",
+            "network_security", "vulnerability_assessments"
           ],
           "additionalProperties": false,
           "properties": {
-            "environment":      { "oneOf": [{ "$ref": "#/$defs/arch_environment" },      { "type": "null" }] },
-            "platform":         { "oneOf": [{ "$ref": "#/$defs/arch_platform" },         { "type": "null" }] },
-            "gateway4":         { "oneOf": [{ "$ref": "#/$defs/arch_gateway4" },         { "type": "null" }] },
-            "gateway5":         { "oneOf": [{ "$ref": "#/$defs/arch_gateway5" },         { "type": "null" }] },
-            "mongodb":          { "oneOf": [{ "$ref": "#/$defs/arch_mongodb" },          { "type": "null" }] },
-            "redis":            { "oneOf": [{ "$ref": "#/$defs/arch_redis" },            { "type": "null" }] },
-            "load_balancer":    { "oneOf": [{ "$ref": "#/$defs/arch_load_balancer" },    { "type": "null" }] },
-            "kubernetes":       { "oneOf": [{ "$ref": "#/$defs/arch_kubernetes" },       { "type": "null" }] },
-            "network_security": { "oneOf": [{ "$ref": "#/$defs/arch_network_security" }, { "type": "null" }] }
+            "environment":              { "oneOf": [{ "$ref": "#/$defs/arch_environment" },              { "type": "null" }] },
+            "platform":                 { "oneOf": [{ "$ref": "#/$defs/arch_platform" },                 { "type": "null" }] },
+            "gateway4":                 { "oneOf": [{ "$ref": "#/$defs/arch_gateway4" },                 { "type": "null" }] },
+            "gateway5":                 { "oneOf": [{ "$ref": "#/$defs/arch_gateway5" },                 { "type": "null" }] },
+            "mongodb":                  { "oneOf": [{ "$ref": "#/$defs/arch_mongodb" },                  { "type": "null" }] },
+            "redis":                    { "oneOf": [{ "$ref": "#/$defs/arch_redis" },                    { "type": "null" }] },
+            "load_balancer":            { "oneOf": [{ "$ref": "#/$defs/arch_load_balancer" },            { "type": "null" }] },
+            "kubernetes":               { "oneOf": [{ "$ref": "#/$defs/arch_kubernetes" },               { "type": "null" }] },
+            "network_security":         { "oneOf": [{ "$ref": "#/$defs/arch_network_security" },         { "type": "null" }] },
+            "vulnerability_assessments":{ "oneOf": [{ "$ref": "#/$defs/arch_vulnerability_assessments" },{ "type": "null" }] }
           }
         }
 
@@ -313,7 +315,8 @@
       "required": ["mtu_size", "has_connectivity_concerns", "selinux_mode"],
       "additionalProperties": true,
       "properties": {
-        "mtu_size":                  { "type": "string", "description": "e.g. '1500 (Standard — recommended)', '9000 (Jumbo Frames)'." },
+        "mtu_size":                  { "type": "string", "description": "e.g. '1500 (Standard — recommended)', '9000 (Jumbo Frames)', 'Other', 'Unknown'." },
+        "mtu_size_other":            { "type": "string", "description": "User-supplied MTU value when mtu_size is 'Other' (e.g. '1492')." },
         "has_connectivity_concerns": { "type": "boolean" },
         "connectivity_notes":        { "type": "string" },
         "selinux_mode":              { "type": "string", "enum": ["Enforcing", "Permissive", "Disabled", "N/A (Containers / Non-Linux)"] },
@@ -323,6 +326,26 @@
           "description": "Selected standards, e.g. ['FIPS 140-2', 'DISA STIG']. Empty array if none."
         },
         "compliance_other": { "type": "string" }
+      }
+    },
+
+    "arch_vulnerability_assessments": {
+      "description": "Whether the environment undergoes vulnerability assessments, the tool(s) used, and how often.",
+      "type": "object",
+      "required": ["performs_assessments"],
+      "additionalProperties": true,
+      "properties": {
+        "performs_assessments": { "type": "boolean", "description": "True if scans / penetration tests / compliance audits are run on this environment." },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Selected tools, e.g. ['Tenable / Nessus', 'Qualys']. Only present when performs_assessments is true."
+        },
+        "tools_other": { "type": "string", "description": "Free-text tool name when 'Other' is selected." },
+        "frequency":   {
+          "type": "string",
+          "description": "How often assessments run, e.g. 'Quarterly', 'Continuous (daily / on commit)'."
+        }
       }
     }
 

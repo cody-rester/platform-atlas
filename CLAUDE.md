@@ -77,6 +77,30 @@ bandit -r src/platform_atlas/ --skip B105,B106
 
 ### Core Concepts
 
+**Tiers** (1.7+) split Atlas into two productized modes:
+
+- **Standard** — application-only audit via Platform OAuth + optional IAG4 API token.
+  ~54 rules across the `platform` and `gateway4` categories. No SSH, no MongoDB, no Redis.
+  Default for fresh 1.7 installs.
+- **Extended** — full infrastructure audit. Adds the SSH/Mongo/Redis/IAG/system/filesystem/
+  Kubernetes collectors. ~107 rules. Default for installs upgraded from 1.6.x (migration
+  shim preserves the existing experience).
+
+Three independent defenses enforce the Standard boundary:
+
+1. **Registry pruning** — `capture/modules_registry.py::_build_modules_standard` returns
+   only `platform` + `gateway4_api` modules.
+2. **`require_extended()` guards** — every Extended-only collector and `transport.py`'s SSH
+   branch call this in `__init__` / `from_config` so any accidental Standard invocation
+   raises `TierViolationError` before any network connection is attempted.
+3. **Tier-aware credential store** — `EXTENDED_ONLY_KEYS` in `credentials.py` are silently
+   `None` on read in Standard and raise on write.
+
+Rule filtering happens in `rules.py` before evaluation. Tier resolution order:
+`--tier` flag → `ATLAS_TIER` env var → environment overlay → config → default.
+Sessions bind tier at create time alongside ruleset/environment — switching sessions
+atomically restores the full context.
+
 **Sessions** are the primary unit of work. Each session binds an environment, ruleset, and
 profile at creation time. Switching sessions atomically restores all three, ensuring audit
 consistency. Session files live at `~/.atlas/sessions/<name>/`:

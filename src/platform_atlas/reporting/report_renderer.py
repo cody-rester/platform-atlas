@@ -153,7 +153,7 @@ def generate_category_chart_data(
             "total": len(group),
         })
 
-    return json.dumps(chart_data)
+    return json.dumps(chart_data, ensure_ascii=False)
 
 
 def generate_severity_chart_data(
@@ -185,7 +185,7 @@ def generate_severity_chart_data(
         })
 
     chart_data.sort(key=lambda x: severity_order.get(x["severity"], 99))
-    return json.dumps(chart_data)
+    return json.dumps(chart_data, ensure_ascii=False)
 
 
 # ─────────────── EXTENDED VALIDATION CHART DATA ─────────────── #
@@ -244,7 +244,7 @@ def generate_extended_chart_data(extended_results: list) -> str:
         "checks": checks,
         "by_status": by_status,
         "by_category": by_category,
-    })
+    }, ensure_ascii=False)
 
 
 # ─────────────── EXTENDED SECTION RENDERER ─────────────── #
@@ -951,7 +951,9 @@ _ARCH_SECTION_LABELS = {
     "redis": "Redis",
     "load_balancer": "Load Balancer",
     "kubernetes": "Kubernetes",
+    "monitoring": "Monitoring & Observability",
     "network_security": "Network & Security",
+    "vulnerability_assessments": "Vulnerability Assessments",
 }
 
 
@@ -1078,8 +1080,14 @@ def render_html_report(
         extended_results: list = None,
         knowledgebase: dict | None = None,
         architecture_data: dict | None = None,
+        tier: str = "extended",
 ) -> str:
-    """Render a validation DataFrame to a styled HTML report"""
+    """Render a validation DataFrame to a styled HTML report.
+
+    The ``tier`` argument stamps the Mode badge and chooses tier-aware
+    cover headlines: Standard reports lead with "Application Audit"
+    while Extended reports lead with "Infrastructure Audit".
+    """
 
     # Load Template
     template_path = Path(template_path)
@@ -1117,7 +1125,7 @@ def render_html_report(
                     "purpose": fix.purpose,
                     "how_to_fix": fix.how_to_fix,
                 }
-        fixes_json = json.dumps(fixes_for_modal)
+        fixes_json = json.dumps(fixes_for_modal, ensure_ascii=False)
 
     # Generate timestamp
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -1164,9 +1172,16 @@ def render_html_report(
     # Generate modules footer text
     modules_text, is_partial = generate_modules_footer(modules_ran)
 
+    # Standard tier: limited modules are the full expected capture, not partial.
+    # Suppress the obelisk and footnote — they only apply to Extended captures
+    # where specific infrastructure modules failed or were skipped.
+    _tier_check = (tier or "extended").strip().lower()
+    if _tier_check == "standard":
+        is_partial = False
+
     # Add obelisk to score if partial
     score_obelisk = "†" if is_partial else ""
-    modules_footnote = f"† Score based on partial data collection ({modules_text})"
+    modules_footnote = f"† Score based on partial data collection ({modules_text})" if is_partial else ""
 
     # ===== CRITICAL: Escape ONLY user-controlled values =====
     # These are the values that could contain XSS
@@ -1181,6 +1196,49 @@ def render_html_report(
 
     # System info might contain user data (e.g., hostname)
     safe_system_info = [html_mod.escape(info) for info in system_info]
+
+    # ── Tier metadata for badge + cover ─────────────────────────
+    # Allow the DataFrame attrs to override the default — capture pipeline
+    # stamps tier into df.attrs["tier"] so callers don't have to thread it.
+    resolved_tier = tier
+    if (resolved_tier or "extended").strip().lower() == "extended":
+        attr_tier = df.attrs.get("tier")
+        if attr_tier:
+            resolved_tier = attr_tier
+    tier_normalized = (resolved_tier or "extended").strip().lower()
+    if tier_normalized == "standard":
+        tier_label = "STANDARD"
+        # Itential Blue — matches the brand "primary" surface.
+        tier_color = "#1B93D2"
+        cover_kind = "Application Audit"
+        tier_footer_html = (
+            "<p class=\"tier-footer-note\">"
+            "Want deeper validation? Itential&#39;s Extended Mode adds "
+            "MongoDB, Redis, IAG5 and system-layer audits. "
+            "Contact your Itential CSM, or run "
+            "<code>platform-atlas tier upgrade</code>."
+            "</p>"
+        )
+    else:
+        tier_label = "EXTENDED"
+        # Itential Orange — the upsell color for the upgrade tier.
+        tier_color = "#FF6633"
+        cover_kind = "Infrastructure Audit"
+        tier_footer_html = ""
+    safe_tier_label = html_mod.escape(tier_label)
+    safe_tier_color = html_mod.escape(tier_color)
+    safe_cover_kind = html_mod.escape(cover_kind)
+
+    # Operational report nav link — disabled in Standard (logs and MongoDB pipelines
+    # are Extended-only); Architecture link is available in all tiers.
+    if tier_normalized == "standard":
+        operational_nav_link = (
+            '<span class="op-link op-link--disabled" '
+            'title="You can only see this in Extended Mode">'
+            'Operational</span>'
+        )
+    else:
+        operational_nav_link = '<a href="04_operational.html" class="op-link">Operational</a>'
 
     # Replace placeholders
     replacements = {
@@ -1214,6 +1272,11 @@ def render_html_report(
         "{{CATEGORY_CHART_DATA}}": category_chart_json,
         "{{SEVERITY_CHART_DATA}}": severity_chart_json,
         "{{EXTENDED_CHART_DATA}}": extended_chart_json,
+        "{{TIER_LABEL}}": safe_tier_label,
+        "{{TIER_COLOR}}": safe_tier_color,
+        "{{TIER_COVER_KIND}}": safe_cover_kind,
+        "{{TIER_FOOTER}}": tier_footer_html,
+        "{{OPERATIONAL_NAV_LINK}}": operational_nav_link,
     }
 
     pattern = re.compile("|".join(re.escape(k) for k in replacements))

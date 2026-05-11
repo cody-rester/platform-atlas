@@ -755,7 +755,7 @@ class ManualProgress:
             "capture_data": self.capture_data,
         }
         path.write_text(
-            json.dumps(serializable, indent=2, default=str),
+            json.dumps(serializable, indent=2, default=str, ensure_ascii=False),
             encoding="utf-8",
         )
 

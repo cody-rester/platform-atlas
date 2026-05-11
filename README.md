@@ -17,6 +17,8 @@ Platform Atlas is a comprehensive CLI tool that captures configuration data from
 - [Initial Setup](#initial-setup)
 - [Configuration](#configuration)
 - [Environments](#environments)
+- [Kubernetes Deployments](#kubernetes-deployments)
+- [ControlMaster Transport (CyberArk PSMP)](#controlmaster-transport-cyberark-psmp)
 - [The Workflow](#the-workflow)
 - [Command Reference](#command-reference)
 - [Rulesets and Profiles](#rulesets-and-profiles)
@@ -33,16 +35,18 @@ Platform Atlas is a comprehensive CLI tool that captures configuration data from
 
 ## Features
 
+- **Two Audit Tiers** — Choose between Standard (Platform OAuth + IAG4 API only, ~55 rules, no SSH/MongoDB/Redis required) and Extended (full infrastructure audit via SSH, MongoDB, Redis, Kubernetes, and Gateways, ~108 rules). Switch at any time with `platform-atlas tier set`.
 - **Automated Data Collection** — Connects via SSH, MongoDB, Redis, and Platform OAuth to capture configuration data from all components of an IAP deployment. If passwordless sudo is available, Atlas will automatically use it to read configuration files that the SSH user cannot access directly.
+- **Optional WebUI** — Browser-based interface (`platform-atlas-webui` wheel) for managing sessions, running captures, streaming live job output, and browsing reports — no CLI knowledge required.
 - **Multiple Rulesets** — Select from versioned, JSON schema-validated rulesets tailored to specific platform versions (e.g., Platform 6)
 - **Ruleset Profiles** — Environment-specific overlays (standalone, HA2, dev, prod, gateway4, gateway5) that enable or disable rules from the master ruleset
-- **105 Validation Rules** — Covering Redis, MongoDB, Platform, Gateway4, and Gateway5 across critical, warning, and info severity levels
+- **~108 Validation Rules (Extended) / ~55 (Standard)** — Covering Redis, MongoDB, Platform, Gateway4, and Gateway5 across critical, warning, and info severity levels
 - **Extended Validation** — Decorator-based checks that run outside the standard ruleset structure for health, adapter, and version analysis
 - **Rule Chaining** — Rules can depend on other rules, so downstream checks are automatically skipped when a dependency fails
 - **Dynamic Rules** — Limited computed values inside rules for proper comparison against runtime configuration
 - **Professional HTML Reports** — Full HTML/CSS/JS reports with the Atlas Horizon design system, supporting dark and light themes with W3C-compliant markup
 - **Session Diff Engine** — Compare two audit sessions side-by-side to track configuration drift, regressions, and fixes over time
-- **Session Management** — Organize captures, validations, and reports into named sessions with metadata tracking. Each session binds an environment, ruleset, and profile at creation — switching sessions restores the full context automatically
+- **Session Management** — Organize captures, validations, and reports into named sessions with metadata tracking. Each session binds an environment, ruleset, tier, and profile at creation — switching sessions restores the full context automatically
 - **Guided Manual Collection** — Interactive fallback prompts for environments where automated capture cannot reach certain components. Supports batch directory import (`--import-dir`) for importing all pre-collected files at once without interactive prompts — re-runnable to incrementally add data.
 - **Multi-Tenant Mode** — Itential staff can import and manage capture data from multiple customer organizations in a single installation
 - **Named Environments** — Define multiple deployment targets (dev, staging, production) as independent environment files, each with its own organization name, connection details, topology, and scoped credentials
@@ -56,24 +60,26 @@ Platform Atlas is a comprehensive CLI tool that captures configuration data from
 ## Requirements
 
 - Python 3.11 or higher
-- SSH access to target nodes (key-based authentication recommended)
-- MongoDB user with `clusterMonitor` (admin) + `read` on the Platform database
-- Read-only Redis user with limited ACL permissions
-- Platform OAuth service account with read-only API access
-- OS keyring backend available (macOS Keychain, GNOME Keyring, KWallet, or Windows Credential Locker), or Hashicorp Vault with KV v2 secrets engine
+- Platform OAuth service account with read-only API access *(all tiers)*
+- OS keyring backend available (macOS Keychain, GNOME Keyring, KWallet, or Windows Credential Locker), or Hashicorp Vault with KV v2 secrets engine *(all tiers)*
+- SSH access to target nodes (key-based authentication recommended) *(Extended tier only)*
+- MongoDB user with `clusterMonitor` (admin) + `read` on the Platform database *(Extended tier only)*
+- Read-only Redis user with limited ACL permissions *(Extended tier only)*
 
 ## Install and Setup
 
-Platform Atlas is distributed as a Python wheel package. It is recommended to install it inside a dedicated virtual environment to keep it self-contained and easy to manage. It's recommended to install this on a Workstation computer
-that has remote access to Platform, Redis, and MongoDB.
+Platform Atlas is distributed as two Python wheel packages — the core CLI and an optional WebUI. Install inside a dedicated virtual environment on the workstation you use to access your IAP environment.
 
 ```bash
 # Create and activate a virtual environment
 python3 -m venv atlas-venv
 source atlas-venv/bin/activate
 
-# Install the wheel package
+# Install the CLI (required)
 pip3 install -U platform_atlas-<version>-py3-none-any.whl
+
+# Install the WebUI (optional — adds the browser interface)
+pip3 install -U platform_atlas_webui-<version>-py3-none-any.whl
 ```
 
 Verify the installation:
@@ -82,9 +88,45 @@ Verify the installation:
 platform-atlas --version
 ```
 
+### Starting the WebUI
+
+If you installed the WebUI wheel, launch it with:
+
+```bash
+platform-atlas-webui
+```
+
+This starts a local server and opens the interface in your browser. The WebUI shares the same `~/.atlas/` configuration directory as the CLI — no separate setup required.
+
+### Credential Storage (OS Keyring)
+
+Platform Atlas stores sensitive credentials (MongoDB, Redis, Platform OAuth, SSH passphrases, Gateway passwords) in your operating system's secure credential store via the `keyring` library — never in config files on disk. Each environment's secrets are scoped under `platform-atlas/<env-name>` so production credentials are completely isolated from dev/staging credentials.
+
+| Platform | Backend used |
+|---|---|
+| macOS | Keychain (built-in) |
+| Windows | Credential Locker (built-in) |
+| Linux (desktop) | GNOME Keyring / KWallet via SecretService |
+| Linux (headless) | Encrypted file backend (configure manually — see below) |
+
+**Reconfigure or rotate credentials at any time:**
+
+```bash
+platform-atlas config credentials
+```
+
+This is the canonical command for adding, updating, or rotating any credential — Platform OAuth client secret, MongoDB/Redis URIs, SSH key passphrases, Gateway4 password, or Vault auth tokens. It writes to the active environment's keyring scope (or to your Vault backend, depending on `credential_backend`). Use it whenever:
+
+- A credential has been rotated upstream and Atlas connections start failing
+- You're switching backends (`keyring` ↔ `vault`)
+- You set up a new SSH key with a passphrase
+- You need to add a credential that wasn't collected during the original `env create` flow (e.g. retrofitting a Gateway4 password onto an existing environment)
+
+You do **not** need to recreate the environment to update credentials.
+
 ### Credential Storage (Headless Servers)
 
-Platform Atlas is generally to be used on a Workstation PC, but if needed to install on a server this can be done. Platform Atlas uses the `keyring` library to securely store credentials (MongoDB, Redis, Platform OAuth, SSH). On headless Linux servers without a desktop environment, the default keyring backend has no encryption. Atlas will warn you about this during setup if it detects an insecure backend.
+Platform Atlas is generally to be used on a Workstation PC, but if needed to install on a server this can be done. On headless Linux servers without a desktop environment, the default keyring backend has no encryption. Atlas will warn you about this during setup if it detects an insecure backend.
 
 To set up encrypted credential storage, install the following packages:
 
@@ -114,7 +156,7 @@ You can verify the backend is active with:
 python3 -c "import keyring; print(keyring.get_keyring())"
 ```
 
-This should output `EncryptedKeyring`. The first time Atlas stores a credential, you will be prompted to create a master password for the encrypted keyring file.
+This should output `EncryptedKeyring`. The first time Atlas stores a credential, you will be prompted to create a master password for the encrypted keyring file. After that, run `platform-atlas config credentials` to populate the encrypted store with your environment's secrets.
 
 ### Credential Storage (Hashicorp Vault)
 
@@ -313,6 +355,175 @@ The `capture_scope` setting controls how many nodes the capture engine connects 
 
 - **primary_only** (default) — One node per role. Minimal connections for standard audits.
 - **all_nodes** — Every node in the topology. Used when you need full coverage across all replicas and cluster members.
+
+## Tiers
+
+Starting in v1.7, Atlas operates in one of two modes:
+
+| | Standard | Extended |
+|---|---|---|
+| **Collectors** | Platform OAuth, IAG4 API | All Standard + SSH, MongoDB, Redis, Kubernetes, Gateway5 |
+| **Rules** | ~55 | ~108 |
+| **SSH required** | No | Yes |
+| **MongoDB / Redis required** | No | Yes |
+| **Best for** | Application-layer audits, quick checks, restricted environments | Full infrastructure compliance audits |
+
+Fresh installs default to **Standard**. Upgrades from 1.6.x default to **Extended** to preserve existing behavior.
+
+### Tier Commands
+
+```bash
+platform-atlas tier show              # Show active tier and what is enabled
+platform-atlas tier set standard      # Switch to Standard (non-interactive)
+platform-atlas tier set extended      # Switch to Extended (non-interactive)
+platform-atlas tier upgrade           # Guided Standard → Extended flow
+platform-atlas tier downgrade         # Guided Extended → Standard flow
+```
+
+Use the `--tier` flag to override the tier for a single command without changing the persisted setting:
+
+```bash
+platform-atlas --tier standard session run capture
+```
+
+Sessions bind the active tier at creation time. The tier is displayed in session metadata and reports. Cross-tier diffs are flagged with a notice banner.
+
+---
+
+## Kubernetes Deployments
+
+Kubernetes deployments use the `KubernetesCollector` instead of SSH-based collectors. Data comes from two sources: Helm `values.yaml` files (declarative config) and live `kubectl` commands (runtime state). No SSH access is required.
+
+### Configuring a Kubernetes Environment
+
+When creating an environment, select **Kubernetes** as the deployment mode. The setup wizard will prompt for:
+
+| Field | Purpose |
+|---|---|
+| `values_yaml_path` | Path to the IAP Helm `values.yaml` |
+| `iag5_values_yaml_path` | Path to the IAG5 `values.yaml` (optional) |
+| `use_kubectl` | Enable live `kubectl` collection |
+| `kubectl_context` | kubectl context name (leave blank for current context) |
+| `kubectl_namespace` | Kubernetes namespace (default: `default`) |
+
+These fields are also editable after setup via `platform-atlas env edit` or the WebUI **Environments** form.
+
+### Data Source Priority
+
+For Kubernetes environments, each data type is collected in this order, using the first source that succeeds:
+
+1. **Platform OAuth API** — health, version, application status, runtime configuration
+2. **kubectl `printenv`** (if `use_kubectl: true`) — live environment variables from inside a running IAP pod
+3. **values.yaml** — declarative Helm configuration as a static fallback
+
+MongoDB and Redis data requires the protocol collectors (pymongo / redis-py) to be reachable. If MongoDB and Redis are external managed services (e.g., AWS Atlas, ElastiCache), the Mongo and Redis rule categories will show as **SKIP** in the report — this is expected and not an error.
+
+### kubectl Rule Fallbacks
+
+The following rules have an `alt_path` that Atlas uses when the primary data source (Platform OAuth API) is unavailable. The `alt_path` data comes from `kubectl exec <pod> -- printenv` — the live `ITENTIAL_*` environment variables baked into the running pod.
+
+**Group 1 — Pod environment variables (`ITENTIAL_*` → `platform.config_file.*`)**
+
+| Rule | Primary path | kubectl alt_path | Pod env var |
+|---|---|---|---|
+| Platform Default User | `platform.config.default_user_enabled.value` | `platform.config_file.default_user_enabled` | `ITENTIAL_DEFAULT_USER_ENABLED` |
+| Platform Core Logging Level | `platform.config.log_level.value` | `platform.config_file.log_level` | `ITENTIAL_LOG_LEVEL` |
+| Server ID | `platform.config.server_id.value` | `platform.config_file.server_id` | `ITENTIAL_SERVER_ID` |
+| Mongo Auth Enabled | `platform.config.mongo_auth_enabled.value` | `platform.config_file.mongo_auth_enabled` | `ITENTIAL_MONGO_AUTH_ENABLED` |
+| Mongo TLS Enabled | `platform.config.mongo_tls_enabled.value` | `platform.config_file.mongo_tls_enabled` | `ITENTIAL_MONGO_TLS_ENABLED` |
+| Log Max Files | `platform.config.log_max_files.value` | `platform.config_file.log_max_files` | `ITENTIAL_LOG_MAX_FILES` |
+| Log File Max Size | `platform.config.log_max_file_size.value` | `platform.config_file.log_max_file_size` | `ITENTIAL_LOG_MAX_FILE_SIZE` |
+| Webserver HTTPS Enabled | `platform.config.webserver_https_enabled.value` | `platform.config_file.webserver_https_enabled` | `ITENTIAL_WEBSERVER_HTTPS_ENABLED` |
+| Webserver HTTP Enabled | `platform.config.webserver_http_enabled.value` | `platform.config_file.webserver_http_enabled` | `ITENTIAL_WEBSERVER_HTTP_ENABLED` |
+| Webserver Timeout | `platform.config.webserver_timeout.value` | `platform.config_file.webserver_timeout` | `ITENTIAL_WEBSERVER_TIMEOUT` |
+
+**Group 2 — kubectl system data (`system.kubernetes.*`)**
+
+These fallbacks come from files and commands read directly inside the running pod, rather than environment variables. They are collected automatically whenever `use_kubectl: true` and an IAP pod is found.
+
+| Rule | Primary path | kubectl alt_path | Source inside pod |
+|---|---|---|---|
+| Platform Version | `platform.health_server.version` | `system.kubernetes.platform_release_version` | `cat /opt/itential/platform/server/release_metadata.json` |
+| Node Version | `platform.health_server.versions.node` | `system.kubernetes.node_version` | `node --version` |
+| Gateway Manager Version Check | `platform.application_status.results.GatewayManager.version` | `system.kubernetes.installed_services.app-ag_manager.version` | `cat .../services/app-ag_manager/package.json` |
+
+> **Debug logging:** When `--debug` is enabled (or `"debug": true` in `config.json`), Atlas logs every `kubectl` command it runs, the exit code, elapsed time, and any stderr output to `~/.atlas/atlas.log`. This makes it straightforward to verify which commands fired and whether they succeeded.
+
+---
+
+## ControlMaster Transport (CyberArk PSMP)
+
+Some environments route SSH through a Privileged Access Management (PAM) gateway such as CyberArk PSMP, where direct key-based SSH to the target server isn't possible — authentication requires MFA (YubiKey OTP, RADIUS, etc.) and goes through a jump host rather than direct to the server.
+
+Atlas supports **ControlMaster transport** for these environments. Instead of opening a fresh SSH connection for every collector, Atlas piggybacks on a single pre-authenticated SSH session that you open manually before running a capture. Once the master session is established and MFA is satisfied, Atlas multiplexes all of its connections through it with no further authentication prompts.
+
+> **Scope:** ControlMaster applies to the **Platform (IAP) node only**. MongoDB and Redis nodes still use regular SSH — configure a direct-access user for them as described in the [SSH Setup Guide](GUIDES/SSH_SETUP_GUIDE.md).
+
+### When to Use It
+
+- Your IAP server is behind CyberArk PSMP or a similar PAM gateway
+- SSH to the IAP node requires MFA (YubiKey, RADIUS, smart card) that Atlas cannot automate
+- Direct key-based SSH to the IAP node is not permitted by policy
+
+### Step 1: Open the ControlMaster Session
+
+Before running Atlas, open the master connection once from your workstation. This is the step that triggers MFA — complete it interactively, then Atlas takes over:
+
+```bash
+ssh -M -S /tmp/atlas-cm.sock \
+    -o ControlPersist=10m \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -fN user@target-host@psmp-gateway.example.com
+```
+
+| Flag | Purpose |
+|---|---|
+| `-M -S /tmp/atlas-cm.sock` | Create a ControlMaster socket at that path |
+| `-o ControlPersist=10m` | Keep the socket alive for 10 minutes after the connection — enough for a full capture |
+| `-fN` | Background the process (`-f`) and open no remote command (`-N`) |
+| `user@target-host@psmp-gateway` | CyberArk PSMP format: `<user>@<target-ip-or-host>@<psmp-gateway-host>` |
+
+You will be prompted for MFA (password, YubiKey tap, etc.) during this step. Once complete, the master session runs silently in the background.
+
+**Verify the socket is working:**
+
+```bash
+ssh -S /tmp/atlas-cm.sock \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    user@target-host@psmp-gateway.example.com \
+    "echo atlas-ok && whoami && hostname"
+```
+
+If you see `atlas-ok` plus the username and hostname, Atlas will be able to connect.
+
+### Step 2: Configure Atlas
+
+**CLI — during environment setup:**
+
+When the setup wizard asks how Atlas should connect to the Platform (IAP) server, select **ControlMaster**. You will be prompted for:
+
+- **Socket path** — path to the `-S` socket file (e.g. `/tmp/atlas-cm.sock`)
+- **SSH destination** — the full destination string exactly as used in the `ssh -M` command (e.g. `user@target-host@psmp-gateway.example.com`)
+
+**WebUI — in the Environment form:**
+
+Under **Topology → Platform (IAP) connection type**, select **ControlMaster — CyberArk PSMP / jump host**. Two additional fields appear:
+- **ControlMaster socket path** — same as above
+- **SSH destination** — same as above
+
+### Step 3: Run Atlas
+
+With the master session open, run Atlas normally:
+
+```bash
+platform-atlas session run capture
+```
+
+Atlas will connect through the socket without prompting for MFA. If the socket has expired (closed or timed out), Atlas will print the exact `ssh -M` command to re-open it.
+
+---
 
 ## The Workflow
 
@@ -515,6 +726,15 @@ The diff report classifies each rule as Fixed, Regressed, Unchanged, New, Remove
 | `env edit [name]` | Edit environment settings (org name, URIs, topology, etc.) |
 | `env remove <n>` | Delete an environment |
 
+### Tier Commands
+
+| Command | Description |
+|---|---|
+| `tier show` | Show the active tier and what is enabled |
+| `tier set <tier>` | Set the global tier (`standard` or `extended`) |
+| `tier upgrade` | Guided Standard → Extended upgrade flow |
+| `tier downgrade` | Guided Extended → Standard downgrade flow |
+
 ### Other Commands
 
 | Command | Description |
@@ -524,6 +744,7 @@ The diff report classifies each rule as Fixed, Regressed, Unchanged, New, Remove
 | `--version` | Display version |
 | `--debug` | Enable debug mode with verbose logging |
 | `--env <name>` | Use a specific environment for this command |
+| `--tier <tier>` | Override the active tier for this command only |
 
 ## Rulesets and Profiles
 
@@ -695,6 +916,51 @@ platform-atlas --debug session run capture
 }
 ```
 
+### Raw Capture Export (Authoring New Rules)
+
+When `session run capture` finishes, Atlas writes `01_capture.json` — a copy of the captured data **pruned** to only the dot-paths the active ruleset references (plus a few passthrough sections for the operational/architecture reports). That keeps the file small but means any path the ruleset doesn't already use is invisible — which is awkward when you're trying to author a *new* rule and need to see what's actually available under, say, `mongo.config_file.systemLog.*`.
+
+Atlas can also write an **unfiltered** companion file, `01_raw_capture.json`, containing the full reshaped capture **before** ruleset filtering. The shape is identical to `01_capture.json` — same nested keys, same dot-paths — just without the prune step, so every value the collectors returned is visible. Use it to find the exact dot-notation path you want to target, then add the new rule to your ruleset and re-run validate.
+
+Two ways to enable the raw export (whichever you set, or both):
+
+**Per-environment (persistent):** Set `debug_export_raw_capture: true` on the environment. Use `platform-atlas env edit`, choose `Debug: Export Raw Capture`, and toggle it on. Every capture against that environment will write `01_raw_capture.json` until you turn it off.
+
+```bash
+platform-atlas env edit production
+# → select "Debug: Export Raw Capture" → on
+```
+
+You can also edit the environment file directly under `~/.atlas/environments/<name>.json`:
+
+```json
+{
+    "name": "production",
+    ...
+    "debug_export_raw_capture": true
+}
+```
+
+**Per-run (one-off):** Pass `--debug-raw-capture` to a single capture without changing the environment.
+
+```bash
+platform-atlas session run capture --debug-raw-capture
+```
+
+The flag takes effect for that run only and OR-combines with the env-level setting — turning the flag on never disables the env toggle, and an env toggle stays on across runs without the flag.
+
+Once enabled, the file appears next to the regular capture:
+
+```
+~/.atlas/sessions/<session>/
+├── 01_capture.json         # Filtered to ruleset paths (always written)
+└── 01_raw_capture.json     # Unfiltered reshape (debug only)
+```
+
+Both flows work identically in the WebUI — the env toggle is editable from the Environment form and the raw file is written into the session directory whenever the toggle is on. The WebUI does not have a per-run override (no CLI flag context); use the env toggle there.
+
+> **Disk note:** The raw file can be several times larger than the filtered one on large deployments — it contains every nested section the collectors returned. Leave the toggle off for routine audits and only flip it on while authoring rules.
+
 ### Common Issues
 
 **"Config file not found"** — Run `platform-atlas config init` to create the initial configuration.
@@ -705,7 +971,11 @@ platform-atlas --debug session run capture
 
 **"Permission denied" on config file** — Set proper permissions: `chmod 600 ~/.atlas/config.json`.
 
-**"Insecure keyring backend"** — Install a supported keyring backend. On headless Linux, install `gnome-keyring` or `kwallet`, or set the `PYTHON_KEYRING_BACKEND` environment variable.
+**"Insecure keyring backend"** — Install a supported keyring backend. On headless Linux, install `gnome-keyring` or `kwallet`, or set the `PYTHON_KEYRING_BACKEND` environment variable. After the backend is in place, run `platform-atlas config credentials` to populate it with your environment's secrets — Atlas will not auto-migrate credentials from a previous insecure backend.
+
+**"Authentication failed" / "401 Unauthorized" against Platform, MongoDB, Redis, or Gateway4** — A stored credential is wrong, expired, or rotated upstream. Run `platform-atlas config credentials` to update it; this rewrites the keyring entry for the active environment without recreating the environment file. Re-run `platform-atlas preflight` to verify.
+
+**"No credential found for `<key>`"** — A required secret was never stored in the keyring (common after restoring `~/.atlas/` from a backup, switching machines, or initializing the encrypted backend on a headless server). Run `platform-atlas config credentials` and supply the missing value. The keyring is intentionally not part of `~/.atlas/`, so credentials never travel with the config directory.
 
 **"Vault unreachable" or "Credential Backend Failed"** - Vault is configured as the credential backend but Atlas cannot connect. Verify that Vault is running and the URL is correct. For **token** auth, check that the token hasn't expired. For **approle**, verify both `role_id` and `secret_id` are valid. For **approle_wrapped**, the wrapping token may have already been used or expired — obtain a new one and run `platform-atlas config credentials`. For **token_file**, verify that Vault Agent is running and has written a token to the configured sink path. For **token_env**, verify that `VAULT_TOKEN` is set in the environment before running Atlas. Run `platform-atlas preflight` to diagnose.
 
@@ -729,7 +999,9 @@ platform-atlas --debug session run capture
 ├── sessions/                       # Audit sessions
 │   └── prod-audit-q1/
 │       ├── session.json            # Session metadata (bound env, ruleset, profile, org)
-│       ├── 01_capture.json         # Captured configuration data
+│       ├── 01_capture.json         # Captured configuration data (filtered to ruleset paths)
+│       ├── 01_raw_capture.json     # Optional: unfiltered reshape — written only when
+│       │                           #   debug_export_raw_capture is on (env or --debug-raw-capture)
 │       ├── 02_validation.parquet   # Validation results
 │       ├── 03_report.html          # Compliance report
 │       ├── 04_operational.html     # Operational report (logs + pipeline metrics)
@@ -744,11 +1016,23 @@ platform-atlas --debug session run capture
             └── 03_report.html
 ```
 
-## Upgrading from Pre-1.5
+## Upgrading
+
+### From 1.6.x → 1.7
+
+All existing sessions, environments, and captures continue to work without changes. Your installation is automatically assigned **Extended** tier on first run, which preserves the full infrastructure audit behavior from 1.6.x.
+
+If you want to switch to Standard tier for application-only audits, run:
+
+```bash
+platform-atlas tier set standard
+```
+
+The optional WebUI can be installed independently — it does not affect CLI behavior.
+
+### From Pre-1.5
 
 Starting in v1.5, sessions bind an environment, ruleset, and profile at creation time. Switching sessions restores the full context automatically — no more separately managing `env switch`, `ruleset load`, and `ruleset profile set`.
-
-Environments now carry an `organization_name` field, so each deployment target can have its own org name for reports. The global `organization_name` in `config.json` serves as the default for new environments.
 
 Existing sessions and environments continue to work without changes. Sessions created before 1.5 won't have bound metadata, but you can backfill it from capture data with `platform-atlas session repair`. Environments can be updated with `platform-atlas env edit` to add an organization name.
 
@@ -764,6 +1048,6 @@ This project is licensed under the GNU General Public License v3.0. See the [LIC
 
 ---
 
-**Version:** 1.6.4
+**Version:** 1.7.0
 **Author:** Cody Rester
-**Last Updated:** April 2026
+**Last Updated:** May 2026

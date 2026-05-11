@@ -2,7 +2,7 @@
   Platform Atlas — Report Template
 -->
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -92,53 +92,94 @@
       --gradient-surface: linear-gradient(180deg, var(--bg-surface), var(--bg-base));
     }
 
-    /* ── Light Theme ── */
+    /* ── Light Theme ──
+       Tokens here mirror the WebUI's Itential theme so opening a report from
+       inside the WebUI feels like a continuation of the same surface. The
+       palette comes straight from atlas.css's :root[data-theme="itential"]
+       block (white content, navy text #101625, Itential blue accent #1B93D2).
+       Status colors are also pinned to the WebUI's --ok / --warn / --bad
+       so pass/fail badges read identically across the two surfaces. The
+       header itself flips to a navy band via overrides further down — see
+       the [data-theme="light"] .header { ... } rule. */
     [data-theme="light"] {
-      --bg-base: #f4f6f9;
+      --bg-base: #ffffff;
       --bg-surface: #ffffff;
-      --bg-elevated: #f8f9fb;
-      --bg-overlay: #eef1f5;
-      --bg-input: rgba(0,0,0,0.03);
+      --bg-elevated: #f5f7fa;
+      --bg-overlay: #eef2f6;
+      --bg-input: rgba(16,22,37,0.04);
       --bg-glass: rgba(255,255,255,0.88);
 
       --text-primary: #101625;
-      --text-secondary: #4a5568;
-      --text-muted: #8494a7;
-      --text-ghost: rgba(132,148,167,0.5);
+      --text-secondary: #3a4254;
+      --text-muted: #6b7280;
+      --text-ghost: rgba(107,114,128,0.5);
 
-      --accent: #0e7bb5;
-      --accent-hover: #0c6a9e;
-      --accent-ghost: rgba(14,123,181,0.06);
-      --accent-glow: rgba(14,123,181,0.12);
+      --accent: #1b93d2;
+      --accent-hover: #1782bc;
+      --accent-ghost: rgba(27,147,210,0.12);
+      --accent-glow: rgba(27,147,210,0.18);
 
-      --status-pass: #5fa822;
-      --status-pass-bg: rgba(95,168,34,0.08);
-      --status-fail: #d94a1f;
-      --status-fail-bg: rgba(217,74,31,0.06);
-      --status-warn: #b8860b;
-      --status-warn-bg: rgba(184,134,11,0.06);
-      --status-info: #0e7bb5;
-      --status-info-bg: rgba(14,123,181,0.06);
-      --status-skip: #8494a7;
-      --status-skip-bg: rgba(132,148,167,0.06);
+      --status-pass: #6fa22c;
+      --status-pass-bg: rgba(111,162,44,0.10);
+      --status-fail: #c0392b;
+      --status-fail-bg: rgba(192,57,43,0.08);
+      --status-warn: #e55a2a;
+      --status-warn-bg: rgba(229,90,42,0.08);
+      --status-info: #1b93d2;
+      --status-info-bg: rgba(27,147,210,0.10);
+      --status-skip: #6b7280;
+      --status-skip-bg: rgba(107,114,128,0.08);
       --status-error: #a01d72;
       --status-error-bg: rgba(160,29,114,0.06);
 
-      --border-subtle: rgba(0,0,0,0.05);
-      --border-default: rgba(0,0,0,0.08);
-      --border-strong: rgba(0,0,0,0.14);
-      --border-sep: rgba(0,0,0,0.2);
+      --border-subtle: rgba(16,22,37,0.06);
+      --border-default: rgba(16,22,37,0.10);
+      --border-strong: rgba(16,22,37,0.20);
+      --border-sep: rgba(16,22,37,0.20);
 
-      --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
-      --shadow-md: 0 4px 16px rgba(0,0,0,0.06);
-      --shadow-lg: 0 12px 40px rgba(0,0,0,0.08);
-      --shadow-glow: 0 0 30px rgba(14,123,181,0.08);
+      --shadow-sm: 0 1px 3px rgba(16,22,37,0.06);
+      --shadow-md: 0 4px 16px rgba(16,22,37,0.08);
+      --shadow-lg: 0 12px 40px rgba(16,22,37,0.10);
+      --shadow-glow: 0 0 30px rgba(27,147,210,0.10);
 
-      --chart-grid: rgba(0,0,0,0.05);
+      --chart-grid: rgba(16,22,37,0.06);
       --chart-label: var(--text-muted);
 
-      --gradient-brand: linear-gradient(135deg, #0e7bb5, #a01d72);
+      --gradient-brand: linear-gradient(135deg, #1b93d2, #c5258f);
       --gradient-surface: linear-gradient(180deg, var(--bg-surface), var(--bg-base));
+    }
+
+    /* Light-mode header — navy band that mirrors the WebUI's Itential
+       sidebar. Re-declares tokens at the .header scope so every descendant
+       (brand, nav links, theme-toggle, print-btn) flips to the
+       white-on-navy palette automatically. Identical pattern to atlas.css's
+       :root[data-theme="itential"] .side rule. Dark mode is unaffected
+       because these selectors are scoped to [data-theme="light"]. */
+    [data-theme="light"] .header {
+      --bg-glass: #101625;
+      --bg-input: rgba(255,255,255,0.04);
+      --text-primary: #ffffff;
+      --text-secondary: #bfcbdd;
+      --text-muted: #8595ac;
+      --text-ghost: rgba(133,149,172,0.5);
+      --border-subtle: rgba(255,255,255,0.06);
+      --border-default: rgba(255,255,255,0.10);
+      --border-strong: rgba(255,255,255,0.20);
+      --accent-ghost: rgba(27,147,210,0.22);
+      box-shadow: 0 1px 0 rgba(0,0,0,0.10), 0 4px 16px rgba(16,22,37,0.06);
+    }
+    [data-theme="light"] .header.scrolled {
+      box-shadow: 0 2px 0 rgba(0,0,0,0.12), 0 6px 20px rgba(16,22,37,0.10);
+    }
+    /* Active nav pill in the navy header — bump contrast a notch above
+       the inherited accent-ghost so the indicator pops on dark navy. */
+    [data-theme="light"] .header-nav a.active {
+      color: #ffffff;
+      background: rgba(27,147,210,0.28);
+    }
+    [data-theme="light"] .header-nav a:hover {
+      color: #ffffff;
+      background: rgba(255,255,255,0.06);
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -253,7 +294,12 @@
       gap: 4px;
       margin-right: 12px;
     }
-    .header-nav a {
+    /* Apply pill chrome to both anchors AND the disabled <span> the
+       renderer emits in Standard tier — without this the disabled
+       Operational pill renders without uppercase / padding / border-radius
+       and looks like raw text dropped between the other buttons. */
+    .header-nav a,
+    .header-nav span.op-link {
       font-family: var(--font-display);
       font-size: 0.72rem;
       font-weight: 600;
@@ -264,16 +310,30 @@
       padding: 5px 12px;
       border-radius: var(--r-pill);
       transition: all 0.2s var(--ease-out-expo);
+      display: inline-flex;
+      align-items: center;
     }
     .header-nav a:hover { color: var(--text-secondary); background: var(--accent-ghost); }
     .header-nav a.active { color: var(--accent); background: var(--accent-ghost); }
-    .header-nav a.op-link {
+    .header-nav a.op-link, .header-nav span.op-link {
       color: var(--itl-green);
       border: 1px solid var(--itl-green);
       opacity: 0.7;
     }
     .header-nav a.op-link:hover { opacity: 1; background: rgba(153,202,60,0.08); }
-    .header-nav a.arch-link {
+    /* Disabled Operational pill — both modes render the header on a navy
+       surface (light has solid #101625, dark has the translucent bg-glass),
+       so faded-white reads correctly in either mode. The previous
+       opacity:.35 + var(--text-muted) made the pill effectively invisible
+       on navy, which is why users couldn't tell it was a button at all. */
+    .header-nav span.op-link--disabled {
+      color: rgba(255,255,255,0.55);
+      border: 1px solid rgba(255,255,255,0.30);
+      opacity: 1;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+    .header-nav a.arch-link, .header-nav span.arch-link {
       color: var(--itl-orange);
       border: 1px solid var(--itl-orange);
       opacity: 0.7;
@@ -1079,7 +1139,11 @@
 
     table.dataframe thead th {
       position: sticky;
-      top: 52px;
+      /* top: 0 because ``.table-wrap`` has overflow:auto and is the sticky
+         scroll container — not the page. Setting top:52px here pushed the
+         thead down 52px inside the wrap when the table was short, hiding
+         the first body row behind it. */
+      top: 0;
       z-index: 20;
       background: var(--bg-elevated);
       font-family: var(--font-display);
@@ -1146,7 +1210,8 @@
     [data-theme="light"] th.col-pinned { background: #e2eaf4; }
     th.col-pinned {
       position: sticky !important;
-      top: 52px !important;
+      /* Match the regular thead — sticky inside ``.table-wrap``, not the page. */
+      top: 0 !important;
       left: 0 !important;
       z-index: 35 !important;
     }
@@ -1585,6 +1650,38 @@
       color: var(--text-ghost);
       margin-top: 10px;
       padding: 0 4px;
+    }
+
+    .tier-footer-note {
+      margin-top: 10px;
+      padding: 10px 14px;
+      border-left: 3px solid #1B93D2;
+      background: rgba(27, 147, 210, 0.06);
+      font-size: 0.78rem;
+      line-height: 1.55;
+      color: var(--text-muted);
+    }
+    .tier-footer-note code {
+      background: rgba(27, 147, 210, 0.14);
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 0.75rem;
+      color: var(--text-primary);
+    }
+    .tier-notice {
+      margin: 24px 0;
+      padding: 20px 24px;
+      border-left: 4px solid #1B93D2;
+      background: rgba(27, 147, 210, 0.06);
+      border-radius: 4px;
+      color: var(--text-primary);
+    }
+    .tier-notice p { margin: 6px 0; line-height: 1.55; }
+    .tier-notice code {
+      background: rgba(27, 147, 210, 0.14);
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 0.85rem;
     }
 
     .resources-bar {
@@ -2466,7 +2563,7 @@
         <a href="#section-analytics" data-section="analytics">Analytics</a>
         <a href="#section-results" data-section="results">Results</a>
         <a href="#section-details" data-section="details">Details</a>
-        <a href="04_operational.html" class="op-link">Operational</a>
+        {{OPERATIONAL_NAV_LINK}}
         <a href="05_arch.html" class="op-link arch-link">Architecture</a>
       </nav>
       <button class="theme-toggle" id="themeToggle" title="Toggle theme">
@@ -2486,6 +2583,12 @@
       <div class="hero-org">{{ORGANIZATION_NAME}}</div>
       <h1 class="hero-title">{{TITLE}}</h1>
       <div class="hero-pills">
+        <span class="hero-label">Mode:</span>
+        <span class="hero-value" style="background:{{TIER_COLOR}};color:#fff;padding:2px 10px;border-radius:4px;font-weight:700;letter-spacing:0.5px;">{{TIER_LABEL}}</span>
+        <span class="sep">|</span>
+        <span class="hero-label">Audit:</span>
+        <span class="hero-value">{{TIER_COVER_KIND}}</span>
+        <span class="sep">|</span>
         <span class="hero-label">Session:</span>
         <span class="hero-value">{{SUBTITLE}}</span>
         <span class="sep">|</span>
@@ -2679,6 +2782,7 @@
 
     <div class="footnotes">
       {{MODULES_FOOTNOTE}}
+      {{TIER_FOOTER}}
     </div>
 
     <!-- ═══ RESOURCES BAR ═══ -->
@@ -3361,18 +3465,55 @@
     };
     const bucketClass = {'PASS':'f-pass','FAIL':'f-fail','WARN':'f-warn','SKIP':'f-skip','ERROR':'f-error','INFO':'f-info'};
 
-    // Status filter pills
+    // Single source of truth for status counting. Used for the filter pill
+    // counts AND the subsystem tab stats strip — having two diverging
+    // implementations was the root cause of the "pill says 3, table shows
+    // 2" mismatch (uncategorized rows previously hit the pill count but
+    // not the catStats sum).
+    function countBuckets(rows) {
+      const counts = { PASS: 0, FAIL: 0, WARN: 0, SKIP: 0, ERROR: 0, INFO: 0 };
+      rows.forEach(row => {
+        const b = statusBucket(getRowStatus(row));
+        if (b in counts) counts[b]++;
+      });
+      return counts;
+    }
+
+    // Status filter pills — the pill count reflects the rows the active
+    // subsystem tab will actually surface, so what you see on the pill is
+    // exactly what would appear after toggling it. Subsystem tab handler
+    // calls back into ``refreshFilterPillCounts`` whenever the active tab
+    // changes.
+    const filterPills = {};
+    function refreshFilterPillCounts() {
+      const activeTab = window._atlasActiveTab;
+      const scoped = activeTab
+        ? getDataRows().filter(
+            row => getRowCategory(row).toLowerCase() === activeTab.toLowerCase()
+          )
+        : getDataRows();
+      const counts = countBuckets(scoped);
+      Object.keys(filterPills).forEach(bucket => {
+        const pill = filterPills[bucket];
+        const cnt = counts[bucket] || 0;
+        const span = pill.querySelector('.filter-pill-count');
+        if (span) span.textContent = String(cnt);
+        // Hide the pill when the active scope has zero rows of that
+        // bucket — otherwise the pill claims a count of 0 which looks
+        // broken next to the visible-rows summary.
+        pill.style.display = cnt > 0 ? '' : 'none';
+      });
+    }
     if (statusCol >= 0 && statusFiltersWrap) {
-      const counts = {};
-      getDataRows().forEach(row => { const b = statusBucket(getRowStatus(row)); if (b) counts[b] = (counts[b] || 0) + 1; });
+      const initialCounts = countBuckets(getDataRows());
       ['PASS','FAIL','WARN','ERROR','INFO','SKIP'].forEach(b => {
-        if (!counts[b]) return;
+        if (!initialCounts[b]) return;
         const pill = document.createElement('button');
         pill.className = 'filter-pill active ' + (bucketClass[b] || '');
         activeFilters.add(b);
         pill.dataset.status = b;
         const labels = {'PASS':'Compliant','FAIL':'Non-Compliant','SKIP':'Skipped'};
-        pill.innerHTML = (labels[b] || b.charAt(0) + b.slice(1).toLowerCase()) + ' <span class="filter-pill-count">' + counts[b] + '</span>';
+        pill.innerHTML = (labels[b] || b.charAt(0) + b.slice(1).toLowerCase()) + ' <span class="filter-pill-count">' + initialCounts[b] + '</span>';
         pill.addEventListener('click', () => {
           if (pill.classList.contains('active') && activeFilters.size === 1) return;
           pill.classList.toggle('active');
@@ -3380,6 +3521,7 @@
           applyFilters();
         });
         statusFiltersWrap.appendChild(pill);
+        filterPills[b] = pill;
       });
     }
 
@@ -3479,6 +3621,8 @@
     window._atlasStatusBucket = statusBucket;
     window._atlasGetRowStatus = getRowStatus;
     window._atlasGetDataRows = getDataRows;
+    window._atlasCountBuckets = countBuckets;
+    window._atlasRefreshFilterPills = refreshFilterPillCounts;
 
     insertGroupRows();
   })();
@@ -3702,17 +3846,27 @@
     };
     const CATEGORY_ORDER = ['platform', 'mongo', 'redis', 'gateway4', 'gateway5'];
 
-    /* Gather data */
+    /* Gather data. Use the shared bucket counter so the per-tab numbers
+       agree with the status filter pills exactly — previously the
+       subsystem stats summed over per-category buckets and silently
+       dropped uncategorized rows, leaving the "All" pill count higher
+       than the visible-after-filter row count. */
     const allRows = getDataRows();
     const catCounts = {};
     const catStats = {};
+    const _catBuckets = {};
 
     allRows.forEach(row => {
       const cat = getRowCategory(row).toLowerCase();
       if (!cat) return;
-      if (!catCounts[cat]) { catCounts[cat] = 0; catStats[cat] = { pass: 0, fail: 0, skip: 0, error: 0, total: 0 }; }
+      if (!catCounts[cat]) {
+        catCounts[cat] = 0;
+        catStats[cat] = { pass: 0, fail: 0, skip: 0, error: 0, total: 0 };
+        _catBuckets[cat] = [];
+      }
       catCounts[cat]++;
       catStats[cat].total++;
+      _catBuckets[cat].push(row);
       const bucket = statusBucket(getRowStatus(row));
       if (bucket === 'PASS') catStats[cat].pass++;
       else if (bucket === 'FAIL') catStats[cat].fail++;
@@ -3727,9 +3881,19 @@
 
     if (sortedCats.length < 2) { tabsWrap.style.display = 'none'; statsStrip.style.display = 'none'; return; }
 
-    /* Build "All" tab */
-    const allStats = { pass: 0, fail: 0, skip: 0, error: 0, total: allRows.length };
-    Object.values(catStats).forEach(s => { allStats.pass += s.pass; allStats.fail += s.fail; allStats.skip += s.skip; allStats.error += s.error; });
+    /* Build "All" tab. allStats counts EVERY row, including uncategorized
+       ones — that way the "All" stats strip matches the cover-page stat
+       cards and the global filter pill counts exactly. */
+    const _allBuckets = (window._atlasCountBuckets
+      ? window._atlasCountBuckets(allRows)
+      : { PASS: 0, FAIL: 0, SKIP: 0, ERROR: 0 });
+    const allStats = {
+      pass: _allBuckets.PASS || 0,
+      fail: _allBuckets.FAIL || 0,
+      skip: _allBuckets.SKIP || 0,
+      error: _allBuckets.ERROR || 0,
+      total: allRows.length,
+    };
 
     function makeTab(key, label, count, passPct) {
       const btn = document.createElement('button');
@@ -3787,6 +3951,14 @@
       } else {
         window._atlasActiveTab = key;
         renderStats(catStats[key], CATEGORY_META[key]?.label || key);
+      }
+      // Refresh the status filter pills so their counts reflect the
+      // active tab's scope. Without this the pill claims a global count
+      // (e.g. "Non-Compliant 8") while the table shows only the active
+      // tab's matches (e.g. 3 rows) — the exact mismatch users called
+      // out as "tab shows 3 but only 2 visible".
+      if (window._atlasRefreshFilterPills) {
+        try { window._atlasRefreshFilterPills(); } catch (e) {}
       }
       applyFilters();
     });

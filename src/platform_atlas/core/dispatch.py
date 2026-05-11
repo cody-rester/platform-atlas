@@ -48,18 +48,6 @@ def dispatch(args: Namespace) -> int:
         return 1
 
     logger.debug("Resolved handler: %s", cmd.handler.__name__)
-    # Gate multi-tenant commands behind config flag
-    if command_path and command_path[0] == "customer":
-        try:
-            from platform_atlas.core.context import ctx
-            if not ctx().config.multi_tenant_mode:
-                console.print(
-                    f"\n[{theme.warning}]'customer' commands require multi_tenant_mode[/{theme.warning}]"
-                    f"\n[{theme.text_dim}]Set \"multi_tenant_mode\": true in your config to enable[/{theme.text_dim}]\n"
-                )
-                return 1
-        except Exception: # nosec B110 - config not loaded yet, handler will deal with it
-            pass
 
     # Execute handler with error handling
     try:

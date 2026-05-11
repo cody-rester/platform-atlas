@@ -1,9 +1,114 @@
-# Changelog
+# Changelog — Platform Atlas (CLI / core)
 
-All notable changes to this project will be documented in this file.
+All notable changes to the `platform-atlas` package are documented here.
+WebUI changes ship in a separate wheel (`platform-atlas-webui`) and are
+documented in [`webui/CHANGELOG.md`](webui/CHANGELOG.md).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [1.7.0] - 2026-05-03
+
+> **Note:** WebUI changes (themes, daemon mode, security hardening, route fixes, etc.) ship in [`platform-atlas-webui` 1.0.0](webui/CHANGELOG.md), released alongside this version.
+
+### Added
+
+- **Fleet dashboard** — multi-environment compliance overview from local cache (read-only, never triggers captures): `platform-atlas fleet status` (with `--json`) showing per-env tier, last session age, pass rate, continuous-audit state, and unacked alerts (also surfaced at `/fleet` in the WebUI)
+- **Outbound drift notifications** — Slack incoming webhooks and generic JSON webhooks (with optional HMAC-SHA256 signing via `X-Atlas-Signature`). Per-environment channels persisted on the env overlay, fired only on alert-state transitions (new alerts and re-opened acked alerts) so persistent unacked drift doesn't spam every cycle. CLI: `continuous-audit notify add|list|remove|test`
+- **Continuous-audit robustness pass** — fcntl-locked atomic appends + 10MB rotation on `events.ndjson`; centralized atomic-write helper used across runs, status, and alerts; `prune_runs` now repoints `latest.json` if the pointed-at run was pruned; `make_run_id` gains a microsecond + nonce suffix to prevent collisions; drift comparator handles unhashable list items, cross-type coercion, and treats `True != 1` at every nesting level; `previous_unreadable` flag surfaced in run reports and the heartbeat when prior runs exist on disk but can't be read; endpoint planner warns on malformed/unmapped `platform.*` paths; macOS launchd install confirms plist-on-disk before bootstrapping
+- **Standard / Extended tier system** — Atlas now ships with two distinct audit modes:
+  - **Standard** — Platform OAuth + optional IAG4 API (~54 rules). No SSH, MongoDB, or Redis required. Designed for quick application-layer audits or environments where infrastructure access is restricted.
+  - **Extended** — Full infrastructure audit via SSH, MongoDB, Redis, Kubernetes, and Gateways (~107 rules). The default for all installs upgraded from 1.6.x.
+- **Tier CLI commands** — `tier show`, `tier set [standard|extended]`, `tier upgrade`, `tier downgrade` for managing the active tier interactively or non-interactively
+- **`--tier` global flag** — Override the active tier for a single command without changing the persisted setting
+- Sessions now bind a tier at creation time (alongside environment, ruleset, and profile)
+- Cross-tier session diffs are flagged with a notice banner in the diff report
+- Three-layer tier enforcement: module registry pruning, `require_extended()` collector guards, and tier-aware credential store (Extended-only keys silently return `None` in Standard and raise on write)
+- **Continuous Audit** — scheduled drift monitor that re-runs a Platform-OAuth-only capture against the active ruleset and surfaces changed observed values as alerts:
+  - Per-environment enable/disable; requires a successful `run-once` test before enabling
+  - OS-level scheduling installed on enable so runs survive process restarts: `systemctl --user` timer on Linux, `launchctl` agent on macOS; in-process scheduler defers when an OS scheduler is active
+  - Endpoint set pruned to only what the active ruleset references; capture is locked to Platform OAuth regardless of tier
+  - Bare JSON report written to `~/.atlas/continuous/<env>/runs/<run_id>.json` for external alert systems; per-rule `previous → current` drift attached inline
+  - Append-only `events.ndjson` timeline + `alerts.json` aggregate state with ack / ack-all; acked alerts re-open if drift recurs
+  - CLI: `continuous-audit run-once|status|alerts|ack|enable|disable`; banner printed at the top of every invocation while enabled
+- **Continuous-audit alert policy + watchlist** — `alert_policy` (`any` default, `regression` to alert only on PASS→FAIL) and a rule-number `watchlist` filter applied at alert/notification time; full drift history still goes to `events.ndjson`. CLI: `continuous-audit policy <any|regression>` and `continuous-audit watch add|remove|list|clear`
+- **What's New page** — On first run after upgrading, Atlas shows a version-specific upgrade summary in the terminal and opens a detailed HTML page in the browser
+- **Kubernetes kubectl rule fallbacks** — 13 rules in the P6 Master Ruleset now have an `alt_path` that Atlas uses when the primary data source (Platform OAuth API) is unavailable, enabling fuller coverage on Kubernetes-only deployments where SSH, MongoDB, and Redis are not accessible:
+  - **10 rules via pod `printenv`** (`ITENTIAL_*` env vars → `platform.config_file.*`): Platform Default User, Platform Core Logging Level, Server ID, Mongo Auth Enabled, Mongo TLS Enabled, Log Max Files, Log File Max Size, Webserver HTTPS Enabled, Webserver HTTP Enabled, Webserver Timeout
+  - **3 rules via kubectl system data** (`system.kubernetes.*`): Platform Version (from `release_metadata.json`), Node Version (from `node --version`), Gateway Manager Version Check (from `app-ag_manager/package.json`)
+- **Node.js version collection** — `KubernetesCollector` now runs `kubectl exec <pod> -- node --version` during system info enhancement and stores the result at `system.kubernetes.node_version`, making the Node Version rule evaluable on Kubernetes without the Platform OAuth API
+- **kubectl debug logging** — every `kubectl` command now logs the full invocation, exit code, elapsed time, and any stderr to `~/.atlas/atlas.log` at DEBUG level; higher-level collection phases (preflight probe, pod search, system enhancement, platform version, service collection, kubectl env) each emit a phase-entry log line
+- **ControlMaster SSH transport** — new `control_master` transport mode lets Atlas piggyback on an existing OpenSSH ControlMaster session with zero credentials. Designed for environments where direct SSH key access is not available — most notably CyberArk PSMP (Privileged Session Manager Proxy) deployments where all privileged SSH is routed through a PAM gateway and target credentials are vault-managed. The user opens one master connection per target node before running Atlas (`ssh -M -S <socket> -N <destination>`); Atlas multiplexes on those sessions with no MFA interaction, no key configuration, and no knowledge of the PAM mechanism. Full parity with SSHTransport: remote path validation, symlink rejection, allowed-prefix enforcement, size cap, and a passwordless-sudo fallback for files owned by root. Selected interactively during topology setup — the existing SSH (recommended) and Local options are unchanged.
+- **Local transport for Platform server** (Extended mode) — the topology setup wizard now offers a `Local` option when configuring the Platform (IAP) node. When selected, Atlas reads config files and runs system commands directly via the local filesystem instead of SSH — intended for environments where Atlas is installed on the Platform server itself to bypass restrictive SSH access. All other nodes (MongoDB, Redis, IAG) remain SSH-connected. Never the default; SSH is still recommended.
+- **PLAT-048 — Template Builder Execution Timeout** — new rule that checks the `templateExecutionTimeout` setting on the Template Builder application (`@itential/app-template_builder`). Marks Non-Compliant when the value is present and exceeds 10000ms; skipped automatically when Template Builder is not installed or the setting is absent.
+
+### Changed
+
+- Fresh installs default to **Standard** tier; upgrades from 1.6.x default to **Extended** (preserving existing behavior)
+- Standard mode reports do not show the partial-capture obelisk (†) — a limited module set is the full expected capture in Standard, not a deficiency
+- `--customer` CLI flag removed (was deprecated in 1.6.4)
+
+### Fixed
+
+- Capture job reporting `SUCCEEDED` when no modules ran — target initialization errors (e.g. missing credentials) were silently swallowed in `_resolve_modules`; errors are now surfaced and the job correctly fails
+- Validation `modules_ran` filter never fired — was reading `metadata.modules_ran` instead of `_atlas.metadata.modules_ran`, so rules for non-captured categories were evaluated and produced misleading SKIP messages
+- Cross-tier diff banner never showed — `_rehydrate_attrs` did not restore `df.attrs["tier"]` from the capture JSON; both sides defaulted to "extended"
+- Capture file could be left half-written on SIGINT / disk-full — capture and parquet writes now use `tempfile + os.replace` for atomicity
+- Validation crashed on list items with non-string `name` (e.g. `None`, integers) — values are now coerced to `str` before path matching
+- `SSHRetryConfig` was defined but unused — `SSHTransport` now accepts a `retry=` argument and retries `OSError`s only (auth and protocol errors still fail fast)
+- Concurrent `engine.run_once` invocations from the in-process scheduler, OS timer (systemd / launchd), and CLI no longer race — per-env `flock` serializes the OAuth fetch, drift detection, alert state update, and `latest.json` swap
+- `alerts.json` read-modify-write is now flock'd — concurrent ack / ack-all across CLI and WebUI no longer lose transitions
+- systemd unit files now double-quote env names — environments with spaces (e.g. `Acme Prod`) no longer produce a broken `ExecStart` or `Environment=` line
+- Notification dispatch caps events per payload (25 webhook / 10 Slack) and honors HTTP 429 `Retry-After` (capped at 30 s) — large drift bursts no longer stall the engine on a slow receiver
+- `runtime._write_raw` switched to `tempfile.mkstemp` — concurrent env-overlay writes can no longer clobber each other's tempfile
+- `events.ndjson` rotation rewritten with `collections.deque(maxlen=N)` — O(1) eviction in place of the previous O(n²) `list.pop(0)` loop
+- `latest.json` symlink target now verified to resolve under `runs/` before being followed
+- Notification dispatch error logs scrub URL and bare-IP substrings before logging — Slack webhook URLs and internal hostnames in receiver responses no longer reach the audit log
+- systemd timer no longer uses `Persistent=true` and adds `RandomizedDelaySec=120` — long-downtime reboots no longer fire a burst of catch-up runs
+- Corrupt `alerts.json` is renamed to `alerts.json.corrupt-<ts>` before the empty state takes over — historical alert data is recoverable instead of silently overwritten
+- Environment edit crashed with `'tuple' object has no attribute 'get'` — `ask_deployment()` returns a `(mode, k8s_meta)` tuple; both callers in `env.py` / `config.py` now destructure it and persist the k8s metadata
+- Standard / Extended init wizard double-prompted for `organization_name` on existing installs — now silently inherits from caller or `~/.atlas/config.json`
+- Architecture HTML form did not pre-fill `organization_name` — `html_collector` now passes `?org=…` and the form reapplies it (and the saved `org-`/`legacy-` payload) on load
+- MTU "Other" had no free-text path — added `mtu_size_other` to the form, schema, and CLI prompt; reports render the custom value
+- `platform_logs` collection failed silently when logs lived outside the default path — new `log_path_override` config field; capture engine retries the collector with the override after a failed first pass
+- Report filter pills showed mismatched counts when the active rule filter excluded rows — `allStats` now counts all rows and pill recount uses a shared `countBuckets()` helper
+
+### Vault credential backend improvements
+
+- **Token TTL introspection** — after any Vault auth method succeeds, Atlas calls `lookup_self()` to capture the token's remaining TTL and renewability; surfaced in the CLI wizard and `config credentials`
+- **Automatic token refresh** — `VaultBackend` transparently re-authenticates when the token has less than 5 minutes remaining, with no user action required:
+  - `APPROLE` — calls `login()` again with the stored `role_id` and `secret_id`; supports dynamic short-lived tokens (1h, 24h TTL) set on the Vault role by the admin
+  - `TOKEN_FILE` — re-reads the Vault Agent sink file for a fresh token
+  - `TOKEN_ENV` — re-reads `VAULT_TOKEN` from the environment
+  - `TOKEN` (renewable) — calls `renew_self()`
+  - `APPROLE_WRAPPED` / non-renewable `TOKEN` — raises a clear error; these cannot be automatically refreshed
+- Thread-safe refresh via double-checked locking — concurrent callers cannot stampede Vault during a refresh
+- `revoke_token()` method on `VaultBackend` for explicit cleanup at session end
+- `TOKEN` auth now raises immediately at connect time if the token has fewer than 60 seconds remaining
+
+### Security
+
+- Continuous-audit notifications now ship rule identity only (number, name, severity, alert ID); previous/current drift values stay local so a misconfigured Slack/webhook channel cannot exfiltrate captured Platform secrets
+- Webhook URLs blocked from pointing at private, loopback, link-local, or cloud-metadata addresses (`127.0.0.0/8`, RFC1918, `169.254.0.0/16`, etc.); DNS-resolved at validation time so domains that resolve to private space are also rejected; opt-out via `ATLAS_ALLOW_PRIVATE_WEBHOOKS=1`
+- Slack webhook URLs, HMAC signing secrets, and custom headers now persist in the OS keyring under `platform-atlas/<env>` instead of plaintext env JSON; legacy channels migrate transparently on first read
+- Path-traversal defense in the continuous-audit storage and runtime layers — env names containing `..`, `/`, or `\\` are rejected before constructing any path under `~/.atlas/continuous/` or `~/.atlas/environments/`
+- `~/.atlas/continuous/**` files (run reports, `alerts.json`, `events.ndjson`, `status.json`) and env overlay JSON files are now written with mode `0o600`
+
+### Performance
+
+- Capture collectors now run in parallel across targets (capped at 8 worker threads) — multi-node topologies where each target was previously waited on serially see roughly N× wall-clock improvement
+- SSH file reads use the SFTP `lstat` size directly instead of running a separate `stat -c %s` exec channel — saves ~1 round trip per file (~50–150 ms on high-RTT links)
+
+### Dependencies
+
+- `paramiko` updated to 5.0.0
+- `rich-argparse` updated to 1.8.0
+- `rich` updated to 15.0.0
+- `pyarrow` updated to 24.0.0
+- `packaging` updated to 26.2
+- `urllib3` updated to 2.7.0
 
 ---
 

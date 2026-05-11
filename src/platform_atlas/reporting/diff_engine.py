@@ -224,6 +224,13 @@ def diff_reports(
     diff_df.attrs["baseline_ruleset_id"] = baseline.attrs.get("ruleset_id", "")
     diff_df.attrs["latest_ruleset_id"] = latest.attrs.get("ruleset_id", "")
     diff_df.attrs["baseline_ruleset_version"] = baseline.attrs.get("ruleset_version", "")
+    # Tier propagation — surface a cross-tier notice in the diff renderer
+    # when comparing a Standard capture against an Extended one.
+    diff_df.attrs["baseline_tier"] = baseline.attrs.get("tier", "extended")
+    diff_df.attrs["latest_tier"] = latest.attrs.get("tier", "extended")
+    diff_df.attrs["cross_tier"] = (
+        diff_df.attrs["baseline_tier"] != diff_df.attrs["latest_tier"]
+    )
     diff_df.attrs["latest_ruleset_version"] = latest.attrs.get("ruleset_version", "")
     diff_df.attrs["baseline_modules_ran"] = baseline.attrs.get("modules_ran", "")
     diff_df.attrs["latest_modules_ran"] = latest.attrs.get("modules_ran", "")
@@ -405,6 +412,47 @@ def render_diff_report(
     safe_baseline_date = html_mod.escape(str(diff_df.attrs.get("baseline_date", "")))
     safe_current_date = html_mod.escape(str(diff_df.attrs.get("current_date", "")))
 
+    # ── Tier badge + cross-tier notice ──────────────────────────
+    baseline_tier = (diff_df.attrs.get("baseline_tier") or "extended").lower()
+    latest_tier = (diff_df.attrs.get("latest_tier") or "extended").lower()
+    cross_tier = bool(diff_df.attrs.get("cross_tier"))
+
+    if latest_tier == "standard":
+        tier_label = "STANDARD"
+        tier_color = "#1B93D2"
+        cover_kind = "Application Audit"
+    else:
+        tier_label = "EXTENDED"
+        tier_color = "#FF6633"
+        cover_kind = "Infrastructure Audit"
+    safe_tier_label = html_mod.escape(tier_label)
+    safe_tier_color = html_mod.escape(tier_color)
+    safe_cover_kind = html_mod.escape(cover_kind)
+
+    if cross_tier:
+        b_label = baseline_tier.capitalize()
+        l_label = latest_tier.capitalize()
+        tier_footer_html = (
+            '<p class="tier-footer-note">'
+            f'<strong>Cross-tier diff:</strong> baseline was captured in '
+            f'<strong>{html_mod.escape(b_label)}</strong> mode, latest in '
+            f'<strong>{html_mod.escape(l_label)}</strong>. Rules outside the '
+            'narrower tier appear as SKIP — only rules common to both tiers '
+            'are directly comparable.'
+            '</p>'
+        )
+    elif latest_tier == "standard":
+        tier_footer_html = (
+            '<p class="tier-footer-note">'
+            'Want deeper validation? Itential&#39;s Extended Mode adds '
+            'MongoDB, Redis, IAG5 and system-layer audits. '
+            'Contact your Itential CSM, or run '
+            '<code>platform-atlas tier upgrade</code>.'
+            '</p>'
+        )
+    else:
+        tier_footer_html = ""
+
     replacements = {
         "{{TITLE}}": safe_title,
         "{{SUBTITLE}}": safe_subtitle,
@@ -437,6 +485,10 @@ def render_diff_report(
         "{{PASS_DELTA}}": _format_stat_delta(pass_count - b_pass),
         "{{FAIL_DELTA}}": _format_stat_delta(fail_count - b_fail, invert=True),
         "{{SKIP_DELTA}}": _format_stat_delta(skip_count - b_skip),
+        "{{TIER_LABEL}}": safe_tier_label,
+        "{{TIER_COLOR}}": safe_tier_color,
+        "{{TIER_COVER_KIND}}": safe_cover_kind,
+        "{{TIER_FOOTER}}": tier_footer_html,
     }
 
     html = template
