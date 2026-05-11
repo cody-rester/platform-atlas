@@ -185,8 +185,14 @@ def render_operational_report(
     log_sections_html: str = "",
     has_mongo_data: bool = True,
     log_date_range: tuple[str | None, str | None] | None = None,
+    tier: str = "extended",
 ) -> str:
-    """Render an OperationalReport to a styled HTML file."""
+    """Render an OperationalReport to a styled HTML file.
+
+    Operational reports are an Extended-only artifact — Mongo aggregations
+    and SSH-collected logs both require the Extended tier — but the badge
+    is rendered for visual consistency with the compliance report.
+    """
     template_path = Path(template_path)
     template = template_path.read_text(encoding="utf-8")
 
@@ -203,6 +209,16 @@ def render_operational_report(
     safe_atlas_version = html_mod.escape(atlas_version)
     safe_timestamp = html_mod.escape(timestamp)
 
+    tier_normalized = (tier or "extended").strip().lower()
+    if tier_normalized == "standard":
+        tier_label = "STANDARD"
+        tier_color = "#1B93D2"
+    else:
+        tier_label = "EXTENDED"
+        tier_color = "#FF6633"
+    safe_tier_label = html_mod.escape(tier_label)
+    safe_tier_color = html_mod.escape(tier_color)
+
     replacements = {
         "{{TITLE}}": safe_title,
         "{{SUBTITLE}}": safe_subtitle,
@@ -218,6 +234,8 @@ def render_operational_report(
         "{{LOG_SECTIONS}}": log_sections_html,
         "{{MONGO_NOTICE}}": mongo_notice_html,
         "{{DATE_RANGE_BANNER}}": date_range_banner_html,
+        "{{TIER_LABEL}}": safe_tier_label,
+        "{{TIER_COLOR}}": safe_tier_color,
     }
 
     pattern = re.compile("|".join(re.escape(k) for k in replacements))

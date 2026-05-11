@@ -28,7 +28,14 @@ ATLAS_PIPELINES_DIR = ATLAS_HOME / "pipelines"
 # Atlas Home Files
 ATLAS_CONFIG_FILE = ATLAS_HOME / "config.json"
 ATLAS_SETTINGS_FILE = ATLAS_HOME / "settings.json"
-ATLAS_ARCHITECTURE_FILE = ATLAS_HOME / "architecture.json"
+
+# Architecture overview is now scoped per-environment under
+# ``~/.atlas/architecture/<env>.json``. The legacy global file
+# ``~/.atlas/architecture.json`` is kept as a constant only so the
+# one-time migration in ``architecture_store.migrate_legacy()`` can
+# locate it; new code should use the architecture_store helpers.
+ATLAS_ARCHITECTURE_DIR = ATLAS_HOME / "architecture"
+ATLAS_ARCHITECTURE_FILE = ATLAS_HOME / "architecture.json"  # legacy / migration only
 
 # Atlas Rules Schema
 ATLAS_RULE_SCHEMA_FILE = ATLAS_RULESETS_DIR / "rules.schema.json"
@@ -38,9 +45,6 @@ ATLAS_USER_GUIDE = PROJECT_ROOT / "USER-GUIDE.md"
 
 # Atlas Knowledge Base
 KNOWLEDGEBASE_PATH = PROJECT_ROOT / "RULES_KNOWLEDGEBASE.md"
-
-# Atlas Customer Data
-ATLAS_CUSTOMER_DATA = ATLAS_HOME / "customer-data"
 
 # Atlas Templates
 DIFF_TEMPLATE = PROJECT_TEMPLATES / "diff.html"

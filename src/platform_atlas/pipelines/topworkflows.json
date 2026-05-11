@@ -7,7 +7,18 @@
   "pipeline": [
     {
       "$match": {
-        "status": "complete"
+        "status": "complete",
+        "$expr": {
+          "$gte": [
+            "$metrics.start_time",
+            {
+              "$subtract": [
+                { "$toLong": "$$NOW" },
+                2592000000
+              ]
+            }
+          ]
+        }
       }
     },
     {
@@ -33,8 +44,22 @@
           "$sum": 1
         },
         "total_run_time": {
-          "$sum": {
-            "$toLong": "$run_time"
+          "$sum": "$run_time"
+        },
+        "avg_run_time": {
+          "$avg": "$run_time"
+        },
+        "run_times": {
+          "$push": "$run_time"
+        }
+      }
+    },
+    {
+      "$addFields": {
+        "sorted_times": {
+          "$sortArray": {
+            "input": "$run_times",
+            "sortBy": 1
           }
         }
       }
@@ -49,6 +74,77 @@
             {
               "$divide": [
                 "$total_run_time",
+                60000
+              ]
+            },
+            2
+          ]
+        },
+        "Average Job Execution (minutes)": {
+          "$round": [
+            {
+              "$divide": [
+                "$avg_run_time",
+                60000
+              ]
+            },
+            2
+          ]
+        },
+        "P95 (minutes)": {
+          "$round": [
+            {
+              "$divide": [
+                {
+                  "$arrayElemAt": [
+                    "$sorted_times",
+                    {
+                      "$floor": {
+                        "$multiply": [
+                          0.95,
+                          {
+                            "$subtract": [
+                              {
+                                "$size": "$sorted_times"
+                              },
+                              1
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
+                60000
+              ]
+            },
+            2
+          ]
+        },
+        "P99 (minutes)": {
+          "$round": [
+            {
+              "$divide": [
+                {
+                  "$arrayElemAt": [
+                    "$sorted_times",
+                    {
+                      "$floor": {
+                        "$multiply": [
+                          0.99,
+                          {
+                            "$subtract": [
+                              {
+                                "$size": "$sorted_times"
+                              },
+                              1
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
                 60000
               ]
             },

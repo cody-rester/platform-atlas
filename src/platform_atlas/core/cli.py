@@ -102,6 +102,13 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        '--tier',
+        dest='tier_override',
+        choices=['standard', 'extended'],
+        help='Override the active tier for this command (standard | extended)'
+    )
+
+    parser.add_argument(
         '--whats-new',
         dest='whats_new',
         action='store_true',
@@ -122,11 +129,428 @@ def create_parser() -> argparse.ArgumentParser:
     _add_ruleset_commands(subparsers)
     _add_config_commands(subparsers)
     _add_env_commands(subparsers)
+    _add_tier_commands(subparsers)
     _add_preflight_command(subparsers)
     _add_guide_commands(subparsers)
-    #_add_customer_commands(subparsers) # DEPRECATED, will be removed in 1.7
+    _add_continuous_commands(subparsers)
+    _add_fleet_commands(subparsers)
 
     return parser
+
+
+# =================================================
+# CONTINUOUS-AUDIT Command Group
+# =================================================
+
+# Allowed run cadences for continuous audit. Same set as the WebUI dropdown.
+# Sub-hour intervals would hammer the platform and aren't useful for drift monitoring.
+_CONTINUOUS_INTERVAL_CHOICES: dict[str, int] = {
+    '1h':   3600,
+    '2h':   7200,
+    '6h':   21600,
+    '12h':  43200,
+    '24h':  86400,
+    '1w':   604800,
+}
+
+
+def _continuous_interval(raw: str) -> int:
+    """argparse type for --interval: accepts '1h'/'2h'/.../'1w' or the equivalent seconds."""
+    s = raw.strip().lower()
+    if s in _CONTINUOUS_INTERVAL_CHOICES:
+        return _CONTINUOUS_INTERVAL_CHOICES[s]
+    # Also accept numeric seconds, but only if they match one of the allowed values
+    try:
+        n = int(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid interval {raw!r} — choose one of: "
+            + ", ".join(_CONTINUOUS_INTERVAL_CHOICES.keys())
+        ) from None
+    if n in _CONTINUOUS_INTERVAL_CHOICES.values():
+        return n
+    raise argparse.ArgumentTypeError(
+        f"interval {n}s not allowed — choose one of: "
+        + ", ".join(f"{lbl} ({sec}s)" for lbl, sec in _CONTINUOUS_INTERVAL_CHOICES.items())
+    )
+
+
+def _add_continuous_commands(subparsers):
+    """Add continuous-audit (drift monitoring) commands."""
+
+    cont_parser = subparsers.add_parser(
+        'continuous-audit',
+        help='Schedule narrow Platform-only drift checks (per environment)',
+        formatter_class=AtlasHelpFormatter,
+        description=(
+            'Continuous audit re-runs a narrow Platform-OAuth-only capture '
+            'against the active ruleset on a schedule, diffing observed values '
+            'against the previous run to surface drift as alerts.'
+        ),
+    )
+
+    cont_subparsers = cont_parser.add_subparsers(
+        dest='continuous_action',
+        title='Continuous Actions',
+        help='Action to perform',
+        metavar='<action>',
+        required=True,
+    )
+
+    cont_subparsers.add_parser(
+        'run-once',
+        help='Execute one continuous-audit cycle and write the JSON report',
+        formatter_class=AtlasHelpFormatter,
+        description='Run a single Platform-only capture + validate, then write the JSON report.',
+    )
+
+    cont_subparsers.add_parser(
+        'status',
+        help='Show enable state, last run, and alert counts',
+        formatter_class=AtlasHelpFormatter,
+        description='Show the continuous-audit state for the active environment.',
+    )
+
+    alerts_parser = cont_subparsers.add_parser(
+        'alerts',
+        help='List drift alerts for the active environment',
+        formatter_class=AtlasHelpFormatter,
+        description='List drift alerts (rules whose observed value changed since the previous run).',
+    )
+    alerts_parser.add_argument(
+        '--severity',
+        choices=['critical', 'high', 'warning', 'info'],
+        help='Filter to a single severity level',
+    )
+    alerts_parser.add_argument(
+        '--unacked',
+        action='store_true',
+        help='Show only unacknowledged alerts',
+    )
+
+    ack_parser = cont_subparsers.add_parser(
+        'ack',
+        help='Acknowledge a drift alert by ID, or all of them',
+        formatter_class=AtlasHelpFormatter,
+        description='Acknowledge an alert. Acked alerts re-open if drift recurs on the same rule.',
+    )
+    ack_parser.add_argument(
+        'alert_id',
+        nargs='?',
+        help='Alert ID to acknowledge (omit when using --all)',
+    )
+    ack_parser.add_argument(
+        '--all',
+        dest='all_alerts',
+        action='store_true',
+        help='Acknowledge every unacked alert in this environment',
+    )
+
+    enable_parser = cont_subparsers.add_parser(
+        'enable',
+        help='Enable continuous audit for the active environment',
+        formatter_class=AtlasHelpFormatter,
+        description='Enable continuous audit on the active environment overlay.',
+    )
+    enable_parser.add_argument(
+        '--interval',
+        type=_continuous_interval,
+        metavar='INTERVAL',
+        help='Run cadence: 1h, 2h, 6h, 12h, 24h, 1w (default: 1h)',
+    )
+    enable_parser.add_argument(
+        '--retain',
+        type=int,
+        metavar='RUNS',
+        help='Number of run reports to keep on disk (default: 168)',
+    )
+    enable_parser.add_argument(
+        '--env',
+        dest='target_env',
+        metavar='ENV',
+        help='Environment name to enable continuous audit for (default: active environment)',
+    )
+    enable_parser.add_argument(
+        '--ruleset',
+        dest='ruleset_id',
+        metavar='RULESET_ID',
+        help='Ruleset ID to use for continuous audit (default: active ruleset)',
+    )
+    enable_parser.add_argument(
+        '--profile',
+        dest='profile_id',
+        metavar='PROFILE_ID',
+        help='Profile ID to apply (default: active profile)',
+    )
+
+    cont_subparsers.add_parser(
+        'disable',
+        help='Disable continuous audit for the active environment',
+        formatter_class=AtlasHelpFormatter,
+        description='Disable continuous audit on the active environment. History is preserved.',
+    )
+
+    # ── policy ─────────────────────────────────────────────────────────
+    policy_parser = cont_subparsers.add_parser(
+        'policy',
+        help='Show or set the alert policy (any | regression)',
+        formatter_class=AtlasHelpFormatter,
+        description=(
+            'Choose which drift events generate alerts and notifications. '
+            '"any" surfaces every change (default). "regression" surfaces '
+            'only PASS → FAIL transitions — the classic "something that was '
+            'working just broke" alert. Drift history (events.ndjson) is '
+            'always recorded in full regardless of this setting.'
+        ),
+    )
+    policy_parser.add_argument(
+        'policy_value',
+        nargs='?',
+        choices=['any', 'regression'],
+        help='New policy. Omit to display the current setting.',
+    )
+
+    # ── watch subgroup ─────────────────────────────────────────────────
+    watch_parser = cont_subparsers.add_parser(
+        'watch',
+        help='Manage the rule-number watchlist (alert only on listed rules)',
+        formatter_class=AtlasHelpFormatter,
+        description=(
+            'When the watchlist is non-empty, only drift events for rules in '
+            'the list generate alerts and notifications. Useful when only a '
+            'handful of rules matter (e.g. "just watch PLAT-001 and PLAT-042").'
+        ),
+    )
+    watch_subparsers = watch_parser.add_subparsers(
+        dest='watch_action',
+        title='Watch Actions',
+        help='Action to perform',
+        metavar='<action>',
+        required=True,
+    )
+
+    watch_subparsers.add_parser(
+        'list',
+        help='Show the current watchlist',
+        formatter_class=AtlasHelpFormatter,
+    )
+
+    watch_add = watch_subparsers.add_parser(
+        'add',
+        help='Add one or more rule numbers to the watchlist',
+        formatter_class=AtlasHelpFormatter,
+        description=(
+            'Add rule numbers (e.g. PLAT-001 PLAT-042) to the watchlist. '
+            'Rule numbers are case-insensitive; duplicates are ignored.'
+        ),
+    )
+    watch_add.add_argument(
+        'rules',
+        nargs='+',
+        metavar='RULE',
+        help='Rule number(s) to add. Comma-separated values are also accepted.',
+    )
+
+    watch_remove = watch_subparsers.add_parser(
+        'remove',
+        help='Remove one or more rule numbers from the watchlist',
+        formatter_class=AtlasHelpFormatter,
+    )
+    watch_remove.add_argument(
+        'rules',
+        nargs='+',
+        metavar='RULE',
+        help='Rule number(s) to remove.',
+    )
+
+    watch_subparsers.add_parser(
+        'clear',
+        help='Clear the watchlist (alert on all rules again)',
+        formatter_class=AtlasHelpFormatter,
+        description='Empty the watchlist. After this, every rule is eligible for alerts.',
+    )
+
+    # ── notify subgroup ────────────────────────────────────────────────
+    notify_parser = cont_subparsers.add_parser(
+        'notify',
+        help='Manage outbound drift notification channels (Slack, webhook)',
+        formatter_class=AtlasHelpFormatter,
+        description=(
+            'Manage Slack and generic-webhook channels that receive drift events '
+            'when continuous audit detects an alert-state transition (new alert '
+            'or re-opened acked alert).'
+        ),
+    )
+    notify_subparsers = notify_parser.add_subparsers(
+        dest='notify_action',
+        title='Notify Actions',
+        help='Action to perform',
+        metavar='<action>',
+        required=True,
+    )
+
+    notify_add = notify_subparsers.add_parser(
+        'add',
+        help='Add a Slack or webhook channel',
+        formatter_class=AtlasHelpFormatter,
+        description='Register a new outbound notification channel for the active (or chosen) environment.',
+    )
+    notify_add.add_argument(
+        'channel_type',
+        choices=['slack', 'webhook'],
+        metavar='<type>',
+        help='Channel type: slack | webhook',
+    )
+    notify_add.add_argument('url', metavar='URL', help='Channel URL (Slack incoming webhook or HTTPS endpoint)')
+    notify_add.add_argument('--name', dest='channel_name', metavar='NAME', help='Human-friendly channel label')
+    notify_add.add_argument('--id', dest='channel_id', metavar='ID', help='Stable channel ID (default: auto-generated)')
+    notify_add.add_argument(
+        '--header',
+        dest='channel_headers',
+        action='append',
+        default=[],
+        metavar='KEY=VALUE',
+        help='Custom HTTP header for webhook channels (repeatable)',
+    )
+    notify_add.add_argument(
+        '--secret',
+        dest='channel_secret',
+        metavar='SECRET',
+        help='HMAC-SHA256 signing secret (webhook only — added as X-Atlas-Signature header)',
+    )
+    notify_add.add_argument(
+        '--env', dest='target_env', metavar='ENV',
+        help='Environment to manage channels for (default: active environment)',
+    )
+
+    notify_list = notify_subparsers.add_parser(
+        'list',
+        help='List configured notification channels',
+        formatter_class=AtlasHelpFormatter,
+    )
+    notify_list.add_argument(
+        '--env', dest='target_env', metavar='ENV',
+        help='Environment to list channels for (default: active environment)',
+    )
+
+    notify_remove = notify_subparsers.add_parser(
+        'remove',
+        help='Remove a channel by ID',
+        formatter_class=AtlasHelpFormatter,
+    )
+    notify_remove.add_argument('channel_id', metavar='ID', help='Channel ID to remove')
+    notify_remove.add_argument(
+        '--env', dest='target_env', metavar='ENV',
+        help='Environment the channel belongs to (default: active environment)',
+    )
+
+    notify_test = notify_subparsers.add_parser(
+        'test',
+        help='Send a synthetic test payload to a channel',
+        formatter_class=AtlasHelpFormatter,
+    )
+    notify_test.add_argument('channel_id', metavar='ID', help='Channel ID to test')
+    notify_test.add_argument(
+        '--env', dest='target_env', metavar='ENV',
+        help='Environment the channel belongs to (default: active environment)',
+    )
+
+
+# =================================================
+# FLEET Command Group
+# =================================================
+
+def _add_fleet_commands(subparsers):
+    """Add fleet (multi-environment compliance overview) commands."""
+    fleet_parser = subparsers.add_parser(
+        'fleet',
+        help='Multi-environment compliance overview from local cache',
+        formatter_class=AtlasHelpFormatter,
+        description=(
+            'Aggregate the most recent locally-cached state for every configured '
+            'environment — last capture, pass-rate, continuous-audit state, '
+            'unacked alerts. Read-only; does not trigger captures.'
+        ),
+    )
+    fleet_subparsers = fleet_parser.add_subparsers(
+        dest='fleet_action',
+        title='Fleet Actions',
+        help='Action to perform',
+        metavar='<action>',
+        required=True,
+    )
+
+    status = fleet_subparsers.add_parser(
+        'status',
+        help='Show compliance overview across all environments',
+        formatter_class=AtlasHelpFormatter,
+        description='Render a table of every environment with its tier, last-capture age, pass rate, and drift alert counts.',
+    )
+    status.add_argument(
+        '--json', dest='as_json', action='store_true',
+        help='Emit machine-readable JSON instead of a Rich table',
+    )
+
+
+# =================================================
+# TIER Command Group
+# =================================================
+
+def _add_tier_commands(subparsers):
+    """Add tier management commands."""
+
+    tier_parser = subparsers.add_parser(
+        'tier',
+        help='Show, set, upgrade, or downgrade the active tier',
+        formatter_class=AtlasHelpFormatter,
+        description=(
+            'Manage Platform Atlas\'s mode tier:\n'
+            '  • Standard — Platform OAuth + optional IAG4 (5-minute setup)\n'
+            '  • Extended — Full audit including SSH, MongoDB, Redis, Kubernetes'
+        ),
+    )
+
+    tier_subparsers = tier_parser.add_subparsers(
+        dest='tier_action',
+        title='Tier Actions',
+        help='Action to perform',
+        metavar='<action>',
+        required=True,
+    )
+
+    tier_subparsers.add_parser(
+        'show',
+        help='Display the active tier and what is enabled',
+        formatter_class=AtlasHelpFormatter,
+        description='Show the current tier with a summary of enabled capability.',
+    )
+
+    set_parser = tier_subparsers.add_parser(
+        'set',
+        help='Set the global default tier',
+        formatter_class=AtlasHelpFormatter,
+        description='Persist a new global tier to ~/.atlas/config.json.',
+    )
+    set_parser.add_argument(
+        'tier_value',
+        nargs='?',
+        choices=['standard', 'extended'],
+        help='Target tier (interactive picker if omitted)',
+    )
+
+    tier_subparsers.add_parser(
+        'upgrade',
+        help='Upgrade Standard to Extended (interactive)',
+        formatter_class=AtlasHelpFormatter,
+        description='Interactive flow to switch from Standard to Extended Mode.',
+    )
+
+    tier_subparsers.add_parser(
+        'downgrade',
+        help='Downgrade Extended to Standard (interactive)',
+        formatter_class=AtlasHelpFormatter,
+        description='Interactive flow to switch from Extended to Standard Mode.',
+    )
 
 # =================================================
 # SESSION Command Group
@@ -180,6 +604,12 @@ def _add_session_commands(subparsers):
     create.add_argument(
         '--profile',
         help='Profile ID (interactive picker if not specified)'
+    )
+    create.add_argument(
+        '--tier',
+        choices=['standard', 'extended'],
+        dest='tier',
+        help='Bind the session to a tier (defaults to the active config tier)'
     )
 
     # session run
@@ -290,6 +720,13 @@ def _add_session_commands(subparsers):
         '--no-fixes',
         action='store_true',
         help='Disable fix instructions from the knowledge base in the report detail modals'
+    )
+    run.add_argument(
+        '--debug-raw-capture',
+        action='store_true',
+        help='Also write 01_raw_capture.json — the full reshaped capture before '
+             'ruleset filtering. Useful for tracing dot-notation paths when authoring '
+             'new rules. Overrides the env\'s debug_export_raw_capture flag for this run.'
     )
 
     # session list
@@ -868,107 +1305,6 @@ def _add_guide_commands(subparsers):
     )
 
 # =================================================
-# CUSTOMER DATA MANAGEMENT (Mult-Tenant Mode Only)
-# =================================================
-
-def _add_customer_commands(subparsers):
-    """Add customer management commands"""
-
-    customer_parser = subparsers.add_parser(
-        'customer',
-        help='[argparse.special][Itential] [/argparse.special] Manage customer capture data (import, validate, report)',
-        formatter_class=AtlasHelpFormatter,
-        description='Import, validate, and report on customer configuration data'
-        )
-
-    customer_subparsers = customer_parser.add_subparsers(
-        dest="customer_command",
-        metavar='<command>',
-        title="Customer Commands",
-        required=True,
-    )
-
-    # customer import
-    customer_import = customer_subparsers.add_parser(
-        'import',
-        help='Import a customer capture JSON file',
-        formatter_class=AtlasHelpFormatter,
-        description='Import and validate a customer configuration capture file'
-    )
-
-    customer_import.add_argument(
-        "capture_file",
-        type=validate_capture_file,
-        help="Path to capture JSON file"
-    )
-
-    customer_import.add_argument(
-        "--organization",
-        help="Organization name (extracted from capture file if not provided)"
-    )
-
-    customer_import.add_argument(
-        "--session",
-        help="Session name (defaults to current quarter: YYYY-QN)"
-    )
-
-    # customer list
-    customer_subparsers.add_parser(
-        'list',
-        help="List all customer organizations",
-        formatter_class=AtlasHelpFormatter,
-        description='Display all organizations with imported capture data'
-    )
-
-    # customer sessions
-    customer_sessions = customer_subparsers.add_parser(
-        'sessions',
-        help='List sessions for an organization',
-        formatter_class=AtlasHelpFormatter,
-        description='Show all capture sessions for a specific organization'
-    )
-
-    customer_sessions.add_argument(
-        "organization",
-        help="Organization name"
-    )
-
-    # customer validate
-    customer_validate = customer_subparsers.add_parser(
-        'validate',
-        help='Validate a customer session against the active ruleset',
-        formatter_class=AtlasHelpFormatter,
-        description='Run validation rules against customer capture data'
-    )
-
-    customer_validate.add_argument(
-        'organization',
-        help='Organization name'
-    )
-
-    customer_validate.add_argument(
-        'session',
-        help='Session name (e.g., 2026-q1)'
-    )
-
-    # customer report
-    customer_report = customer_subparsers.add_parser(
-        'report',
-        help='Generate HTML report for a customer session',
-        formatter_class=AtlasHelpFormatter,
-        description='Create HTML validation report for customer session'
-    )
-
-    customer_report.add_argument(
-        'organization',
-        help='Organization name')
-
-    customer_report.add_argument(
-        'session',
-        help='Session name (e.g., 2026-q1)'
-    )
-
-# =================================================
 # Helper: Extract Command Path
 # =================================================
 
@@ -1016,9 +1352,24 @@ def get_command_path(args: argparse.Namespace) -> tuple[str, ...]:
         elif args.command == 'env' and hasattr(args, 'env_action'):
             path.append(args.env_action)
 
-        # Customer subcommand
-        elif args.command == 'customer' and hasattr(args, 'customer_command'):
-            path.append(args.customer_command)
+        # Tier subcommand
+        elif args.command == 'tier' and hasattr(args, 'tier_action'):
+            path.append(args.tier_action)
+
+        # Fleet subcommand
+        elif args.command == 'fleet' and hasattr(args, 'fleet_action'):
+            path.append(args.fleet_action)
+
+        # Continuous-audit subcommand
+        elif args.command == 'continuous-audit' and hasattr(args, 'continuous_action'):
+            path.append(args.continuous_action)
+            # Three-level nested actions (notify add/list/remove/test,
+            # watch add/list/remove/clear). Their argparse dests follow the
+            # ``<group>_action`` convention so we can resolve them generically.
+            nested_attr = f"{args.continuous_action}_action"
+            nested_value = getattr(args, nested_attr, None)
+            if nested_value:
+                path.append(nested_value)
 
     return tuple(path)
 

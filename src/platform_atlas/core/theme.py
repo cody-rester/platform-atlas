@@ -88,6 +88,14 @@ class Theme:
     badge_deprecated: str = "#DC2626"
     badge_beta: str = "#F59E0B"
 
+    # === TIER BADGES (Itential brand colors — never themed) ===
+    # Standard mode is presented in Itential Blue (#1B93D2);
+    # Extended mode in Itential Orange (#FF6633). Holding these
+    # constant across every theme preset keeps the Mode pill
+    # readable as a brand cue, not a UI accent.
+    tier_standard: str = "#1B93D2"
+    tier_extended: str = "#FF6633"
+
     spinner_color: str = "#00D7FF"
     link_color: str = "#60A5FA"
     link_hover: str = "#93C5FD"

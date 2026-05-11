@@ -175,8 +175,75 @@ def _check_credential_backend() -> CheckResult:
         f"All credentials available ({store.backend_name})",
     )
 
+def _check_node_control_master(target: dict, check_name: str) -> CheckResult:
+    """Connectivity check for ControlMaster targets.
+
+    Opens a brief ping through the user's pre-opened master socket and reports
+    success/failure. Does not modify the master session — Atlas only multiplexes,
+    it never opens or closes the master.
+    """
+    from platform_atlas.core.transport import (
+        ControlMasterConfig, ControlMasterTransport,
+    )
+    from platform_atlas.core.exceptions import CollectorConnectionError
+
+    socket_path = target.get("control_socket", "")
+    ssh_target = target.get("ssh_target", "")
+
+    if not socket_path:
+        return CheckResult.fail(
+            check_name,
+            "ControlMaster socket path missing",
+            details="Set 'ssh_control_socket' on this node",
+            group="ssh",
+        )
+    if not ssh_target:
+        return CheckResult.fail(
+            check_name,
+            "ControlMaster SSH destination missing",
+            details="Set 'ssh_control_target' on this node",
+            group="ssh",
+        )
+
+    port = target.get("port", 22)
+    try:
+        cfg = ControlMasterConfig(socket_path=socket_path, ssh_target=ssh_target, port=port)
+    except ValueError as e:
+        return CheckResult.fail(check_name, str(e), group="ssh")
+
+    transport = ControlMasterTransport(cfg)
+    try:
+        transport.connect()
+        return CheckResult.ok(
+            check_name,
+            f"Master socket reachable → {ssh_target}",
+            details=f"socket: {socket_path}",
+            group="ssh",
+        )
+    except CollectorConnectionError as e:
+        return CheckResult.fail(
+            check_name,
+            e.message if hasattr(e, "message") else str(e),
+            details=f"socket: {socket_path} — open the master before running Atlas",
+            group="ssh",
+        )
+    except Exception as e:
+        return CheckResult.fail(
+            check_name, f"{type(e).__name__}: {e}", group="ssh",
+        )
+    finally:
+        try:
+            transport.close()
+        except Exception:
+            pass
+
+
 def _check_node_ssh(target: dict, timeout: float = 5.0) -> CheckResult:
-    """Attempt an SSH connection to a single target node."""
+    """Connectivity check for a single target. Dispatches by transport.
+
+    Despite the legacy name, this also handles ``local`` and ``kubernetes``
+    (skipped) and ``control_master`` (delegated to the CM-specific helper).
+    """
     import paramiko
 
     name = target.get("name", "unknown")
@@ -185,17 +252,21 @@ def _check_node_ssh(target: dict, timeout: float = 5.0) -> CheckResult:
     username = target.get("username", "atlas")
     key_path = target.get("key_path")
     key_passphrase = target.get("key_passphrase")
+    transport_kind = target.get("transport", "ssh")
     check_name = f"SSH → {name}"
 
-    if target.get("transport", "ssh") == "local":
+    if transport_kind == "local":
         return CheckResult.skip(
             check_name, "Local transport — SSH not required", group="ssh",
         )
 
-    if target.get("transport") == "kubernetes":
+    if transport_kind == "kubernetes":
         return CheckResult.skip(
             check_name, "Kubernetes transport — SSH not used", group="ssh",
         )
+
+    if transport_kind == "control_master":
+        return _check_node_control_master(target, check_name)
 
     if not host:
         return CheckResult.fail(
@@ -304,9 +375,11 @@ def _check_node_ssh(target: dict, timeout: float = 5.0) -> CheckResult:
 # These must run per-node with the correct SSH transport.
 _SSH_COLLECTORS: frozenset[str] = frozenset({"system", "filesystem", "gateway4"})
 
-# Collectors that use their own protocol (pymongo, redis-py, OAuth/HTTP).
+# Collectors that use their own protocol (pymongo, redis-py, OAuth/HTTP, ipsdk).
 # These connect via URIs in the main config and only need to run once.
-_CONNECTOR_COLLECTORS: frozenset[str] = frozenset({"mongo", "redis", "platform"})
+# `gateway4_api` is included so Standard-mode preflight can verify Gateway4 API
+# reachability — it is the API counterpart to the SSH-based `gateway4` collector.
+_CONNECTOR_COLLECTORS: frozenset[str] = frozenset({"mongo", "redis", "platform", "gateway4_api"})
 
 
 # Main entrypoint
@@ -355,11 +428,19 @@ def run_preflight(
     if not quiet:
         console.print(f"\n[bold {theme.primary}]Running preflight checks...[/bold {theme.primary}]\n")
 
+    # Tier-aware phase gating: Standard mode runs only connector preflights.
+    # SSH (Phases 1, 2) and Kubernetes (Phase 2b) are skipped entirely.
+    from platform_atlas.core.context import ctx as _ctx
+    is_standard = _ctx().is_standard
+
     # -- Phase 1: SSH node connectivity ------------------------------------
     ssh_healthy_targets: list[dict] = []
 
-    if targets:
-        ssh_targets = [t for t in targets if t.get("transport", "ssh") == "ssh"]
+    if targets and not is_standard:
+        ssh_targets = [
+            t for t in targets
+            if t.get("transport", "ssh") in ("ssh", "control_master")
+        ]
 
         if ssh_targets:
             if not quiet:
@@ -446,8 +527,8 @@ def run_preflight(
             except Exception:
                 pass
 
-    # Also run SSH-based checks locally if any local targets exist
-    if targets:
+    # Also run SSH-based checks locally if any local targets exist (Extended only)
+    if targets and not is_standard:
         local_targets = [t for t in targets if t.get("transport", "ssh") == "local"]
         for target in local_targets:
             target_name = target.get("name", "local")
@@ -484,8 +565,8 @@ def run_preflight(
                         group="node_services",
                     ))
 
-    # -- Phase 2b: Kubernetes preflight checks --------------------------------
-    if targets:
+    # -- Phase 2b: Kubernetes preflight checks (Extended only) ----------------
+    if targets and not is_standard:
         k8s_targets = [t for t in targets if t.get("transport") == "kubernetes"]
         if k8s_targets:
             if not quiet:

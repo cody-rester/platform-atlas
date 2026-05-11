@@ -1087,8 +1087,12 @@
 
 <!-- ── Hero ─────────────────────────────────────── -->
 <section class="hero" id="hero">
-  <div class="hero-eyebrow">Platform Atlas v1.6</div>
+  <div class="hero-eyebrow">Platform Atlas v1.7 · Extended Mode</div>
   <h1>Architecture Overview</h1>
+  <div class="env-pill" id="env-pill" hidden style="display:inline-flex; align-items:center; gap:8px; margin:10px 0 0; padding:6px 14px; border-radius:999px; background:rgba(27,147,210,.12); border:1px solid rgba(27,147,210,.5); font-size:13px; font-weight:600; color:#1B93D2;">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4"/></svg>
+    Environment: <span id="env-pill-name" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">—</span>
+  </div>
   <p class="hero-subtitle">
     Describe your Itential deployment architecture — topology, deployment types, server specs,
     and operational details that Atlas cannot gather automatically. Your answers will be exported
@@ -2300,7 +2304,7 @@
 
         <div class="field" data-field="mtu_size">
           <div class="field-label">MTU size across platform network</div>
-          <select class="field-input" id="f-net-mtu-size" onchange="onFieldChange(this); onMTUChange()">
+          <select class="field-input" id="f-net-mtu-size" onchange="onFieldChange(this); onMTUChange(); toggleConditional('mtu_size_other', this.value === 'Other')">
             <option value="">— Select —</option>
             <option value="1500 (Standard — recommended)">1500 (Standard — recommended)</option>
             <option value="9000 (Jumbo Frames)">9000 (Jumbo Frames)</option>
@@ -2310,6 +2314,13 @@
           <div class="field-warning" id="f-net-mtu-warn">
             ⚠ MTU 9000 has been observed to cause issues with Platform. MTU 1500 is recommended.
           </div>
+        </div>
+
+        <div class="field hidden" data-field="mtu_size_other" data-conditional="true">
+          <div class="field-label">Specify MTU size</div>
+          <div class="field-hint">e.g., 1492, 4500</div>
+          <input type="text" class="field-input" id="f-net-mtu-size-other"
+                 placeholder="MTU value (bytes)" oninput="onFieldChange(this)">
         </div>
 
         <div class="field" data-field="has_connectivity_concerns">
@@ -2365,13 +2376,88 @@
     </div>
   </div>
 
+  <!-- ════════════════════════════════════════════════ -->
+  <!-- 11. Vulnerability Assessments                    -->
+  <!-- ════════════════════════════════════════════════ -->
+  <div class="section" id="sec-vulnerability_assessments" data-section="vulnerability_assessments">
+    <div class="section-header" onclick="toggleSection('vulnerability_assessments')">
+      <div class="section-icon icon-network">
+        <svg viewBox="0 0 24 24"><path d="M12 2 4 6v6c0 5 3.5 9 8 10 4.5-1 8-5 8-10V6l-8-4z"/><path d="M9 12l2 2 4-4"/></svg>
+      </div>
+      <div class="section-title-group">
+        <div class="section-tag tag-required">Required</div>
+        <div class="section-title">Vulnerability Assessments</div>
+        <div class="section-subtitle">How (and whether) this environment is scanned for known vulnerabilities</div>
+      </div>
+      <div class="section-mini-progress" id="mini-vulnerability_assessments"></div>
+      <span class="section-incomplete-pill">Not Complete</span>
+      <svg class="section-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+    </div>
+    <div class="section-body">
+      <div class="form-card">
+
+        <div class="field" data-field="performs_assessments">
+          <div class="field-label">Does this environment undergo vulnerability assessments?</div>
+          <select class="field-input" id="f-va-performs" onchange="onFieldChange(this); onVAPerformsChange()">
+            <option value="">— Select —</option>
+            <option value="Yes — regularly">Yes — regularly</option>
+            <option value="Yes — ad-hoc / on demand">Yes — ad-hoc / on demand</option>
+            <option value="No">No</option>
+          </select>
+          <div class="field-hint">If "No", the remaining fields below aren't required.</div>
+        </div>
+
+        <div class="field hidden" data-field="tools" data-conditional="true">
+          <div class="field-label">Which tool(s) are used? (select all that apply)</div>
+          <div class="checkbox-group" id="g-va-tools">
+            <label class="checkbox-opt"><input type="checkbox" value="Tenable / Nessus" onchange="onCheckboxChange(this, 'tools')"><div class="cb-visual"><svg viewBox="0 0 12 12"><polyline points="1.5,6 4.5,9.5 10.5,2.5"/></svg></div><span>Tenable / Nessus</span></label>
+            <label class="checkbox-opt"><input type="checkbox" value="Qualys VMDR" onchange="onCheckboxChange(this, 'tools')"><div class="cb-visual"><svg viewBox="0 0 12 12"><polyline points="1.5,6 4.5,9.5 10.5,2.5"/></svg></div><span>Qualys VMDR</span></label>
+            <label class="checkbox-opt"><input type="checkbox" value="Rapid7 InsightVM" onchange="onCheckboxChange(this, 'tools')"><div class="cb-visual"><svg viewBox="0 0 12 12"><polyline points="1.5,6 4.5,9.5 10.5,2.5"/></svg></div><span>Rapid7 InsightVM</span></label>
+            <label class="checkbox-opt"><input type="checkbox" value="Wiz" onchange="onCheckboxChange(this, 'tools')"><div class="cb-visual"><svg viewBox="0 0 12 12"><polyline points="1.5,6 4.5,9.5 10.5,2.5"/></svg></div><span>Wiz</span></label>
+            <label class="checkbox-opt"><input type="checkbox" value="Prisma Cloud / Twistlock" onchange="onCheckboxChange(this, 'tools')"><div class="cb-visual"><svg viewBox="0 0 12 12"><polyline points="1.5,6 4.5,9.5 10.5,2.5"/></svg></div><span>Prisma Cloud / Twistlock</span></label>
+            <label class="checkbox-opt"><input type="checkbox" value="Aqua Security" onchange="onCheckboxChange(this, 'tools')"><div class="cb-visual"><svg viewBox="0 0 12 12"><polyline points="1.5,6 4.5,9.5 10.5,2.5"/></svg></div><span>Aqua Security</span></label>
+            <label class="checkbox-opt"><input type="checkbox" value="CrowdStrike Falcon" onchange="onCheckboxChange(this, 'tools')"><div class="cb-visual"><svg viewBox="0 0 12 12"><polyline points="1.5,6 4.5,9.5 10.5,2.5"/></svg></div><span>CrowdStrike Falcon</span></label>
+            <label class="checkbox-opt"><input type="checkbox" value="Trivy" onchange="onCheckboxChange(this, 'tools')"><div class="cb-visual"><svg viewBox="0 0 12 12"><polyline points="1.5,6 4.5,9.5 10.5,2.5"/></svg></div><span>Trivy</span></label>
+            <label class="checkbox-opt"><input type="checkbox" value="Grype" onchange="onCheckboxChange(this, 'tools')"><div class="cb-visual"><svg viewBox="0 0 12 12"><polyline points="1.5,6 4.5,9.5 10.5,2.5"/></svg></div><span>Grype</span></label>
+            <label class="checkbox-opt"><input type="checkbox" value="Snyk" onchange="onCheckboxChange(this, 'tools')"><div class="cb-visual"><svg viewBox="0 0 12 12"><polyline points="1.5,6 4.5,9.5 10.5,2.5"/></svg></div><span>Snyk</span></label>
+            <label class="checkbox-opt"><input type="checkbox" value="Anchore" onchange="onCheckboxChange(this, 'tools')"><div class="cb-visual"><svg viewBox="0 0 12 12"><polyline points="1.5,6 4.5,9.5 10.5,2.5"/></svg></div><span>Anchore</span></label>
+            <label class="checkbox-opt"><input type="checkbox" value="OpenSCAP" onchange="onCheckboxChange(this, 'tools')"><div class="cb-visual"><svg viewBox="0 0 12 12"><polyline points="1.5,6 4.5,9.5 10.5,2.5"/></svg></div><span>OpenSCAP</span></label>
+            <label class="checkbox-opt"><input type="checkbox" value="In-house / custom tooling" onchange="onCheckboxChange(this, 'tools')"><div class="cb-visual"><svg viewBox="0 0 12 12"><polyline points="1.5,6 4.5,9.5 10.5,2.5"/></svg></div><span>In-house / custom tooling</span></label>
+            <label class="checkbox-opt"><input type="checkbox" value="Other" onchange="onCheckboxChange(this, 'tools'); toggleConditional('tools_other', this.checked)"><div class="cb-visual"><svg viewBox="0 0 12 12"><polyline points="1.5,6 4.5,9.5 10.5,2.5"/></svg></div><span>Other</span></label>
+          </div>
+        </div>
+
+        <div class="field hidden" data-field="tools_other" data-conditional="true">
+          <div class="field-label">Specify other tooling</div>
+          <div class="field-hint">e.g., Acunetix, Black Duck, Tanium Comply</div>
+          <input type="text" class="field-input" id="f-va-tools-other"
+                 placeholder="Other vulnerability tooling" oninput="onFieldChange(this)">
+        </div>
+
+        <div class="field hidden" data-field="frequency" data-conditional="true">
+          <div class="field-label">How often are assessments run?</div>
+          <select class="field-input" id="f-va-frequency" onchange="onFieldChange(this)">
+            <option value="">— Select —</option>
+            <option value="Continuously (always-on)">Continuously (always-on)</option>
+            <option value="Monthly">Monthly</option>
+            <option value="Quarterly">Quarterly</option>
+            <option value="Annually">Annually</option>
+            <option value="Ad-hoc / on demand">Ad-hoc / on demand</option>
+            <option value="Unknown">Unknown</option>
+          </select>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
   <!-- Completion Banner -->
   <div class="completion-banner" id="completion-banner">
     <h2>Architecture overview complete</h2>
     <p>
       All applicable sections have been filled in. Use <strong>Export answers to JSON</strong>
-      to download a file compatible with Atlas's <code>architecture.json</code> format and
-      return it to your Itential contact.
+      to download a file compatible with Atlas's per-environment
+      <code>architecture/&lt;env&gt;.json</code> format and return it to your Itential contact.
     </p>
   </div>
 
@@ -2536,6 +2622,7 @@
       id: 'network_security', label: 'Network & Security', skippable: false,
       fields: [
         { key: 'mtu_size',                     inputId: 'f-net-mtu-size',                type: 'select' },
+        { key: 'mtu_size_other',               inputId: 'f-net-mtu-size-other',          type: 'text',    conditional: true },
         { key: 'has_connectivity_concerns',    inputId: 'f-net-connectivity',            type: 'confirm' },
         { key: 'connectivity_notes',           inputId: 'f-net-connectivity-notes',      type: 'text',    conditional: true },
         { key: 'selinux_mode',                 inputId: 'f-sec-selinux-mode',            type: 'select' },
@@ -2543,9 +2630,39 @@
         { key: 'compliance_other',             inputId: 'f-sec-compliance-other',        type: 'text',    conditional: true },
       ],
     },
+    {
+      id: 'vulnerability_assessments', label: 'Vulnerability Assessments', skippable: false,
+      fields: [
+        { key: 'performs_assessments',         inputId: 'f-va-performs',                 type: 'select' },
+        { key: 'tools',                        inputId: 'g-va-tools',                    type: 'checkbox-group', conditional: true },
+        { key: 'tools_other',                  inputId: 'f-va-tools-other',              type: 'text',           conditional: true },
+        { key: 'frequency',                    inputId: 'f-va-frequency',                type: 'select',         conditional: true },
+      ],
+    },
   ];
 
-  const STORAGE_KEY = 'atlas-architecture-v1';
+  // localStorage key is namespaced by environment so two envs filling out
+  // their answers in the same browser don't clobber each other. Env is read
+  // from the ?env= query parameter passed by the launcher; absence falls
+  // back to the legacy unnamespaced key for backward-compat.
+  const ENV_FROM_URL = (function() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return (params.get('env') || '').trim();
+    } catch (e) { return ''; }
+  })();
+  // Optional ?org= query parameter from the launcher. When present we use
+  // it to pre-fill the identity card's company field on first load — the
+  // user already entered this value during initial Atlas setup.
+  const ORG_FROM_URL = (function() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return (params.get('org') || '').trim();
+    } catch (e) { return ''; }
+  })();
+  const STORAGE_KEY = ENV_FROM_URL
+    ? ('atlas-architecture-v1::' + ENV_FROM_URL)
+    : 'atlas-architecture-v1';
 
   // ── State helpers ────────────────────────────────────
   function loadState() {
@@ -2580,6 +2697,18 @@
   function restoreIdentity(state) {
     if (state._name)    document.getElementById('field-name').value    = state._name;
     if (state._company) document.getElementById('field-company').value = state._company;
+    // Pre-fill the company field from the launcher's ?org= when the user
+    // hasn't already typed something. Save it back so it persists across
+    // reloads and shows up in the export's identity block.
+    else if (ORG_FROM_URL) {
+      const companyEl = document.getElementById('field-company');
+      if (companyEl && !companyEl.value) {
+        companyEl.value = ORG_FROM_URL;
+        const persisted = loadState();
+        persisted._company = ORG_FROM_URL;
+        saveState(persisted);
+      }
+    }
   }
 
   function formatTimestamp(iso) {
@@ -3138,6 +3267,9 @@
 
     // Network & Security
     onMTUChange();
+    if (document.getElementById('f-net-mtu-size').value === 'Other') {
+      toggleConditional('mtu_size_other', true);
+    }
     if (document.getElementById('f-net-connectivity').value === 'true') {
       toggleConditional('connectivity_notes', true);
     }
@@ -3373,13 +3505,14 @@
     const payload = {
       meta: {
         tool:            'Platform Atlas',
-        version:         '1.6',
-        form_version:    'architecture-v1',
+        version:         '1.7',
+        form_version:    'architecture-v2',
         exported_at:     now.toISOString(),
         exported_date:   dateStr,
         submitted_by:    name    || '(not provided)',
         company:         company || '(not provided)',
-        instructions:    'Return this file to your Itential contact. The "architecture_validation" object mirrors ~/.atlas/architecture.json.',
+        environment_name: ENV_FROM_URL || '',
+        instructions:    'Return this file to your Itential contact. The "architecture_validation" object mirrors ~/.atlas/architecture/<env>.json.',
       },
       summary: {
         total_applicable_fields: totalFields,
@@ -3388,8 +3521,11 @@
         skipped_sections:        skipped,
         ready_for_review:        isComplete,
       },
+      // Top-level for compatibility with importers that read either location.
+      environment_name: ENV_FROM_URL || '',
       architecture_validation: {
         completed: completed,
+        environment_name: ENV_FROM_URL || '',
         skipped:   skipped,
         status:    isComplete ? 'complete' : 'in_progress',
       },
@@ -3408,8 +3544,36 @@
     URL.revokeObjectURL(url);
   }
 
+  // ── Vulnerability Assessments conditional toggle ─────
+  // Show / hide the tools + frequency fields based on whether the user said
+  // "No" to performing assessments.
+  function onVAPerformsChange() {
+    const sel = document.getElementById('f-va-performs');
+    const performs = sel && sel.value && !sel.value.startsWith('No');
+    toggleConditional('tools', !!performs);
+    toggleConditional('frequency', !!performs);
+    // The "tools_other" sub-field is gated on "Other" being checked AND
+    // performs being truthy; clear it when the parent gate flips off.
+    if (!performs) {
+      toggleConditional('tools_other', false);
+    }
+  }
+
   // ── Init ─────────────────────────────────────────────
   document.addEventListener('DOMContentLoaded', () => {
+    // Surface the env name in the hero pill so users always know which
+    // environment they're answering for.
+    if (ENV_FROM_URL) {
+      const pill = document.getElementById('env-pill');
+      const name = document.getElementById('env-pill-name');
+      if (pill && name) {
+        name.textContent = ENV_FROM_URL;
+        pill.removeAttribute('hidden');
+        pill.style.display = 'inline-flex';
+      }
+      // Reflect in document title too for easy tab identification.
+      document.title = `Architecture · ${ENV_FROM_URL} — Platform Atlas`;
+    }
     staggerSections();
     restoreState();
     initStickyBar();

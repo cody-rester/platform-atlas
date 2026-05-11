@@ -33,6 +33,7 @@ __all__ = [
     "ROLE_SPECS",
     "TargetNode",
     "DeploymentTopology",
+    "synthesize_standard_targets",
 ]
 
 logger = logging.getLogger(__name__)
@@ -164,8 +165,10 @@ class TargetNode:
                             for local transport.
         label:              Human-friendly name shown in reports (auto-generated
                             if omitted).
-        transport:          "local" or "ssh". Defaults to "ssh" - set "local"
-                            explicitly for dev/testing on localhost
+        transport:          "local", "ssh", or "control_master". Defaults to "ssh".
+                            Set "local" for dev/testing on localhost; set
+                            "control_master" to multiplex through a pre-opened
+                            OpenSSH ControlMaster session (e.g. CyberArk PSMP).
         ssh_user:           SSH username (ignored for local transport).
         ssh_key:            Path to SSH private key (optional).
         ssh_key_passphrase: Passphrase used for encrypted ssh key (optional)
@@ -185,6 +188,9 @@ class TargetNode:
     ssh_port: int = 22
     ssh_discover_keys: bool = False
     ssh_host_key_policy: str = "warn"
+    # ControlMaster transport fields — ignored when transport != "control_master"
+    ssh_control_socket: str = ""   # e.g. /tmp/atlas-cm.sock
+    ssh_control_target: str = ""   # e.g. user@target-host@psmp-gateway.example.com
     modules: list[str] | None = None
     primary: bool = False
 
@@ -250,6 +256,15 @@ class TargetNode:
                 passphrase = credential_store().get(CredentialKey.SSH_PASSPHRASE)
                 if passphrase:
                     target["key_passphrase"] = passphrase
+        elif self.transport == "control_master":
+            target["host"] = self.host
+            target["control_socket"] = self.ssh_control_socket
+            # No fallback: an empty ssh_control_target should fail loudly at
+            # ControlMasterConfig validation rather than silently producing a
+            # meaningless "atlas@host" destination that won't work in PSMP.
+            target["ssh_target"] = self.ssh_control_target
+            if self.ssh_port != 22:
+                target["port"] = self.ssh_port
         # Kubernetes transport — no host/SSH details needed
         # Protocol collectors use URIs from config; K8s collector uses values.yaml
         return target
@@ -278,6 +293,13 @@ class TargetNode:
                 data["ssh_discover_keys"] = True
             if self.ssh_host_key_policy != "auto_add":
                 data["ssh_host_key_policy"] = self.ssh_host_key_policy
+        elif self.transport == "control_master":
+            if self.ssh_control_socket:
+                data["ssh_control_socket"] = self.ssh_control_socket
+            if self.ssh_control_target:
+                data["ssh_control_target"] = self.ssh_control_target
+            if self.ssh_port != 22:
+                data["ssh_port"] = self.ssh_port
         if self.modules is not None:
             data["modules"] = self.modules
         if self.primary:
@@ -315,6 +337,8 @@ class TargetNode:
                 "ssh_host_key_policy",
                 defaults.get("host_key_policy", "auto_add"),
             ),
+            ssh_control_socket=data.get("ssh_control_socket", ""),
+            ssh_control_target=data.get("ssh_control_target", ""),
             modules=data.get("modules"),
             primary=data.get("primary", False),
         )
@@ -695,3 +719,44 @@ class DeploymentTopology:
             ))
 
         return cls(mode=DeploymentMode.KUBERNETES, nodes=nodes)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Standard-tier synthetic targets
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def synthesize_standard_targets(config: Any) -> list[dict[str, Any]]:
+    """
+    Build the target list for a Standard-tier capture without a topology.
+
+    Standard captures do not require a `DeploymentTopology` — there are no
+    SSH-bound nodes to enumerate. Capture targets are derived directly
+    from `platform_uri` and the optional `gateway4_uri` field on the
+    config. Each entry uses the synthetic transport ``"api"`` so the
+    capture engine and preflight runner know not to attempt SSH.
+
+    Returns an ordered list of target dicts:
+        [
+          {name: "platform", transport: "api", role: "iap",
+           modules: ["platform"]},
+          {name: "iag4",     transport: "api", role: "iag",
+           modules: ["gateway4_api"]},   # only if gateway4_uri is set
+        ]
+    """
+    targets: list[dict[str, Any]] = [
+        {
+            "name": "platform",
+            "transport": "api",
+            "role": NodeRole.IAP.value,
+            "modules": ["platform"],
+        }
+    ]
+    gateway4_uri = getattr(config, "gateway4_uri", "") or ""
+    if gateway4_uri:
+        targets.append({
+            "name": "iag4",
+            "transport": "api",
+            "role": NodeRole.IAG.value,
+            "modules": ["gateway4_api"],
+        })
+    return targets

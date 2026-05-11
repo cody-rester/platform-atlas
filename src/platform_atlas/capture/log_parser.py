@@ -141,9 +141,15 @@ class LogParser:
         # Reuse cached compiled patterns when keywords haven't changed
         self._positive_re = _compile_keyword_re(tuple(self.cfg.keywords))
         self._negative_re = _compile_keyword_re(tuple(self.cfg.false_positives))
-        # Optional single patterns — guard for None before compiling
-        self._include_re = _compile_pattern_re(self.cfg.include_pattern) if self.cfg.include_pattern else None
-        self._exclude_re = _compile_pattern_re(self.cfg.exclude_pattern) if self.cfg.exclude_pattern else None
+        # Optional single patterns — guard against None *and* whitespace-only
+        # strings before compiling. An empty/blank include_pattern compiles
+        # into a regex that matches every line, which silently turns off the
+        # include filter (the opposite of what an operator would expect when
+        # they typo a config value).
+        _inc = (self.cfg.include_pattern or "").strip()
+        _exc = (self.cfg.exclude_pattern or "").strip()
+        self._include_re = _compile_pattern_re(_inc) if _inc else None
+        self._exclude_re = _compile_pattern_re(_exc) if _exc else None
 
     def parse_from_text(self, files: dict[str, str]) -> dict[str, LogGroupResult]:
         """

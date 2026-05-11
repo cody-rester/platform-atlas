@@ -25,6 +25,7 @@ from rich.table import Table
 from platform_atlas.core.registry import registry
 from platform_atlas.core.environment import (
     get_environment_manager,
+    propagate_ssh_key,
     validate_env_name,
 )
 from platform_atlas.core.init_setup import QSTYLE, create_environment_wizard
@@ -315,6 +316,11 @@ _EDITABLE_FIELDS = [
     ("legacy_profile",       "Legacy Profile (2023.x)","text"),
     ("gateway4_uri",         "Gateway4 URI",           "text"),
     ("gateway4_username",    "Gateway4 Username",      "text"),
+    ("ssh_key",              "SSH Key Path",            "text"),
+    ("log_path_override",         "Platform Log Directory", "text"),
+    ("webserver_log_path_override", "Webserver Log File",     "text"),
+    ("mongo_log_path_override",   "MongoDB Log File",       "text"),
+    ("debug_export_raw_capture",  "Debug: Export Raw Capture", "bool"),
 ]
 
 _BACKEND_CHOICES = ["keyring", "vault"]
@@ -459,8 +465,21 @@ def handle_env_edit(args: Namespace) -> int:
             from platform_atlas.core.init_setup import ask_deployment, _display_topology_review
             from platform_atlas.core.topology import DeploymentTopology
 
-            new_deployment = ask_deployment()
+            new_deployment, k8s_meta = ask_deployment()
             env.deployment = new_deployment
+            # Persist Kubernetes metadata so K8s-only fields (values_yaml,
+            # kubectl context/namespace) survive a topology re-edit.
+            if k8s_meta:
+                if "values_yaml_path" in k8s_meta:
+                    env.values_yaml_path = k8s_meta.get("values_yaml_path", "")
+                if "iag5_values_yaml_path" in k8s_meta:
+                    env.iag5_values_yaml_path = k8s_meta.get("iag5_values_yaml_path", "")
+                if "kubectl_context" in k8s_meta:
+                    env.kubectl_context = k8s_meta.get("kubectl_context", "")
+                if "kubectl_namespace" in k8s_meta:
+                    env.kubectl_namespace = k8s_meta.get("kubectl_namespace", "")
+                if "use_kubectl" in k8s_meta:
+                    env.use_kubectl = bool(k8s_meta.get("use_kubectl", False))
             changed = True
 
             topology = DeploymentTopology.from_dict(new_deployment)
@@ -488,10 +507,20 @@ def handle_env_edit(args: Namespace) -> int:
             ).ask()
             if new_value is None:
                 continue
+        elif field_type == "bool":
+            new_value = questionary.confirm(
+                f"{label} (current: {'on' if current else 'off'})?",
+                default=bool(current),
+                style=QSTYLE,
+            ).ask()
+            if new_value is None:
+                continue
         else:
             prompt_text = f"{label}"
             if current:
                 prompt_text += f" (current: {current})"
+            if field_name == "ssh_key":
+                prompt_text += " (leave blank to remove)"
 
             new_value = questionary.text(
                 prompt_text + ":",
@@ -505,7 +534,17 @@ def handle_env_edit(args: Namespace) -> int:
         # Apply the change
         old_value = getattr(env, field_name, None)
         if new_value != old_value:
-            setattr(env, field_name, new_value if new_value else None)
+            # Booleans persist as-is; empty strings collapse to None so the
+            # dataclass default kicks back in and overlay-merge skips them.
+            if field_type == "bool":
+                setattr(env, field_name, bool(new_value))
+            else:
+                setattr(env, field_name, new_value if new_value else None)
+            # SSH key: propagate into deployment nodes and ssh_defaults so the
+            # transport layer reads the updated path without requiring a
+            # topology re-wizard.
+            if field_name == "ssh_key" and env.deployment:
+                env.deployment = propagate_ssh_key(env.deployment, new_value or "")
             changed = True
             console.print(f"  [{theme.success}]✓ {label} updated[/{theme.success}]\n")
         else:

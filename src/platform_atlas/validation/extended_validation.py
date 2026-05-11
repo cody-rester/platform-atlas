@@ -298,18 +298,48 @@ class ExtendedValidationRegistry:
             return func
         return decorator
 
-    def execute_all(self, data: dict) -> list[ExtendedCheckResult]:
-        """Execute all registered checks, catching exceptions per-check."""
+    def execute_all(
+        self,
+        data: dict,
+        *,
+        tier: str = "extended",
+        headless: bool = False,
+    ) -> list[ExtendedCheckResult]:
+        """
+        Execute all registered checks, catching exceptions per-check.
+
+        Tier-aware behavior for checks whose ``requires`` paths aren't
+        satisfied by the capture data:
+
+        - **Standard**: silent continue — out-of-tier checks don't exist.
+          They never appear in the report total or the skipped UI.
+        - **Extended**: surface as SKIP — the data was expected but missing
+          (e.g., Mongo URI configured but pymongo couldn't connect).
+        """
         results: list[ExtendedCheckResult] = []
 
         for check_id, (check_func, chk) in self._checks.items():
-            # Silently skip checks whose data requirements aren't met
             if chk.requires and not self._requirements_met(data, chk.requires):
-                logger.debug("Skipping '%s': required data not present", check_id)
+                if tier == "standard":
+                    # Standard: out-of-tier check, silently filter
+                    logger.debug(
+                        "Standard tier: '%s' filtered (requires=%s)",
+                        check_id, chk.requires,
+                    )
+                    continue
+                # Extended: data expected but missing — emit SKIP
+                logger.debug(
+                    "Extended tier: '%s' skipped (requires=%s, data missing)",
+                    check_id, chk.requires,
+                )
+                results.append(chk.skip(
+                    f"Required capture data not present: {', '.join(chk.requires)}"
+                ))
                 continue
 
             label = check_id.replace("_", " ").title()
-            console.print(f"  ▶ {label} Check...", style=f"bold {theme.secondary}")
+            if not headless:
+                console.print(f"  ▶ {label} Check...", style=f"bold {theme.secondary}")
             try:
                 results.append(check_func(data, chk))
             except _SkipCheck as skip:
@@ -650,7 +680,12 @@ def check_adapter_limit_errors(data: dict, chk: CheckContext) -> ExtendedCheckRe
         ),
     )
 
-@check("redis_acl", name="Redis ACL", category=CheckCategory.AUTHENTICATION)
+@check(
+    "redis_acl",
+    name="Redis ACL",
+    category=CheckCategory.AUTHENTICATION,
+    requires=("redis.acl",),
+)
 def check_redis_acl(data: dict, chk: CheckContext) -> ExtendedCheckResult:
     """Check redis acl configuration."""
     redis_acl_data = chk.require(data, "redis.acl", "redis acl info")
@@ -771,7 +806,12 @@ def _parse_acl_entries(acl_data: list) -> dict[str, list]:
 
     return users
 
-@check("indexes_status", name="Database Index Status", category=CheckCategory.HEALTH)
+@check(
+    "indexes_status",
+    name="Database Index Status",
+    category=CheckCategory.HEALTH,
+    requires=("platform.indexes_status",),
+)
 def check_indexes_status(data: dict, chk: CheckContext) -> ExtendedCheckResult:
     """Check if any database collecctions have missing indexes"""
     indexes = chk.require(data, "platform.indexes_status", "index status")
@@ -1266,6 +1306,26 @@ def check_mongo_log_analysis(data: dict, chk: CheckContext) -> ExtendedCheckResu
 
 
 # Main Entrypoint
-def run_extended_validation(capture_data: dict) -> list[ExtendedCheckResult]:
-    """Execute all registered extended validation checks."""
-    return get_registry().execute_all(capture_data)
+def run_extended_validation(capture_data: dict, *, headless: bool = False) -> list[ExtendedCheckResult]:
+    """Execute all registered extended validation checks.
+
+    The active tier is read from the capture metadata when present (so
+    re-running validation against an old capture preserves the original
+    tier semantics), falling back to the live config tier.
+    """
+    tier = (
+        capture_data.get("_atlas", {}).get("metadata", {}).get("tier")
+        or _resolve_active_tier()
+    )
+    return get_registry().execute_all(capture_data, tier=tier, headless=headless)
+
+
+def _resolve_active_tier() -> str:
+    """Best-effort lookup for the live tier; defaults to 'extended'."""
+    try:
+        from platform_atlas.core.config import get_config, is_config_loaded
+        if is_config_loaded():
+            return get_config().tier
+    except Exception:
+        pass
+    return "extended"

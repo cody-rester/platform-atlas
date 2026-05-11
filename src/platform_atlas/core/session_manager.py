@@ -22,22 +22,28 @@ Session Structure:
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
+import os
 import shutil
 import logging
+import time
+from contextlib import contextmanager
 from enum import Enum
 from pathlib import Path
 from datetime import datetime, timezone
 from dataclasses import dataclass, asdict, field, fields as dataclass_fields
-from typing import Any
+from typing import Any, Iterator
 
 from platform_atlas.core.paths import ATLAS_HOME_SESSIONS
-from platform_atlas.core.utils import secure_mkdir
+from platform_atlas.core.utils import atomic_write_json, secure_mkdir
 from platform_atlas.core.exceptions import (
     SessionError,
     SessionNotFoundError,
     SessionAlreadyExistsError,
     SessionInvalidStateError,
+    SessionLockedError,
     NoActiveSessionError
 )
 from platform_atlas.core._version import __version__
@@ -85,6 +91,10 @@ class SessionMetadata():
     ruleset_profile: str = ""
     environment: str = ""
     atlas_version: str = __version__
+    # Tier — bound at session creation, immutable afterward (like ruleset).
+    # The session-switch flow restores this atomically alongside env/ruleset
+    # so capture/validation/report semantics stay internally consistent.
+    tier: str = "standard"
 
     # Stage tracking
     capture_completed: bool = False
@@ -278,17 +288,72 @@ class Session:
         """Architecture & Maintenance report HTML file path"""
         return self.directory / "05_arch.html"
 
+    @property
+    def webui_viewmodel_file(self) -> Path:
+        """WebUI viewmodel JSON file path — typed contract consumed by the
+        WebUI's tabbed Compliance/Operational/Architecture experience.
+
+        Generated at report time alongside the three HTML reports. The WebUI
+        falls back to building this on the fly for sessions that predate the
+        file (older Atlas versions) or whose cached schema_version is stale.
+        """
+        return self.directory / "06_webui_viewmodel.json"
+
     def ensure_exists(self) -> None:
         """Create session directory if it doesn't exist"""
         secure_mkdir(self.directory)
 
+    @contextmanager
+    def exclusive_lock(self, *, timeout: float = 5.0) -> Iterator[None]:
+        """Acquire a POSIX advisory lock on this session for the duration.
+
+        Concurrent CLI runs against the same session corrupt the parquet/JSON
+        files (last writer wins, half-written outputs leak through). The lock
+        file lives at ``<session>/.atlas.lock`` and is held for the lifetime
+        of the context. ``timeout`` is a short grace window for racing peers
+        before we surface ``SessionLockedError`` to the user."""
+        self.ensure_exists()
+        lockfile = self.directory / ".atlas.lock"
+        fd = os.open(lockfile, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        try:
+            deadline = time.monotonic() + max(0.0, timeout)
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EAGAIN, errno.EACCES):
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise SessionLockedError(
+                            f"Session '{self.name}' is locked by another "
+                            f"Platform Atlas process.",
+                            details={"lockfile": str(lockfile)},
+                        ) from None
+                    time.sleep(0.2)
+            try:
+                # Stamp the holder so a stale lockfile is human-debuggable.
+                os.ftruncate(fd, 0)
+                os.write(
+                    fd,
+                    f"{os.getpid()} {datetime.now(timezone.utc).isoformat()}\n".encode(),
+                )
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
     def save_metadata(self) -> None:
-        """Save metadata to disk"""
+        """Save metadata to disk via temp+rename so a crash mid-write
+        cannot leave a half-written session.json on disk."""
         self.metadata.updated_at = datetime.now(timezone.utc)
         self.ensure_exists()
 
-        with open(self.metadata_file, 'w', encoding='utf-8') as f:
-            json.dump(self.metadata.to_dict(), f, indent=2, default=str)
+        # to_dict() returns datetimes; convert to isoformat strings before
+        # handing off to atomic_write_json (which does not accept default=).
+        payload = json.loads(json.dumps(self.metadata.to_dict(), default=str))
+        atomic_write_json(self.metadata_file, payload)
 
     def load_metadata(self) -> None:
         """Load metadata from disk"""
@@ -370,9 +435,14 @@ class SessionManager:
         environment: str = "",
         ruleset_id: str = "",
         ruleset_profile: str = "",
+        tier: str = "",
         force: bool = False
     ) -> Session:
-        """Create a new audit session with bound environment, ruleset, and profile."""
+        """Create a new audit session with bound environment, ruleset, profile, and tier.
+
+        ``tier`` defaults to the active config tier when not supplied — that
+        way callers don't need to know about tier resolution.
+        """
         # Validate session name
         if not self._validate_session_name(name):
             raise SessionError(
@@ -392,6 +462,17 @@ class SessionManager:
                 details={"use_force": "Use force=True to overwrite"}
             )
 
+        # Resolve tier from active config when caller didn't specify one.
+        if not tier:
+            try:
+                from platform_atlas.core.config import get_config, is_config_loaded
+                if is_config_loaded():
+                    tier = get_config().tier
+            except Exception:
+                pass
+            if not tier:
+                tier = "standard"
+
         # Create session
         now = datetime.now(timezone.utc)
         metadata = SessionMetadata(
@@ -405,6 +486,7 @@ class SessionManager:
             environment=environment,
             ruleset_id=ruleset_id,
             ruleset_profile=ruleset_profile,
+            tier=tier,
         )
 
         session = Session(metadata=metadata)
@@ -576,7 +658,7 @@ class SessionManager:
                     json.dump({
                         "active_ruleset": meta.ruleset_id,
                         "active_profile": meta.ruleset_profile or None,
-                    }, f, indent=4)
+                    }, f, indent=4, ensure_ascii=False)
 
                 logger.info(
                     "Restored ruleset: %s (profile: %s)",
@@ -767,3 +849,72 @@ def list_sessions(**kwargs) -> list[Session]:
 def get_active_session() -> Session:
     """Get active session (convenience function)"""
     return get_session_manager().get_active()
+
+
+def rehydrate_validation_attrs(df, session: "Session") -> None:
+    """Rehydrate a validation DataFrame's ``.attrs`` from the session's
+    capture JSON (and metadata as a fallback).
+
+    Why this exists: parquet round-trips lose ``df.attrs`` (CLAUDE.md
+    hard-won lesson #3). Anything that loads ``02_validation.parquet`` and
+    then feeds it to the report or diff engines MUST call this helper
+    first, otherwise downstream `.attrs.get(...)` reads silently return
+    defaults — diff banners disappear, hostname shows "Unknown", tier
+    detection misses the cross-tier case, etc.
+
+    Centralizing this in session_manager (instead of duplicating it in
+    handlers/ and routes/) keeps the CLI and WebUI code paths in lock
+    step. If new metadata fields are added to capture JSON, only this
+    function needs updating.
+    """
+    if not session.capture_file.exists():
+        # Capture file missing — degrade gracefully using session metadata.
+        meta = session.metadata
+        df.attrs.setdefault("organization_name", meta.organization_name or "Unknown")
+        df.attrs.setdefault("environment", meta.environment or "")
+        df.attrs.setdefault("ruleset_id", meta.ruleset_id or "")
+        df.attrs.setdefault("ruleset_version", getattr(meta, "ruleset_version", "") or "")
+        df.attrs.setdefault("ruleset_profile", meta.ruleset_profile or "")
+        df.attrs.setdefault("tier", getattr(meta, "tier", None) or "extended")
+        return
+
+    try:
+        with open(session.capture_file, encoding="utf-8") as f:
+            capture = json.load(f)
+
+        atlas = capture.get("_atlas", {})
+        metadata = atlas.get("metadata", {})
+        system_facts = atlas.get("system_facts", {})
+        platform_data = capture.get("platform", {})
+        health_server = (
+            platform_data.get("health_server", {})
+            if isinstance(platform_data, dict) else {}
+        )
+
+        df.attrs["hostname"] = system_facts.get("hostname", "Unknown")
+        df.attrs["platform_ver"] = health_server.get("version", "Unknown")
+        df.attrs["ruleset_id"] = metadata.get("ruleset_id", "")
+        df.attrs["ruleset_version"] = metadata.get("ruleset_version", "")
+        df.attrs["ruleset_profile"] = metadata.get("ruleset_profile", "")
+        df.attrs["modules_ran"] = metadata.get("modules_ran", [])
+        df.attrs["captured_at"] = metadata.get("captured_at", "")
+        df.attrs["organization_name"] = metadata.get("organization_name", "")
+        df.attrs["environment"] = metadata.get("environment", "")
+        # Tier must round-trip — diff_engine reads this to detect cross-tier
+        # comparisons (Standard vs Extended); without it both sides default
+        # to "extended" and the cross-tier banner never fires.
+        df.attrs["tier"] = (
+            metadata.get("tier")
+            or getattr(session.metadata, "tier", None)
+            or "extended"
+        )
+    except (OSError, json.JSONDecodeError):
+        # Corrupt or unreadable capture — fall back to session metadata so
+        # the caller still gets *something*, rather than completely empty
+        # attrs that produce a broken report.
+        meta = session.metadata
+        df.attrs.setdefault("organization_name", meta.organization_name or "Unknown")
+        df.attrs.setdefault("environment", meta.environment or "")
+        df.attrs.setdefault("ruleset_id", meta.ruleset_id or "")
+        df.attrs.setdefault("ruleset_version", getattr(meta, "ruleset_version", "") or "")
+        df.attrs.setdefault("tier", getattr(meta, "tier", None) or "extended")

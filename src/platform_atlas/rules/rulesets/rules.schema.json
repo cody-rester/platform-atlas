@@ -103,6 +103,15 @@
             "default": true,
             "description": "Whether this rule is active"
           },
+          "tier": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "extended"
+            ],
+            "default": "standard",
+            "description": "Tier in which this rule runs. Standard-tier rules also run in Extended; Extended-tier rules are filtered out in Standard."
+          },
           "path": {
             "type": "string",
             "description": "Dot-notation path to the value in captured data"

@@ -38,6 +38,7 @@ _ARCH_LABELS = {
     "load_balancer": "Load Balancer",
     "kubernetes": "Kubernetes",
     "network_security": "Network & Security",
+    "vulnerability_assessments": "Vulnerability Assessments",
 }
 
 # Fields to exclude from reports (logs, raw data, internal keys)
@@ -74,6 +75,7 @@ def _build_metadata(df: pd.DataFrame, session_name: str = "", modules_ran: list[
         "session": session_name,
         "organization": df.attrs.get("organization_name", "Unknown"),
         "environment": df.attrs.get("environment", ""),
+        "tier": df.attrs.get("tier", "extended"),
         "hostname": df.attrs.get("hostname", "Unknown"),
         "platform_version": df.attrs.get("platform_ver", "Unknown"),
         "ruleset_id": df.attrs.get("ruleset_id", "Unknown"),
@@ -502,6 +504,7 @@ def report(
     modules_ran = df.attrs.get('modules_ran', [])
 
     extended_results = df.attrs.get('extended_results', [])
+    tier = df.attrs.get('tier', 'extended')
 
     df = df.sort_values(by='rule_number')
 
@@ -520,6 +523,7 @@ def report(
         target_system=f"{hostname}",
         modules_ran=modules_ran,
         extended_results=extended_results,
+        tier=tier,
     )
 
 

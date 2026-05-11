@@ -19,6 +19,7 @@ from platform_atlas.core.context import ctx
 from platform_atlas.validation.operators import OPERATORS
 from platform_atlas.core.json_utils import load_json
 from platform_atlas.core import ui
+from platform_atlas.core.utils import split_path
 from platform_atlas.validation.extended_validation import run_extended_validation
 from platform_atlas.core.exceptions import AtlasError
 
@@ -113,22 +114,8 @@ def validate_path_key(key: str, *, context: str = "dict") -> None:
         raise ValueError(f"Blocked execution key: {key}")
 
 def _split_path(path: str) -> list[str]:
-    """Split a dot-noation path, respecting quoted segments for names with spaces"""
-    keys: list[str] = []
-    current: list[str] = []
-    in_quotes = False
-
-    for char in path:
-        if char == '"':
-            in_quotes = not in_quotes
-        elif char == "." and not in_quotes:
-            keys.append(''.join(current))
-            current = []
-        else:
-            current.append(char)
-    if current:
-        keys.append(''.join(current))
-    return keys
+    """Backwards-compatible alias for the canonical splitter in core.utils."""
+    return split_path(path)
 
 def extract_value(data: dict, path: str) -> Any:
     """
@@ -169,7 +156,9 @@ def extract_value(data: dict, path: str) -> Any:
             found = None
             for item in current:
                 if isinstance(item, dict):
-                    item_name = item.get("name", "")
+                    # Coerce to str — captured payloads occasionally have non-string
+                    # names (None, ints) that would crash .replace().
+                    item_name = str(item.get("name") or "")
                     # Direct name match (top-level)
                     if item_name == key or item_name.replace(" ", "_") == key:
                         found = item
@@ -177,7 +166,7 @@ def extract_value(data: dict, path: str) -> Any:
                     # Unwrapped data.name match
                     item_data = item.get("data")
                     if isinstance(item_data, dict):
-                        data_name = item_data.get("name", "")
+                        data_name = str(item_data.get("name") or "")
                         if data_name == key or data_name.replace(" ", "_") == key:
                             found = item_data
                             break
@@ -210,9 +199,15 @@ def _parent_section_exists(data: dict, path: str) -> bool:
       • Section missing entirely      → SKIP (we can't assume anything)
     """
     keys = _split_path(path)
-    if len(keys) < 2:
-        # Single-segment path — can't determine a parent section
+    if not keys:
         return False
+
+    # For single-segment rule paths (e.g. "checks") the "parent" is the
+    # capture root itself — treat the section as captured iff that single
+    # top-level key resolved to a non-None value. Refusing to honor defaults
+    # for those rules forced rule authors to invent dummy parent keys.
+    if len(keys) == 1:
+        return isinstance(data, dict) and data.get(keys[0]) is not None
 
     # Walk the first two segments
     current = data
@@ -526,20 +521,42 @@ def create_skip_result(rule: dict, reason: str) -> dict:
     }
 ### END RULE-CHAINING FUNCTIONS ###
 
-def validate(ruleset: dict, captured_data: dict) -> pd.DataFrame:
+def validate(ruleset: dict, captured_data: dict, *, headless: bool = False) -> pd.DataFrame:
     """Validate captured data against a ruleset"""
+    console = Console(quiet=headless)  # noqa: F841 — shadow module-level console when headless
     results = {} # rule_number -> result dict
 
     # Get enabled rules
     enabled_rules = [r for r in ruleset.get("rules", []) if r.get("enabled", True)]
 
-    # If modules_ran metadata exists, only keep rules whose category was captured
-    modules_ran = set(captured_data.get("metadata", {}).get("modules_ran", []))
-    if modules_ran:
+    # If modules_ran metadata exists, only keep rules whose category was captured.
+    # Capture writes this under _atlas.metadata (see capture_engine.finalize_capture).
+    # "all" means every registered module ran successfully — still check kubernetes.
+    # "gateway4_api" is the protocol collector name; rules use category "gateway4".
+    # "kubernetes_helm" maps to the "kubernetes" rule category.
+    _MODULE_TO_CATEGORY: dict[str, str] = {
+        "gateway4_api": "gateway4",
+        "kubernetes_helm": "kubernetes",
+    }
+    modules_ran = set(
+        captured_data.get("_atlas", {}).get("metadata", {}).get("modules_ran", [])
+    )
+    if modules_ran and "all" not in modules_ran:
+        resolved_categories = {_MODULE_TO_CATEGORY.get(m, m) for m in modules_ran}
         enabled_rules = [
             r for r in enabled_rules
-            if r.get("category", "") in modules_ran
+            if r.get("category", "") in resolved_categories
         ]
+    elif "all" in modules_ran:
+        # All registered modules ran, but kubernetes modules are only registered
+        # for Kubernetes environments. Filter kubernetes rules when no k8s data
+        # was collected so non-Kubernetes captures don't produce spurious results.
+        has_k8s_data = bool((captured_data.get("system") or {}).get("kubernetes"))
+        if not has_k8s_data:
+            enabled_rules = [
+                r for r in enabled_rules
+                if r.get("category") != "kubernetes"
+            ]
 
     # Check for user-skipped rules from config
     skip_rules: set[str] = set()
@@ -619,8 +636,9 @@ def validate(ruleset: dict, captured_data: dict) -> pd.DataFrame:
     return df
 
 # MAIN ENTRYPOINT
-def validate_from_files(data_path: str | Path) -> pd.DataFrame:
+def validate_from_files(data_path: str | Path, *, headless: bool = False) -> pd.DataFrame:
     """Load ruleset and data from files, then validate"""
+    console = Console(quiet=headless)  # noqa: F841 — shadow module-level console when headless
     rules = ctx().rules
     config = ctx().config
 
@@ -649,12 +667,19 @@ def validate_from_files(data_path: str | Path) -> pd.DataFrame:
             logger.warning("Failed to load log analysis file: %s", e)
 
     # Validate Rules and Load into DataFrame
-    df = validate(rules, captured_data)
+    df = validate(rules, captured_data, headless=headless)
 
     # EXTENDED VALIDATION CHECKS
+    extended_results = []
     if config.extended_validation_checks:
         console.print("\n◉ Running Additional Validation Checks", style=f"bold {theme.primary}")
-        extended_results = run_extended_validation(captured_data)
+        try:
+            extended_results = run_extended_validation(captured_data, headless=headless)
+        except Exception as exc:
+            logger.error("Extended validation checks failed unexpectedly: %s", exc)
+            console.print(
+                f"  [yellow]⚠ Additional checks skipped due to unexpected error: {exc}[/yellow]"
+            )
 
     # Add Metadata to standard results
     atlas_internal = captured_data.get("_atlas", {})
@@ -673,8 +698,12 @@ def validate_from_files(data_path: str | Path) -> pd.DataFrame:
     df.attrs["ruleset_profile"] = user_metadata.get("ruleset_profile", "")
     df.attrs["modules_ran"] = user_metadata.get("modules_ran", "")
     df.attrs["captured_at"] = user_metadata.get("captured_at", "")
+    # Tier — preserved from the capture metadata so the report renderer
+    # can stamp the Mode badge without re-resolving the active tier
+    # (which may have changed since the capture was taken).
+    df.attrs["tier"] = user_metadata.get("tier", config.tier)
 
-    if config.extended_validation_checks:
+    if extended_results:
         # Attach extended results as metadata to be used in the Reporting Engine
         df.attrs["extended_results"] = [result.to_dict() for result in extended_results]
 

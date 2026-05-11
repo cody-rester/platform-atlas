@@ -12,16 +12,35 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from platform_atlas.core.config import Config, load_config
+from platform_atlas.core.config import Config, Tier, load_config
 from platform_atlas.core.theme import Theme, get_theme_by_id
 from platform_atlas.core.paths import ATLAS_CONFIG_FILE
-from platform_atlas.core.exceptions import AtlasError, RulesetError
+from platform_atlas.core.exceptions import AtlasError, RulesetError, TierViolationError
 
 if TYPE_CHECKING:
     from platform_atlas.core.ruleset_manager import RulesetManager
     from platform_atlas.core.rules import Ruleset
 
 logger = logging.getLogger(__name__)
+
+# Module keys that are safe to register/run while tier=standard.
+# Anything not in this set is Extended-only and must never appear in the
+# live module registry when Standard is active. The capture engine reads
+# this set at registry-build time (defense 1: registry pruning).
+STANDARD_MODULE_KEYS: frozenset[str] = frozenset({
+    "platform",       # Platform OAuth — always available
+    "platform_conf",  # Platform conf via API/values fallbacks (no SSH)
+    "gateway4_api",   # ipsdk — Gateway4 runtime via HTTPS
+    "manual",         # User-supplied self-report; tier-agnostic
+})
+
+# Module keys that require Extended Mode. Used only for documentation
+# and acceptance tests — the actual gate is `STANDARD_MODULE_KEYS`.
+EXTENDED_MODULE_KEYS: frozenset[str] = frozenset({
+    "mongo", "redis", "system", "filesystem",
+    "gateway4",   # SSH-based Gateway4 collector (NOT gateway4_api)
+    "gateway5", "kubernetes", "kubernetes_helm",
+})
 
 class ContextNotInitializedError(AtlasError):
     """Raised when ctx() is called before init_context()"""
@@ -98,11 +117,67 @@ class AtlasContext:
         """The name of the active environment, or None if running in legacy mode."""
         return self.config.active_environment
 
+    # ── Tier ───────────────────────────────────────────────────────
+    @property
+    def tier(self) -> Tier:
+        """The active tier ("standard" or "extended"). See core/config.py."""
+        return self.config.tier
+
+    @property
+    def is_standard(self) -> bool:
+        """True if the active tier is Standard."""
+        return self.config.tier == "standard"
+
+    @property
+    def is_extended(self) -> bool:
+        """True if the active tier is Extended."""
+        return self.config.tier == "extended"
+
+    @property
+    def allowed_modules(self) -> frozenset[str]:
+        """
+        Module keys that may be registered for the current tier.
+
+        Defense 1 of the hard mode boundary: the capture engine consults
+        this set when building the live module registry. Modules outside
+        this set are pruned before any collector class is instantiated.
+        """
+        if self.config.tier == "standard":
+            return STANDARD_MODULE_KEYS
+        return STANDARD_MODULE_KEYS | EXTENDED_MODULE_KEYS
+
+    def is_module_allowed(self, module_key: str) -> bool:
+        """Convenience: check whether a module key is allowed under the active tier."""
+        return module_key in self.allowed_modules
+
+
+def require_extended(component: str, *, hint: str = "") -> None:
+    """
+    Guard helper. Call at the top of any Extended-only entry point.
+
+    Raises ``TierViolationError`` if the active tier is Standard. This is
+    defense 2 of the hard mode boundary (alongside registry pruning and the
+    tier-aware credential store) — Extended-only collectors and transports
+    invoke this in their __init__ / from_config / connect paths so any
+    accidental call from Standard fails fast, *before* a network connection
+    is attempted.
+
+    If the context is not yet initialized (early-startup paths, tests that
+    run without init_context), this is a no-op — the guard only activates
+    once Atlas has resolved its tier.
+    """
+    if _ctx is None:
+        return
+    if _ctx.config.tier == "standard":
+        raise TierViolationError(component, hint=hint)
+
+
 _ctx: AtlasContext | None = None
 
 def init_context(
     config_path: Path = ATLAS_CONFIG_FILE,
     env_override: str | None = None,
+    tier_override: str | None = None,
 ) -> AtlasContext:
     """
     Initialization of all Atlas subsystems.
@@ -111,16 +186,28 @@ def init_context(
         config_path: Path to the global config.json.
         env_override: If set, forces this environment name regardless of
                       ATLAS_ENV or the persisted active_environment.
+        tier_override: If set, overrides the tier for this invocation
+                       (from --tier CLI flag).
     """
     global _ctx
+
+    # Flush the credential store so the next access re-scopes to the new
+    # environment. Without this, the cached store retains the old env's keyring
+    # scope across in-process environment switches.
+    from platform_atlas.core.credentials import reset_credential_store
+    reset_credential_store()
 
     # 0. Ensure the active environment still exists on disk
     #    (recovers interactively if the file was deleted)
     from platform_atlas.core.environment import ensure_valid_environment
     ensure_valid_environment(env_override=env_override)
 
-    # 1. Config (with environment overlay if applicable)
-    config = load_config(config_path, env_override=env_override)
+    # 1. Config (with environment overlay + optional tier override)
+    config = load_config(
+        config_path,
+        env_override=env_override,
+        tier_override=tier_override,
+    )
 
     # 2. Theme
     theme = get_theme_by_id(config.theme)
@@ -144,8 +231,8 @@ def init_context(
     )
 
     env_label = config.active_environment or "none"
-    logger.info("Atlas context initialized (theme=%s, env=%s, ruleset=%s)",
-                config.theme, env_label, "loaded" if ruleset else "none")
+    logger.info("Atlas context initialized (tier=%s, theme=%s, env=%s, ruleset=%s)",
+                config.tier, config.theme, env_label, "loaded" if ruleset else "none")
 
     return _ctx
 

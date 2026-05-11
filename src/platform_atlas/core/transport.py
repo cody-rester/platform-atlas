@@ -46,6 +46,8 @@ __all__ = [
     "LocalTransport",
     "SSHTransport",
     "SSHCredentials",
+    "ControlMasterTransport",
+    "ControlMasterConfig",
     "CommandResult",
 ]
 
@@ -198,6 +200,45 @@ class SSHCredentials:
             f"has_password={'yes' if self.password else 'no'}, "
             f"has_passphrase={'yes' if self.key_passphrase else 'no'})"
         )
+
+@dataclass(frozen=True, slots=True)
+class ControlMasterConfig:
+    """Parameters for a ControlMaster-backed SSH session.
+
+    Requires the user to open the master connection before running Atlas:
+
+        ssh -M -S <socket_path> -o ControlPersist=10m -fN <ssh_target>
+
+    Attributes:
+        socket_path: Path to the Unix control socket (e.g. /tmp/atlas-cm.sock).
+        ssh_target:  Full SSH destination string, exactly as typed after ``ssh -M -S …``.
+                     Simple key-based: ``user@target-host``
+                     CyberArk PSMP:    ``user@target-host@psmp-gateway.example.com``
+        port:        SSH port for the *master* connection only (default 22).
+                     Multiplexed commands use the socket — no TCP, so port is irrelevant
+                     once the master is open. Include in ``ssh -M`` guidance only.
+    """
+    socket_path: str
+    ssh_target: str
+    port: int = 22
+
+    def __post_init__(self) -> None:
+        if not self.socket_path or not self.socket_path.strip():
+            raise ValueError("socket_path is required")
+        if not self.ssh_target or not self.ssh_target.strip():
+            raise ValueError("ssh_target is required")
+        # Reject targets that look like SSH options — modern OpenSSH rejects
+        # them anyway with "hostname contains invalid characters", but failing
+        # here points at the config field instead of an opaque ssh exit 255.
+        if self.ssh_target.lstrip().startswith("-"):
+            raise ValueError(
+                f"ssh_target must not start with '-' (looks like an ssh option): "
+                f"{self.ssh_target!r}"
+            )
+
+    def _port_flag(self) -> str:
+        """Return '-p <port> ' when port is non-standard, else empty string."""
+        return f"-p {self.port} " if self.port != 22 else ""
 
 # =================================================
 # Transport Protocol
@@ -475,6 +516,11 @@ class LocalTransport:
         except (SecurityError, FileNotFoundError):
             return False
 
+    def file_size(self, path: str) -> int:
+        """Return the size in bytes of a local file."""
+        resolved = self._validate_local_path(path)
+        return resolved.stat().st_size
+
     def _validate_command(self, cmd: str) -> None:
         """Validate a command against the allowlist"""
         parts = shlex.split(cmd)
@@ -551,14 +597,22 @@ class SSHTransport:
             print(t.read_file("/etc/mongo.conf"))
     """
 
-    __slots__ = ("_creds", "_client", "_sftp", "_path_cache", "_sudo_available")
+    __slots__ = ("_creds", "_client", "_sftp", "_path_cache", "_sudo_available", "_retry")
 
-    def __init__(self, credentials: SSHCredentials) -> None:
+    def __init__(
+        self,
+        credentials: SSHCredentials,
+        *,
+        retry: SSHRetryConfig | None = None,
+    ) -> None:
         self._creds = credentials
         self._client: paramiko.SSHClient | None = None
         self._sftp: paramiko.SFTPClient | None = None
         self._path_cache: dict[str, str] = {}
         self._sudo_available: bool | None = None
+        # Retry only on transient network errors; auth failures fail fast.
+        # ``None`` means a single attempt (existing behavior preserved).
+        self._retry = retry
 
     def __repr__(self) -> str:
         target = f"{self._creds.username}@{self._creds.hostname}:{self._creds.port}"
@@ -648,51 +702,70 @@ class SSHTransport:
         if self._creds.password:
             logger.debug("Password auth: provided as fallback")
 
-        try:
-            client.connect(**connect_kwargs)
-        except paramiko.AuthenticationException as e:
-            error_msg = str(e).lower()
+        # Connect with optional retry on *transient* network errors only.
+        # Auth failures, host-key rejections, and protocol errors fail
+        # fast — retrying them just amplifies broken configs.
+        retry = self._retry
+        max_attempts = retry.max_attempts if retry else 1
+        last_transient_error: OSError | None = None
 
-            # Detect encrypted key
-            if "encrypted" in error_msg or "passphrase" in error_msg:
-                logger.debug("Encrypted key detected: %s", self._creds.key_path)
-                raise EncryptedKeyError(
-                    f"SSH key is encrypted: {self._creds.key_path}",
-                    details={
-                        "suggestion": (
-                            "Add 'ssh_key_passphrase' to this node's config, "
-                            "or remove 'ssh_key' to use the SSH agent instead"
-                        ),
-                        "error": str(e)
-                    }
+        for attempt in range(max_attempts):
+            try:
+                client.connect(**connect_kwargs)
+                break
+            except paramiko.AuthenticationException as e:
+                error_msg = str(e).lower()
+
+                # Detect encrypted key
+                if "encrypted" in error_msg or "passphrase" in error_msg:
+                    logger.debug("Encrypted key detected: %s", self._creds.key_path)
+                    raise EncryptedKeyError(
+                        f"SSH key is encrypted: {self._creds.key_path}",
+                        details={
+                            "suggestion": (
+                                "Add 'ssh_key_passphrase' to this node's config, "
+                                "or remove 'ssh_key' to use the SSH agent instead"
+                            ),
+                            "error": str(e)
+                        }
+                    ) from e
+
+                logger.debug(
+                    "Authentication failed for %s - key_path=%s, has_passphrase=%s, "
+                    "allow_agent=%s, look_for_keys=%s, has_password=%s",
+                    target,
+                    self._creds.key_path or "(none)",
+                    bool(self._creds.key_passphrase),
+                    connect_kwargs.get("allow_agent"),
+                    connect_kwargs.get("look_for_keys"),
+                    bool(self._creds.password),
+                )
+                raise CollectorConnectionError(
+                    f"SSH authentication failed for {self._creds.username}@{self._creds.hostname}",
+                    details={"error": str(e)},
                 ) from e
-
-            logger.debug(
-                "Authentication failed for %s - key_path=%s, has_passphrase=%s, "
-                "allow_agent=%s, look_for_keys=%s, has_password=%s",
-                target,
-                self._creds.key_path or "(none)",
-                bool(self._creds.key_passphrase),
-                connect_kwargs.get("allow_agent"),
-                connect_kwargs.get("look_for_keys"),
-                bool(self._creds.password),
-            )
-            raise CollectorConnectionError(
-                f"SSH authentication failed for {self._creds.username}@{self._creds.hostname}",
-                details={"error": str(e)},
-            ) from e
-        except paramiko.SSHException as e:
-            logger.debug("SSH protocol error connecting to %s: %s", target, e)
-            raise CollectorConnectionError(
-                f"SSH connection error to {self._creds.hostname}",
-                details={"error": str(e)}
-            ) from e
-        except OSError as e:
-            logger.debug("Network error reaching %s: %s", target, e)
-            raise CollectorConnectionError(
-                f"Cannot reach {self._creds.hostname}:{self._creds.port}",
-                details={"error": str(e)}
-            ) from e
+            except paramiko.SSHException as e:
+                logger.debug("SSH protocol error connecting to %s: %s", target, e)
+                raise CollectorConnectionError(
+                    f"SSH connection error to {self._creds.hostname}",
+                    details={"error": str(e)}
+                ) from e
+            except OSError as e:
+                last_transient_error = e
+                if attempt + 1 >= max_attempts:
+                    logger.debug("Network error reaching %s: %s", target, e)
+                    raise CollectorConnectionError(
+                        f"Cannot reach {self._creds.hostname}:{self._creds.port}"
+                        + (f" (after {max_attempts} attempts)" if max_attempts > 1 else ""),
+                        details={"error": str(e)}
+                    ) from e
+                delay = retry.get_delay(attempt) if retry else 0.0
+                logger.debug(
+                    "SSH connect attempt %d/%d failed (%s) — retrying in %.1fs",
+                    attempt + 1, max_attempts, e, delay,
+                )
+                import time as _time
+                _time.sleep(delay)
 
         self._client = client
         logger.info("SSH connected to %s", self.label)
@@ -793,7 +866,7 @@ class SSHTransport:
     def _resolve_remote_path(self, path: str) -> str:
         """Resolve a path on the remote host"""
         if path in self._path_cache:
-            logger.info("Path found in cache: %s", path)
+            logger.debug("Path found in cache: %s", path)
             return self._path_cache[path]
 
         # Use realpath on the remote host to resolve symlinks and ..
@@ -999,7 +1072,12 @@ class SSHTransport:
             encoding: str = "utf-8",
             max_size: int = MAX_READ_SIZE_10_MB
     ) -> str:
-        """Read via SFTP — the normal unprivileged path."""
+        """Read via SFTP — the normal unprivileged path.
+
+        Uses one SFTP ``lstat`` for the symlink check and reuses its
+        ``st_size`` for the size check, avoiding a separate ``stat -c %s``
+        exec channel (saves ~50–150 ms per read on a high-RTT link).
+        """
         sftp = self._get_sftp()
 
         # Check the ORIGINAL path for symlinks BEFORE resolving
@@ -1020,38 +1098,29 @@ class SSHTransport:
         # Validate and resolve the path on the remote host
         resolved_path = self._validate_remote_path(path)
 
-        # Check file size on remote before reading
-        cmd_string = f"stat -c %s {shlex.quote(resolved_path)}"
-        self._validate_command(cmd_string)
-        stat_result = self.run_command(cmd_string)
-        if stat_result.return_code != 0:
-            stderr = stat_result.stderr.strip().lower()
-            if "permission denied" in stderr:
-                raise PermissionError(
-                    f"Cannot stat remote file: {resolved_path}"
-                )
+        # Re-check symlink + size on the resolved path. Reuse the lstat result
+        # for the size check instead of running a separate ``stat -c %s``.
+        try:
+            stat_info = sftp.lstat(resolved_path)
+        except PermissionError:
+            raise
+        except IOError as e:
             raise FileNotFoundError(
-                f"Cannot stat remote file: {resolved_path} ({stat_result})"
+                f"Cannot stat remote file: {resolved_path} ({e})"
+            ) from e
+
+        if stat.S_ISLNK(stat_info.st_mode):
+            raise SecurityError(
+                "Refusing to read symlink",
+                details={"path": resolved_path}
             )
 
-        file_size = int(stat_result.stdout.strip())
+        file_size = int(getattr(stat_info, "st_size", 0) or 0)
         if file_size > max_size:
             raise CollectorError(
                 f"File too large: {file_size:,} bytes (max {max_size:,})",
                 details={"path": resolved_path}
             )
-
-        # Re-check if it's a symlink on resolved path
-        try:
-            stat_info = sftp.lstat(resolved_path)
-            if stat.S_ISLNK(stat_info.st_mode):
-                raise SecurityError(
-                    "Refusing to read symlink",
-                    details={"path": resolved_path}
-                )
-        except IOError as e:
-            if isinstance(e, PermissionError):
-                raise
 
         # Read file contents from remote and decode
         with sftp.file(resolved_path, 'r') as f:
@@ -1162,6 +1231,328 @@ class SSHTransport:
             ) from e
 
 # =================================================
+# ControlMaster Transport
+# =================================================
+
+class ControlMasterTransport:
+    """SSH transport that multiplexes through an existing OpenSSH ControlMaster socket.
+
+    The user opens a master connection once (handling any MFA / PAM gate):
+
+        ssh -M -S /tmp/atlas-cm.sock -o ControlPersist=10m -fN <ssh_target>
+
+    Atlas then multiplexes its own connections through that authenticated
+    session with no separate credentials — no keys, no passwords, no MFA
+    interaction. Works transparently with CyberArk PSMP and other
+    privileged-access gateways where Atlas cannot hold or use target
+    credentials directly.
+
+    ``ControlPersist`` keeps the master socket alive after the foreground process
+    exits (-fN backgrounds it). 10 minutes is enough for a typical capture; use
+    a longer value or ``ControlPersist=yes`` if captures are slow.
+
+    File reads use ``cat`` over the socket channel. Path validation mirrors
+    SSHTransport: remote ``realpath``, allowlist check, symlink rejection, and
+    a sudo fallback when the session user lacks read permission.
+    """
+
+    __slots__ = ("_config", "_connected", "_sudo_available")
+
+    def __init__(self, config: ControlMasterConfig) -> None:
+        self._config = config
+        self._connected = False
+        self._sudo_available: bool | None = None
+
+    def __repr__(self) -> str:
+        state = "connected" if self._connected else "disconnected"
+        return f"<ControlMasterTransport {self.label} {state}>"
+
+    # -- lifecycle --
+
+    def connect(self) -> None:
+        if self._connected:
+            return
+
+        socket_path = Path(self._config.socket_path)
+        _pf = self._config._port_flag()
+        if not socket_path.exists():
+            raise CollectorConnectionError(
+                f"ControlMaster socket not found: {self._config.socket_path}",
+                details={
+                    "suggestion": (
+                        f"Open the master connection before running Atlas:\n"
+                        f"  ssh -M -S {self._config.socket_path} {_pf}-o ControlPersist=10m "
+                        f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+                        f"-fN {self._config.ssh_target}"
+                    )
+                },
+            )
+
+        result = self._run_raw("echo atlas-cm-ping", timeout=10)
+        if result.return_code != 0 or "atlas-cm-ping" not in result.stdout:
+            raise CollectorConnectionError(
+                f"ControlMaster socket exists but is not responding: {self._config.socket_path}",
+                details={
+                    "stderr": result.stderr[:300] if result.stderr else "",
+                    "suggestion": (
+                        "The master connection may have timed out or been closed. Re-open it:\n"
+                        f"  ssh -M -S {self._config.socket_path} {_pf}-o ControlPersist=10m "
+                        f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+                        f"-fN {self._config.ssh_target}"
+                    ),
+                },
+            )
+
+        self._connected = True
+        logger.info(
+            "ControlMaster connected via %s → %s",
+            self._config.socket_path,
+            self._config.ssh_target,
+        )
+
+    def close(self) -> None:
+        self._connected = False
+        logger.debug("ControlMasterTransport closed (master socket left open)")
+
+    def __enter__(self) -> Self:
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+    # -- queries --
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    @property
+    def label(self) -> str:
+        return f"cm:{self._config.ssh_target}"
+
+    # -- internal helpers --
+
+    def _run_raw(self, command: str, *, timeout: int = 60) -> CommandResult:
+        """Run a command through the control socket, bypassing the allowlist.
+
+        For internal use only — connect ping, sudo probe, and the sudo read
+        path. All public-facing calls go through ``run_command()``.
+        """
+        try:
+            proc = subprocess.run(  # nosec B603 B607 - fixed arg list; command validated by callers
+                [
+                    "ssh",
+                    "-S", self._config.socket_path,
+                    "-o", "ControlMaster=no",
+                    "-o", "BatchMode=yes",
+                    self._config.ssh_target,
+                    "--",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            return CommandResult(
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+                return_code=proc.returncode,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise CollectorError(
+                f"Command timed out after {timeout}s",
+                details={"command": command, "timeout": timeout},
+            ) from e
+        except FileNotFoundError as e:
+            raise CollectorConnectionError(
+                "ssh binary not found — ensure OpenSSH is installed and on PATH",
+                details={"error": str(e)},
+            ) from e
+
+    def _validate_command(self, cmd: str) -> None:
+        """Validate command against the allowlist (mirrors SSHTransport logic)."""
+        parts = shlex.split(cmd)
+        if not parts:
+            raise SecurityError("Empty command")
+
+        cmd_name = str(Path(parts[0]).name)
+        cmd_parent = str(Path(parts[0]).parent)
+        if cmd_name not in ALLOWED_COMMANDS and cmd_parent not in ALLOWED_PREFIXES:
+            raise SecurityError(f"Command not in allowlist: {parts[0]}")
+
+        for arg in parts[1:]:
+            if any(c in arg for c in _SHELL_META):
+                raise SecurityError(f"Argument contains forbidden characters: {arg}")
+            if any(pat in arg for pat in _INJECTION_PATTERNS):
+                raise SecurityError(f"Argument contains injection pattern: {arg}")
+
+    def _run_sudo(self, cmd: str, *, timeout: int = 15) -> CommandResult:
+        """Run cmd under sudo -n through the socket.
+
+        Bypasses _validate_command() — callers must ensure cmd is safe
+        (validated path, no user-controlled arguments).
+        """
+        return self._run_raw(f"sudo -n {cmd}", timeout=timeout)
+
+    def run_command(
+        self,
+        command: str | Sequence[str],
+        *,
+        timeout: int = 60,
+    ) -> CommandResult:
+        if isinstance(command, str):
+            cmd_str = command
+        else:
+            cmd_str = " ".join(shlex.quote(str(c)) for c in command)
+
+        self._validate_command(cmd_str)
+        logger.debug("ControlMasterTransport running on %s: %s", self.label, cmd_str)
+        return self._run_raw(cmd_str, timeout=timeout)
+
+    # -- sudo escalation --
+
+    def has_passwordless_sudo(self) -> bool:
+        if self._sudo_available is not None:
+            return self._sudo_available
+
+        result = self._run_raw("sudo -n true 2>/dev/null", timeout=5)
+        self._sudo_available = result.return_code == 0
+        logger.debug(
+            "Passwordless sudo via %s: %s",
+            self.label,
+            "available" if self._sudo_available else "not available",
+        )
+        return self._sudo_available
+
+    # -- file operations --
+
+    def read_file(self, path: str, *, encoding: str = "utf-8") -> str:
+        try:
+            return self._read_direct(path, encoding=encoding)
+        except PermissionError:
+            if not self.has_passwordless_sudo():
+                raise
+            logger.debug("Permission denied for %s, retrying with sudo", path)
+            return self._read_sudo(path, encoding=encoding)
+
+    def _validate_remote_path(
+        self,
+        path: str,
+        *,
+        allowed: tuple = ALLOWED_PREFIXES,
+        use_sudo: bool = False,
+    ) -> str:
+        """Validate and resolve a remote path. Mirrors SSHTransport._validate_remote_path
+        so file_size, read_file, and the sudo fallback all enforce the same allowed-prefix
+        rule. Symlink rejection is left to the caller (parity with SSHTransport)."""
+        if any(c in path for c in _SHELL_META):
+            raise SecurityError("Path contains forbidden characters")
+        if ".." in Path(path).parts:
+            raise SecurityError("Path traversal detected in input")
+
+        runner = self._run_sudo if use_sudo else self.run_command
+        result = runner(f"realpath {shlex.quote(path)}", timeout=5)
+        if result.return_code != 0:
+            raise FileNotFoundError(f"Path does not exist on remote: {path}")
+        resolved = result.stdout.strip()
+
+        if allowed and not _is_under_allowed(resolved, allowed):
+            raise SecurityError(
+                f"Path outside allowed directories: {resolved}",
+                details={"requested": path, "resolved": resolved, "allowed": allowed},
+            )
+        return resolved
+
+    def _read_direct(self, path: str, *, encoding: str = "utf-8") -> str:
+        """Read a file through the ControlMaster socket with security checks."""
+        # Reject when the INPUT path is a symlink — SSHTransport rejects on input
+        # via SFTP lstat; matching that here closes the parity gap.
+        if any(c in path for c in _SHELL_META):
+            raise SecurityError("Path contains forbidden characters")
+        if ".." in Path(path).parts:
+            raise SecurityError("Path traversal detected in input")
+        lcheck = self.run_command(f"test -L {shlex.quote(path)}", timeout=5)
+        if lcheck.return_code == 0:
+            raise SecurityError("Refusing to read symlink", details={"path": path})
+
+        resolved = self._validate_remote_path(path)
+
+        scheck = self.run_command(f"stat -c %s {shlex.quote(resolved)}", timeout=5)
+        if scheck.return_code == 0:
+            file_size = int(scheck.stdout.strip())
+            if file_size > MAX_READ_SIZE_10_MB:
+                raise CollectorError(
+                    f"File too large: {file_size:,} bytes (max {MAX_READ_SIZE_10_MB:,})"
+                )
+
+        read_result = self.run_command(f"cat {shlex.quote(resolved)}", timeout=30)
+        if read_result.return_code != 0:
+            if "permission denied" in read_result.stderr.lower():
+                raise PermissionError(f"Permission denied reading {resolved}")
+            raise CollectorError(
+                f"Cannot read file: {resolved}",
+                details={"stderr": read_result.stderr[:300]},
+            )
+        return read_result.stdout
+
+    def _read_sudo(self, path: str, *, encoding: str = "utf-8") -> str:
+        """Read a file via sudo cat through the ControlMaster socket."""
+        if any(c in path for c in _SHELL_META):
+            raise SecurityError("Path contains forbidden characters")
+        if ".." in Path(path).parts:
+            raise SecurityError("Path traversal detected in input")
+        # Use sudo for the symlink check too — the SSH user may not be able to
+        # traverse the parent directory without elevation.
+        lcheck = self._run_sudo(f"test -L {shlex.quote(path)}", timeout=5)
+        if lcheck.return_code == 0:
+            raise SecurityError("Refusing to read symlink", details={"path": path})
+
+        resolved = self._validate_remote_path(path, use_sudo=True)
+
+        scheck = self._run_sudo(f"stat -c %s {shlex.quote(resolved)}", timeout=5)
+        if scheck.return_code == 0:
+            file_size = int(scheck.stdout.strip())
+            if file_size > MAX_READ_SIZE_10_MB:
+                raise CollectorError(f"File too large: {file_size:,} bytes")
+
+        read_result = self._run_sudo(f"cat {shlex.quote(resolved)}", timeout=30)
+        if read_result.return_code != 0:
+            raise PermissionError(
+                f"sudo cat failed for {resolved}: {read_result.stderr.strip()}"
+            )
+        return read_result.stdout
+
+    def is_exists(self, path: str) -> bool:
+        if any(c in path for c in _SHELL_META) or ".." in Path(path).parts:
+            return False
+        result = self.run_command(f"test -e {shlex.quote(path)}", timeout=5)
+        if result.return_code == 0:
+            return True
+        if self.has_passwordless_sudo():
+            result = self._run_sudo(f"test -e {shlex.quote(path)}", timeout=5)
+            return result.return_code == 0
+        return False
+
+    def is_readable(self, path: str) -> bool:
+        if any(c in path for c in _SHELL_META) or ".." in Path(path).parts:
+            return False
+        result = self.run_command(f"test -r {shlex.quote(path)}", timeout=5)
+        if result.return_code == 0:
+            return True
+        if self.has_passwordless_sudo():
+            result = self._run_sudo(f"test -r {shlex.quote(path)}", timeout=5)
+            return result.return_code == 0
+        return False
+
+    def file_size(self, path: str) -> int:
+        resolved = self._validate_remote_path(path)
+        result = self.run_command(f"stat -c %s {shlex.quote(resolved)}")
+        result.check()
+        return int(result.stdout.strip())
+
+# =================================================
 # Ping Utility
 # =================================================
 
@@ -1179,7 +1570,13 @@ def ping_ssh(credentials: SSHCredentials) -> tuple[bool, str]:
         return False, f"Connection failed: {type(e).__name__}: {e}"
 
 def transport_from_config(target: dict) -> Transport:
-    """Build a Transport instance from a target config dict"""
+    """Build a Transport instance from a target config dict.
+
+    SSH transports are gated on Extended Mode — Standard tier deployments
+    must never construct an SSH connection. ``LocalTransport`` is permitted
+    in either tier (used by preflight on the user's own machine).
+    """
+    from platform_atlas.core.context import require_extended
     from platform_atlas.core.exceptions import ConfigError
 
     kind = target.get("transport", "local").lower()
@@ -1188,6 +1585,11 @@ def transport_from_config(target: dict) -> Transport:
         return LocalTransport()
 
     if kind == "ssh":
+        # Hard mode boundary: SSH must never run in Standard.
+        require_extended(
+            "transport_from_config(ssh)",
+            hint="SSH transport is unavailable in Standard Mode.",
+        )
         creds = SSHCredentials(
             hostname=target["host"],
             username=target.get("username", "atlas"),
@@ -1202,7 +1604,21 @@ def transport_from_config(target: dict) -> Transport:
         transport.connect()
         return transport
 
+    if kind == "control_master":
+        require_extended(
+            "transport_from_config(control_master)",
+            hint="ControlMaster transport is unavailable in Standard Mode.",
+        )
+        cm_config = ControlMasterConfig(
+            socket_path=target["control_socket"],
+            ssh_target=target["ssh_target"],
+            port=target.get("port", 22),
+        )
+        transport = ControlMasterTransport(cm_config)
+        transport.connect()
+        return transport
+
     raise ConfigError(
         f"Unknown transport type: {kind}",
-        details={"valid_options": "local, ssh"}
+        details={"valid_options": "local, ssh, control_master"}
     )

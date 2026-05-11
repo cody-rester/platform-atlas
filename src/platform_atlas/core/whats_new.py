@@ -40,7 +40,7 @@ ASSETS_IMAGES_DIR = PROJECT_TEMPLATES.parent / "images"
 
 # Minor version series that have a What's New page.
 # Key is "major.minor" — covers all patch releases in that series.
-WHATS_NEW_VERSIONS = {"1.5", "1.6"}
+WHATS_NEW_VERSIONS = {"1.5", "1.6", "1.7"}
 
 
 # ── Version helpers ───────────────────────────────────────────────
@@ -163,6 +163,15 @@ _CLI_BULLETS: dict[str, list[str]] = {
         "[bold]--version[/bold] now shows Python version, path, and OS info",
         "[bold]session prune --older-than DAYS[/bold] — bulk-delete uncaptured sessions",
         "Use [bold]--dry-run[/bold] to preview which sessions would be pruned",
+    ],
+    "1.7": [
+        "[bold]Two tiers[/bold] — Standard (Platform OAuth + IAG4 API) and Extended (full audit)",
+        "Standard mode runs ~54 rules with no SSH, MongoDB, or Redis required",
+        "[bold]platform-atlas tier show / set / upgrade / downgrade[/bold] — tier management commands",
+        "Sessions bind a tier at create time, just like rulesets and environments",
+        "Cross-tier diffs are flagged with a notice banner in the report",
+        "WebUI ships as a separate optional [bold]platform-atlas-webui[/bold] wheel",
+        "Existing 1.6.x sessions and configs are preserved as Extended mode",
     ],
 }
 

@@ -17,6 +17,9 @@ import logging
 import re
 import json
 import yaml
+
+from platform_atlas.core.context import require_extended
+
 logger = logging.getLogger(__name__)
 
 # ── Apache month abbreviations (for webserver log date patterns) ──
@@ -131,6 +134,10 @@ class FileSystemInfoCollector:
     """Simple local filesystem system collector"""
 
     def __init__(self, transport: Transport | None = None) -> None:
+        require_extended(
+            "FileSystemInfoCollector",
+            hint="Filesystem-based collection requires Extended Mode.",
+        )
         self._transport = transport or LocalTransport()
         logger.debug(
             "FileSystemInfoCollector initialized with transport: %s",
@@ -246,6 +253,7 @@ class FileSystemInfoCollector:
         self,
         since: datetime | None = None,
         until: datetime | None = None,
+        log_dir: str | None = None,
     ) -> dict[str, Any]:
         """
         Collect and parse IAP platform logs over the transport.
@@ -255,12 +263,17 @@ class FileSystemInfoCollector:
         uses grep to identify files containing entries in the range before
         reading them, then relies on LogParser for precise per-line filtering.
 
+        ``log_dir`` overrides the default ``PLATFORM6_LOG_PATH_ROOT`` —
+        used by the post-capture recovery prompt when the deployment
+        stores logs in a non-standard location, and persisted on the
+        env via ``Environment.log_path_override``.
+
         Returns a dict suitable for the capture JSON under
         "platform.log_analysis".
         """
         from platform_atlas.capture.log_parser import LogParser, ParserConfig
 
-        log_dir = str(PLATFORM6_LOG_PATH_ROOT)
+        log_dir = (log_dir or "").strip() or str(PLATFORM6_LOG_PATH_ROOT)
         date_range_mode = since is not None or until is not None
 
         if not self._transport.is_exists(log_dir):
@@ -386,14 +399,20 @@ class FileSystemInfoCollector:
         self,
         since: datetime | None = None,
         until: datetime | None = None,
+        log_path: str | None = None,
     ) -> dict[str, Any]:
         """Collect and parse webserver access logs from Platform.
 
         Normal mode: reads the last 50 000 lines via tail.
         Date-range mode: greps for lines matching specific dates so the
         result isn't limited by an arbitrary tail window.
+
+        ``log_path`` overrides the default ``PLATFORM6_WEBSERVER_LOG_PATH`` —
+        used by the post-capture recovery prompt when the deployment
+        stores the webserver log in a non-standard location, and persisted
+        on the env via ``Environment.webserver_log_path_override``.
         """
-        log_path = str(PLATFORM6_WEBSERVER_LOG_PATH)
+        log_path = (log_path or "").strip() or str(PLATFORM6_WEBSERVER_LOG_PATH)
         date_range_mode = since is not None or until is not None
 
         if not self._transport.is_exists(log_path):
@@ -480,6 +499,7 @@ class FileSystemInfoCollector:
         self,
         since: datetime | None = None,
         until: datetime | None = None,
+        log_path: str | None = None,
     ) -> dict[str, Any]:
         """
         Collect and parse MongoDB logs from the mongo server.
@@ -488,10 +508,15 @@ class FileSystemInfoCollector:
         Date-range mode: greps for lines whose ISO timestamp matches
         specific dates, avoiding arbitrary tail window limits.
 
+        ``log_path`` overrides the default ``MONGO_LOG_PATH`` — used by the
+        post-capture recovery prompt when the deployment stores the
+        MongoDB log in a non-standard location, and persisted on the env
+        via ``Environment.mongo_log_path_override``.
+
         Returns a dict suitable for the capture JSON under
         "mongo.log_analysis".
         """
-        log_path = str(MONGO_LOG_PATH)
+        log_path = (log_path or "").strip() or str(MONGO_LOG_PATH)
         date_range_mode = since is not None or until is not None
 
         if not self._transport.is_exists(log_path):

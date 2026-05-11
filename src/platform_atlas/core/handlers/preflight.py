@@ -47,17 +47,26 @@ def handle_preflight(args: Namespace) -> int:
         )
         raise SystemExit(1)
 
-    # Show what we're checking
-    try:
-        topology = config.topology
-        scope = config.capture_scope
+    # Show what we're checking — tier-aware
+    if config.tier == "standard":
         console.print(
-            f"[{theme.text_dim}]Topology: {topology.summary}  "
-            f"·  Scope: {scope}  "
-            f"·  Targets: {len(targets)}[/{theme.text_dim}]"
+            f"[{theme.text_dim}]Mode: Standard  ·  Targets: {len(targets)} "
+            f"(Platform OAuth{' + IAG4 API' if config.gateway4_uri else ''})"
+            f"[/{theme.text_dim}]"
         )
-    except Exception:
-        pass
+    else:
+        try:
+            topology = config.topology
+            scope = config.capture_scope
+            console.print(
+                f"[{theme.text_dim}]Mode: Extended  ·  Topology: {topology.summary}  "
+                f"·  Scope: {scope}  "
+                f"·  Targets: {len(targets)}[/{theme.text_dim}]"
+            )
+        except Exception:
+            console.print(
+                f"[{theme.text_dim}]Mode: Extended  ·  Targets: {len(targets)}[/{theme.text_dim}]"
+            )
 
     report = run_preflight(targets=targets)
 

@@ -109,8 +109,10 @@ def atomic_write_json(path: Path, data: dict) -> None:
         if os.name == "posix":
             os.fchmod(fd, 0o600)
 
-        # Write data
-        content = json.dumps(data, indent=4, sort_keys=False) + "\n"
+        # Write data — `ensure_ascii=False` is mandatory per CLAUDE.md
+        # because rule messages contain em-dashes and other non-ASCII
+        # punctuation that would otherwise be escaped as \uNNNN sequences.
+        content = json.dumps(data, indent=4, sort_keys=False, ensure_ascii=False) + "\n"
         os.write(fd, content.encode("utf-8"))
         os.fsync(fd)
         os.close(fd)
@@ -135,3 +137,28 @@ def atomic_write_json(path: Path, data: dict) -> None:
 def secure_mkdir(path: Path) -> None:
     """Create a directory with 0o700 permissions (owner-only)"""
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+
+def split_path(path: str) -> list[str]:
+    """Split a dot-notation rule path, respecting double-quoted segments.
+
+    Used by both the validation engine (extract_value, _parent_section_exists)
+    and the capture-side filter_capture_by_rules so that rule paths like
+    ``adapters."My Adapter".enabled`` parse identically in both stages.
+    Splitting on a raw ``.`` would shred quoted segments containing dots
+    (e.g. version numbers, hostnames) into nonsense tokens."""
+    keys: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+
+    for char in path:
+        if char == '"':
+            in_quotes = not in_quotes
+        elif char == "." and not in_quotes:
+            keys.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if current:
+        keys.append("".join(current))
+    return keys

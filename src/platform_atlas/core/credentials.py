@@ -29,6 +29,8 @@ in config.json or the active environment ("keyring" or "vault").
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from dataclasses import dataclass
 from enum import Enum, unique
 from typing import Protocol, runtime_checkable
@@ -39,6 +41,7 @@ import keyring.errors
 from platform_atlas.core.exceptions import (
     CredentialError,
     InsecureBackendError,
+    TierViolationError,
 )
 
 __all__ = [
@@ -109,6 +112,34 @@ _KEY_MODULE_MAP: dict[CredentialKey, str] = {
     CredentialKey.REDIS_URI:         "redis",
     CredentialKey.GATEWAY4_PASSWORD: "gateway4",
 }
+
+# Credentials that require Extended Mode. The tier-aware credential store
+# refuses to write these and silently returns None on read while tier=standard,
+# so there is no leakage path between tier switches. Defense 3 of the hard
+# mode boundary (alongside registry pruning and require_extended() guards).
+#
+# GATEWAY4_PASSWORD is intentionally NOT in this set — Gateway4 API auth
+# works in Standard via ipsdk over HTTPS.
+EXTENDED_ONLY_KEYS: frozenset[CredentialKey] = frozenset({
+    CredentialKey.MONGO_URI,
+    CredentialKey.REDIS_URI,
+    CredentialKey.SSH_PASSPHRASE,
+})
+
+
+def _is_standard_tier() -> bool:
+    """
+    True if the active tier is Standard. Safe to call before config is
+    loaded — returns False if the tier cannot be determined yet, which
+    keeps init/setup paths unblocked.
+    """
+    try:
+        from platform_atlas.core.config import get_config, is_config_loaded
+        if not is_config_loaded():
+            return False
+        return get_config().tier == "standard"
+    except Exception:
+        return False
 
 
 def scoped_service_name(env_name: str | None = None) -> str:
@@ -227,6 +258,11 @@ class VaultConfig:
         return f"{self.mount_point}/data/{self.secret_path}"
 
 
+# Refresh the token when fewer than this many seconds remain on its TTL.
+# Five minutes gives plenty of runway without hammering Vault with renewals.
+_VAULT_REFRESH_MARGIN = 300
+
+
 class VaultBackend:
     """
     HashiCorp Vault backend — READ-ONLY access to a KV v2 secrets engine.
@@ -269,6 +305,10 @@ class VaultBackend:
             vault_config = self._load_config_from_keyring(service=service)
 
         self._config = vault_config
+        self._token_ttl: int = 0
+        self._token_renewable: bool = False
+        self._token_expires_at: float = 0.0   # monotonic timestamp; 0 = unknown
+        self._refresh_lock: threading.Lock = threading.Lock()
         self._client = self._connect(vault_config)
         self._cached_data: dict[str, str] | None = None
 
@@ -562,18 +602,177 @@ class VaultBackend:
             ) from e
 
         if not authenticated:
+            details: dict[str, str] = {"url": config.url, "method": config.auth_method.value}
+            if config.auth_method == VaultAuthMethod.TOKEN:
+                details["fix"] = (
+                    "The token may have expired — obtain a new token and run "
+                    "'platform-atlas config credentials' to update"
+                )
             raise CredentialError(
                 "Vault authentication failed — client is not authenticated",
-                details={"url": config.url, "method": config.auth_method.value},
+                details=details,
             )
+
+        # Inspect token metadata to surface TTL and renewability
+        try:
+            info = client.auth.token.lookup_self()
+            self._token_ttl = int(info["data"].get("ttl", 0))
+            self._token_renewable = bool(info["data"].get("renewable", False))
+            logger.info(
+                "Vault token TTL: %ds, renewable: %s (auth=%s)",
+                self._token_ttl, self._token_renewable, config.auth_method.value,
+            )
+            if self._token_ttl > 0:
+                self._token_expires_at = time.monotonic() + self._token_ttl
+            if config.auth_method == VaultAuthMethod.TOKEN and 0 < self._token_ttl < 60:
+                raise CredentialError(
+                    "Vault token has expired or is about to expire",
+                    details={
+                        "ttl_remaining": f"{self._token_ttl}s",
+                        "fix": "Obtain a new token and run 'platform-atlas config credentials' to update",
+                    },
+                )
+        except CredentialError:
+            raise
+        except Exception as e:
+            logger.debug("Could not inspect Vault token metadata: %s", e)
 
         logger.info("Connected to Vault at %s (auth=%s)", config.url, config.auth_method.value)
         return client
 
+    # --- Token refresh (transparent, for long-running processes) ---
+
+    def _is_token_near_expiry(self) -> bool:
+        """True when the token has less than _VAULT_REFRESH_MARGIN seconds remaining."""
+        if self._token_expires_at == 0.0:
+            return False  # TTL unknown — assume still valid
+        return time.monotonic() >= (self._token_expires_at - _VAULT_REFRESH_MARGIN)
+
+    def _refresh_token(self) -> None:
+        """Re-authenticate to get a fresh token. Thread-safe; clears the secret cache.
+
+        Called automatically by _read_all() when the token is near expiry so that
+        long-running processes (WebUI) never see a mid-session 403 from Vault.
+
+        Auth-method behaviour:
+          APPROLE       — calls login() again with stored role_id + secret_id
+          TOKEN_FILE    — re-reads the file Vault Agent keeps current
+          TOKEN_ENV     — re-reads VAULT_TOKEN from the environment
+          TOKEN         — calls renew_self() if the token is renewable
+          APPROLE_WRAPPED / others — raises; these cannot be automatically refreshed
+        """
+        with self._refresh_lock:
+            # Another thread may have refreshed while we waited for the lock
+            if not self._is_token_near_expiry():
+                return
+
+            config = self._config
+            logger.info(
+                "Vault token nearing expiry — refreshing (auth=%s, ttl=%ds)",
+                config.auth_method.value, self._token_ttl,
+            )
+
+            try:
+                if config.auth_method == VaultAuthMethod.APPROLE:
+                    if not config.role_id or not config.secret_id:
+                        raise CredentialError(
+                            "Vault AppRole re-authentication failed — role_id or secret_id missing",
+                            details={"fix": "Run 'platform-atlas config credentials' to reconfigure"},
+                        )
+                    resp = self._client.auth.approle.login(
+                        role_id=config.role_id,
+                        secret_id=config.secret_id,
+                    )
+                    self._client.token = resp["auth"]["client_token"]
+
+                elif config.auth_method == VaultAuthMethod.TOKEN_FILE:
+                    from pathlib import Path
+                    if not config.token_file_path:
+                        raise CredentialError(
+                            "Vault token file path not configured",
+                            details={"fix": "Run 'platform-atlas config credentials' to reconfigure"},
+                        )
+                    token = Path(config.token_file_path).read_text(encoding="utf-8").strip()
+                    if not token:
+                        raise CredentialError(
+                            f"Vault token file is empty: {config.token_file_path}",
+                            details={"fix": "Verify Vault Agent is running and writing to the sink file"},
+                        )
+                    self._client.token = token
+
+                elif config.auth_method == VaultAuthMethod.TOKEN_ENV:
+                    import os
+                    token = os.environ.get("VAULT_TOKEN", "").strip()
+                    if not token:
+                        raise CredentialError(
+                            "VAULT_TOKEN environment variable is not set or is empty",
+                            details={"fix": "Ensure VAULT_TOKEN is set in the environment"},
+                        )
+                    self._client.token = token
+
+                elif config.auth_method == VaultAuthMethod.TOKEN:
+                    if not self._token_renewable:
+                        raise CredentialError(
+                            "Vault token has expired and is not renewable — manual update required",
+                            details={
+                                "fix": "Obtain a new token and run 'platform-atlas config credentials' to update",
+                            },
+                        )
+                    self._client.auth.token.renew_self()
+
+                else:
+                    raise CredentialError(
+                        f"Vault auth method '{config.auth_method.value}' does not support "
+                        "automatic token refresh",
+                        details={
+                            "method": config.auth_method.value,
+                            "fix": (
+                                "Use AppRole, Token (file), or Token (env) for long-running "
+                                "deployments. AppRole (Wrapped) tokens are one-time-use and "
+                                "cannot be automatically refreshed."
+                            ),
+                        },
+                    )
+
+            except CredentialError:
+                raise
+            except Exception as e:
+                raise CredentialError(
+                    f"Vault token refresh failed ({config.auth_method.value})",
+                    details={"error": str(e)},
+                ) from e
+
+            # Re-inspect the new token's TTL and reset the expiry clock
+            try:
+                info = self._client.auth.token.lookup_self()
+                self._token_ttl = int(info["data"].get("ttl", 0))
+                self._token_renewable = bool(info["data"].get("renewable", False))
+                if self._token_ttl > 0:
+                    self._token_expires_at = time.monotonic() + self._token_ttl
+                logger.info(
+                    "Vault token refreshed — new TTL: %ds, renewable: %s",
+                    self._token_ttl, self._token_renewable,
+                )
+            except CredentialError:
+                raise
+            except Exception as e:
+                logger.debug("Could not inspect refreshed token metadata: %s", e)
+
+            # Clear cached secrets so the next read fetches a fresh copy from Vault.
+            # Time has passed since the last read; secrets may have been rotated.
+            self._cached_data = None
+
     # --- CredentialBackend interface (read-only) ---
 
     def _read_all(self) -> dict[str, str]:
-        """Read the full secret dict from Vault KV v2, cached per instance."""
+        """Read the full secret dict from Vault KV v2, cached per instance.
+
+        Automatically refreshes the token when it is near expiry so long-running
+        processes (WebUI) never hit a mid-session 403.
+        """
+        if self._is_token_near_expiry():
+            self._refresh_token()
+
         if self._cached_data is not None:
             return self._cached_data
         import warnings
@@ -637,6 +836,24 @@ class VaultBackend:
     def config(self) -> VaultConfig:
         """Expose the active Vault configuration (for UI display)."""
         return self._config
+
+    @property
+    def token_ttl(self) -> int:
+        """Remaining token TTL in seconds at connect time (0 if unknown or not applicable)."""
+        return self._token_ttl
+
+    @property
+    def token_renewable(self) -> bool:
+        """True if the active token can be renewed via renew_self()."""
+        return self._token_renewable
+
+    def revoke_token(self) -> None:
+        """Proactively revoke the Vault token. Safe to call on cleanup — never raises."""
+        try:
+            self._client.auth.token.revoke_self()
+            logger.info("Vault token revoked")
+        except Exception as e:
+            logger.debug("Vault token revocation failed (non-critical): %s", e)
 
     def __repr__(self) -> str:
         return f"VaultBackend(url={self._config.url!r}, path={self._config.secret_path!r})"
@@ -726,7 +943,16 @@ class CredentialStore:
     # --- Core operations ---
 
     def get(self, key: CredentialKey) -> str | None:
-        """Retrieve a credential. Returns None if not found."""
+        """
+        Retrieve a credential. Returns None if not found.
+
+        In Standard Mode, Extended-only keys silently return None — Standard
+        code paths should never ask for these in the first place, but if
+        something does, it gets a clean miss rather than leaking a stale
+        Extended credential.
+        """
+        if key in EXTENDED_ONLY_KEYS and _is_standard_tier():
+            return None
         return self._backend.get(key.value)
 
     def set(self, key: CredentialKey, value: str) -> None:
@@ -734,10 +960,16 @@ class CredentialStore:
         Store a credential in the active backend.
 
         Raises CredentialError if the backend is read-only (Vault).
+        Raises TierViolationError if writing an Extended-only key under tier=standard.
         """
         if not value:
             logger.debug("Skipping empty value for %s", key.value)
             return
+        if key in EXTENDED_ONLY_KEYS and _is_standard_tier():
+            raise TierViolationError(
+                f"credential_store.set({key.value})",
+                hint=f"{key.display_name} is not used in Standard Mode.",
+            )
         if self.is_read_only:
             raise CredentialError(
                 f"Cannot store {key.display_name} — backend is read-only",
@@ -753,6 +985,8 @@ class CredentialStore:
         Remove a credential from the active backend.
 
         Raises CredentialError if the backend is read-only (Vault).
+        Tier-agnostic: deletes are always allowed so a downgrade flow can
+        clean up Extended creds without bumping the boundary.
         """
         if self.is_read_only:
             raise CredentialError(
@@ -765,7 +999,14 @@ class CredentialStore:
         self._backend.delete(key.value)
 
     def exists(self, key: CredentialKey) -> bool:
-        """Check if a credential is stored."""
+        """
+        Check if a credential is stored.
+
+        Mirrors get(): in Standard Mode, Extended-only keys appear absent
+        so the public surface is consistent.
+        """
+        if key in EXTENDED_ONLY_KEYS and _is_standard_tier():
+            return False
         return self._backend.exists(key.value)
 
     # --- Bulk operations ---

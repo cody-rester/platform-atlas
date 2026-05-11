@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>What's New in Platform Atlas v1.7</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&family=Open+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --navy: #101625;
+    --navy-light: #161d30;
+    --navy-mid: #1a2340;
+    --blue: #1B93D2;
+    --blue-glow: #2cb5f0;
+    --orange: #FF6633;
+    --green: #99CA3C;
+    --pink: #C5258F;
+    --text: #e2e8f0;
+    --text-dim: #94a3b8;
+    --text-ghost: #475569;
+    --card-bg: rgba(255,255,255,0.03);
+    --card-border: rgba(255,255,255,0.06);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--navy);
+    color: var(--text);
+    font-family: 'Open Sans', sans-serif;
+    line-height: 1.6;
+    overflow-x: hidden;
+  }
+
+  /* ── Hero ─────────────────────────────────── */
+  .hero {
+    position: relative;
+    padding: 80px 40px 0;
+    text-align: center;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: -50%; left: -20%; right: -20%; bottom: 0;
+    background:
+      radial-gradient(ellipse 60% 50% at 25% 25%, rgba(27,147,210,0.15) 0%, transparent 70%),
+      radial-gradient(ellipse 40% 60% at 75% 30%, rgba(255,102,51,0.13) 0%, transparent 70%),
+      radial-gradient(ellipse 50% 40% at 50% 80%, rgba(153,202,60,0.06) 0%, transparent 70%);
+    animation: hero-drift 20s ease-in-out infinite alternate;
+    z-index: 0;
+  }
+  @keyframes hero-drift {
+    0% { transform: translateX(0) scale(1); }
+    100% { transform: translateX(-30px) scale(1.05); }
+  }
+  .hero > * { position: relative; z-index: 1; }
+
+  .hero-logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+  .hero-logo img { height: 40px; opacity: 0.9; }
+  .hero-logo .divider {
+    width: 1px; height: 28px;
+    background: rgba(255,255,255,0.15);
+  }
+  .hero-wordmark {
+    font-family: 'Montserrat', sans-serif;
+    font-size: 20px; font-weight: 700;
+    color: var(--text); letter-spacing: 0.5px;
+  }
+  .hero h1 {
+    font-family: 'Montserrat', sans-serif;
+    font-size: clamp(32px, 5vw, 56px);
+    font-weight: 800;
+    line-height: 1.1;
+    margin-bottom: 12px;
+    background: linear-gradient(135deg, var(--blue), var(--orange));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .hero-version {
+    font-family: 'Montserrat', sans-serif;
+    font-size: 16px; font-weight: 600;
+    color: var(--text-dim);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 48px;
+  }
+  .hero-divider {
+    width: 100%;
+    max-width: 980px;
+    margin: 0 auto;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(27,147,210,0.35) 20%,
+      rgba(255,102,51,0.35) 50%,
+      rgba(153,202,60,0.35) 80%,
+      transparent 100%
+    );
+  }
+
+  /* ── Tier callout banner (the headline feature) ──── */
+  .tier-callout {
+    max-width: 960px;
+    margin: 56px auto 0;
+    padding: 0 32px;
+  }
+  .tier-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+  .tier-card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 32px;
+    position: relative;
+    overflow: hidden;
+  }
+  .tier-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+  }
+  .tier-card.standard::before { background: var(--blue); }
+  .tier-card.extended::before { background: var(--orange); }
+
+  .tier-card-label {
+    font-family: 'Montserrat', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .tier-card.standard .tier-card-label { color: var(--blue-glow); }
+  .tier-card.extended .tier-card-label { color: var(--orange); }
+
+  .tier-card h3 {
+    font-family: 'Montserrat', sans-serif;
+    font-size: 22px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 12px;
+  }
+  .tier-card p {
+    color: var(--text-dim);
+    font-size: 14px;
+    line-height: 1.6;
+    margin-bottom: 16px;
+  }
+  .tier-features {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .tier-features li {
+    color: var(--text);
+    font-size: 13px;
+    padding: 6px 0 6px 22px;
+    position: relative;
+  }
+  .tier-features li::before {
+    content: '✓';
+    position: absolute;
+    left: 0;
+    font-weight: 700;
+  }
+  .tier-card.standard .tier-features li::before { color: var(--blue-glow); }
+  .tier-card.extended .tier-features li::before { color: var(--orange); }
+
+  .tier-rule-count {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid var(--card-border);
+    font-family: 'Montserrat', sans-serif;
+    font-size: 12px;
+    color: var(--text-ghost);
+    letter-spacing: 0.5px;
+  }
+  .tier-rule-count strong {
+    color: var(--text);
+    font-weight: 700;
+  }
+
+  /* ── Content ──────────────────────────────── */
+  .content {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 0 32px 80px;
+  }
+
+  /* ── Feature Section ──────────────────────── */
+  .feature {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 48px;
+    align-items: center;
+    padding: 64px 0;
+    border-bottom: 1px solid var(--card-border);
+    opacity: 0;
+    transform: translateY(24px);
+    animation: fade-in 0.6s ease forwards;
+  }
+  .feature:nth-child(1) { animation-delay: 0.1s; }
+  .feature:nth-child(2) { animation-delay: 0.2s; }
+  .feature:nth-child(3) { animation-delay: 0.3s; }
+  .feature:last-child { border-bottom: none; }
+  .feature.reverse { direction: rtl; }
+  .feature.reverse > * { direction: ltr; }
+
+  @keyframes fade-in {
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .feature-tag {
+    display: inline-block;
+    font-family: 'Montserrat', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    padding: 4px 12px;
+    border-radius: 4px;
+    margin-bottom: 16px;
+  }
+  .tag-tier      { background: rgba(27,147,210,0.15);  color: var(--blue-glow); }
+  .tag-cli       { background: rgba(255,102,51,0.15);  color: var(--orange); }
+  .tag-webui     { background: rgba(153,202,60,0.15);  color: var(--green); }
+  .tag-diff      { background: rgba(197,37,143,0.15);  color: var(--pink); }
+
+  .feature h2 {
+    font-family: 'Montserrat', sans-serif;
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 16px;
+    color: #fff;
+  }
+  .feature p {
+    color: var(--text-dim);
+    font-size: 15px;
+    line-height: 1.7;
+    margin-bottom: 12px;
+  }
+  .feature p:last-child { margin-bottom: 0; }
+
+  .feature-code {
+    display: inline-block;
+    font-family: 'JetBrains Mono', 'SF Mono', monospace;
+    font-size: 13px;
+    background: rgba(27,147,210,0.10);
+    border: 1px solid rgba(27,147,210,0.20);
+    color: var(--blue-glow);
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+
+  /* ── Diagram / Illustration Cards ─────────── */
+  .feature-visual {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .feature-visual svg {
+    width: 100%;
+    height: auto;
+    max-height: 280px;
+  }
+
+  /* ── Highlights Strip ─────────────────────── */
+  .highlights {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+    padding: 48px 0;
+    border-bottom: 1px solid var(--card-border);
+    opacity: 0;
+    transform: translateY(24px);
+    animation: fade-in 0.6s ease 0.4s forwards;
+  }
+  .highlight-card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 24px;
+  }
+  .highlight-icon { font-size: 24px; margin-bottom: 12px; }
+  .highlight-card h3 {
+    font-family: 'Montserrat', sans-serif;
+    font-size: 15px; font-weight: 700;
+    margin-bottom: 8px; color: #fff;
+  }
+  .highlight-card p {
+    font-size: 13px; color: var(--text-dim); line-height: 1.6;
+  }
+
+  /* ── Version badge strip ──────────────────── */
+  .version-badge {
+    display: inline-block;
+    font-family: 'Montserrat', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    vertical-align: middle;
+    margin-left: 6px;
+  }
+  .badge-17  { background: rgba(27,147,210,0.15); color: var(--blue-glow); }
+
+  /* ── Footer ───────────────────────────────── */
+  .footer { text-align: center; padding: 48px 32px; }
+  .footer img { height: 22px; opacity: 0.4; margin-bottom: 10px; }
+  .footer p { color: var(--text-ghost); font-size: 13px; }
+
+  /* ── Responsive ───────────────────────────── */
+  @media (max-width: 768px) {
+    .feature { grid-template-columns: 1fr; gap: 24px; }
+    .feature.reverse { direction: ltr; }
+    .highlights { grid-template-columns: 1fr; }
+    .tier-grid { grid-template-columns: 1fr; }
+    .hero { padding: 48px 24px 0; }
+    .content { padding: 0 20px 48px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══ HERO ═══ -->
+<div class="hero">
+  <div class="hero-logo">
+    <img src="{{ITENTIAL_LOGO}}" alt="Itential">
+    <div class="divider"></div>
+    <span class="hero-wordmark">Platform Atlas</span>
+  </div>
+  <h1>Atlas, Two Ways</h1>
+  <div class="hero-version">Version 1.7 Series · May 2026</div>
+  <div class="hero-divider"></div>
+</div>
+
+<!-- ═══ TIER CALLOUT ═══ -->
+<div class="tier-callout">
+  <div class="tier-grid">
+    <div class="tier-card standard">
+      <div class="tier-card-label">Standard Mode</div>
+      <h3>Application Audit</h3>
+      <p>For teams that just need a Platform configuration check — no SSH, no infrastructure access, just OAuth and an optional IAG4 API token.</p>
+      <ul class="tier-features">
+        <li>Platform OAuth (read-only)</li>
+        <li>Optional IAG4 API token</li>
+        <li>Runs in any environment</li>
+        <li>No keyring or Vault required</li>
+      </ul>
+      <div class="tier-rule-count"><strong>~54 rules</strong> covering Platform &amp; Gateway4 application config</div>
+    </div>
+    <div class="tier-card extended">
+      <div class="tier-card-label">Extended Mode</div>
+      <h3>Infrastructure Audit</h3>
+      <p>The full Atlas experience — every collector, every check, the deep architecture review you've been running since 1.6.</p>
+      <ul class="tier-features">
+        <li>SSH into IAP, Mongo, Redis, IAG hosts</li>
+        <li>MongoDB and Redis runtime config</li>
+        <li>System &amp; filesystem audits</li>
+        <li>Architecture report</li>
+      </ul>
+      <div class="tier-rule-count"><strong>~107 rules</strong> across Platform, infra, and operations</div>
+    </div>
+  </div>
+</div>
+
+<div class="content">
+
+  <!-- ═══ FEATURE 1: Tier Commands ═══ -->
+  <div class="feature">
+    <div>
+      <span class="feature-tag tag-cli">Tier Commands</span>
+      <h2>Switch tiers from the CLI</h2>
+      <p>
+        A new <span class="feature-code">tier</span> command group lets you inspect and change
+        your active tier without re-running setup.
+      </p>
+      <p>
+        <span class="feature-code">platform-atlas tier show</span> displays the current tier and
+        what each tier covers. <span class="feature-code">tier upgrade</span> and
+        <span class="feature-code">tier downgrade</span> swap modes for the active config (or for
+        a specific environment with <span class="feature-code">--env</span>).
+      </p>
+      <p>
+        Need a one-off? Pass <span class="feature-code">--tier</span> to any command, or set
+        <span class="feature-code">ATLAS_TIER</span> in the environment.
+      </p>
+    </div>
+    <div class="feature-visual">
+      <svg viewBox="0 0 400 220" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Terminal frame -->
+        <rect x="16" y="16" width="368" height="188" rx="10" stroke="rgba(255,255,255,0.10)" stroke-width="1" fill="rgba(0,0,0,0.30)"/>
+        <circle cx="32" cy="32" r="4" fill="#FF6B6B"/>
+        <circle cx="46" cy="32" r="4" fill="#FFB86A"/>
+        <circle cx="60" cy="32" r="4" fill="#A8BF45"/>
+        <text x="200" y="36" text-anchor="middle" fill="#475569" font-family="Open Sans,sans-serif" font-size="9">platform-atlas</text>
+        <rect x="16" y="46" width="368" height="1" fill="rgba(255,255,255,0.06)"/>
+
+        <!-- Prompt 1: tier show -->
+        <text x="32" y="68" fill="#1B93D2" font-family="JetBrains Mono,monospace" font-size="11">$</text>
+        <text x="46" y="68" fill="#e2e8f0" font-family="JetBrains Mono,monospace" font-size="11">platform-atlas tier show</text>
+
+        <!-- Output -->
+        <text x="32" y="86" fill="#94a3b8" font-family="Open Sans,sans-serif" font-size="10">Tier:</text>
+        <rect x="64" y="78" width="58" height="14" rx="3" fill="rgba(27,147,210,0.18)" stroke="#1B93D2" stroke-width="1"/>
+        <text x="93" y="89" text-anchor="middle" fill="#1B93D2" font-family="Montserrat,sans-serif" font-size="9" font-weight="700" letter-spacing="0.5">STANDARD</text>
+        <text x="130" y="86" fill="#475569" font-family="Open Sans,sans-serif" font-size="10">· 54 rules · OAuth only</text>
+
+        <!-- Prompt 2: tier upgrade -->
+        <text x="32" y="116" fill="#1B93D2" font-family="JetBrains Mono,monospace" font-size="11">$</text>
+        <text x="46" y="116" fill="#e2e8f0" font-family="JetBrains Mono,monospace" font-size="11">platform-atlas tier upgrade</text>
+        <text x="32" y="134" fill="#A8BF45" font-family="Open Sans,sans-serif" font-size="10">✓ Tier set to extended</text>
+        <text x="32" y="148" fill="#475569" font-family="Open Sans,sans-serif" font-size="10">  Re-run preflight to verify SSH access.</text>
+
+        <!-- Prompt 3: tier show after -->
+        <text x="32" y="172" fill="#1B93D2" font-family="JetBrains Mono,monospace" font-size="11">$</text>
+        <text x="46" y="172" fill="#e2e8f0" font-family="JetBrains Mono,monospace" font-size="11">platform-atlas tier show</text>
+        <text x="32" y="190" fill="#94a3b8" font-family="Open Sans,sans-serif" font-size="10">Tier:</text>
+        <rect x="64" y="182" width="58" height="14" rx="3" fill="rgba(255,102,51,0.18)" stroke="#FF6633" stroke-width="1"/>
+        <text x="93" y="193" text-anchor="middle" fill="#FF6633" font-family="Montserrat,sans-serif" font-size="9" font-weight="700" letter-spacing="0.5">EXTENDED</text>
+        <text x="130" y="190" fill="#475569" font-family="Open Sans,sans-serif" font-size="10">· 107 rules · full audit</text>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ═══ FEATURE 2: Cross-Tier Diffs ═══ -->
+  <div class="feature reverse">
+    <div>
+      <span class="feature-tag tag-diff">Diffs</span>
+      <h2>Cross-tier diffs, called out</h2>
+      <p>
+        Comparing a Standard capture against an Extended one? The diff renderer flags it: rules
+        that don't exist in the narrower tier appear as SKIP, and a banner tells you which rules
+        are directly comparable.
+      </p>
+      <p>
+        Sessions remember the tier they were captured under, so historical diffs stay honest
+        even after you upgrade or downgrade.
+      </p>
+    </div>
+    <div class="feature-visual">
+      <svg viewBox="0 0 400 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Banner -->
+        <rect x="16" y="16" width="368" height="36" rx="6" fill="rgba(245,158,11,0.10)" stroke="rgba(245,158,11,0.30)" stroke-width="1"/>
+        <text x="32" y="32" fill="#F59E0B" font-family="Montserrat,sans-serif" font-size="9" font-weight="700" letter-spacing="0.5">CROSS-TIER DIFF</text>
+        <text x="32" y="46" fill="#94a3b8" font-family="Open Sans,sans-serif" font-size="10">Baseline: Standard · Latest: Extended</text>
+
+        <!-- Comparison columns -->
+        <rect x="16" y="68" width="180" height="124" rx="8" fill="rgba(27,147,210,0.04)" stroke="rgba(27,147,210,0.20)" stroke-width="1"/>
+        <text x="106" y="86" text-anchor="middle" fill="#1B93D2" font-family="Montserrat,sans-serif" font-size="9" font-weight="700" letter-spacing="0.5">BASELINE · STANDARD</text>
+        <rect x="28" y="98" width="156" height="20" rx="4" fill="rgba(168,191,69,0.08)"/>
+        <text x="36" y="112" fill="#A8BF45" font-family="Open Sans,sans-serif" font-size="10">PASS  P-001  Platform health</text>
+        <rect x="28" y="124" width="156" height="20" rx="4" fill="rgba(168,191,69,0.08)"/>
+        <text x="36" y="138" fill="#A8BF45" font-family="Open Sans,sans-serif" font-size="10">PASS  G4-002 Gateway version</text>
+        <rect x="28" y="150" width="156" height="20" rx="4" fill="rgba(100,116,139,0.10)"/>
+        <text x="36" y="164" fill="#64748b" font-family="Open Sans,sans-serif" font-size="10">SKIP  M-007  Mongo storage</text>
+        <text x="36" y="180" fill="#475569" font-family="Open Sans,sans-serif" font-size="9">  · not in Standard tier</text>
+
+        <!-- Arrow -->
+        <line x1="200" y1="130" x2="216" y2="130" stroke="#FF6633" stroke-width="1.5"/>
+        <polygon points="216,126 224,130 216,134" fill="#FF6633"/>
+
+        <rect x="228" y="68" width="156" height="124" rx="8" fill="rgba(255,102,51,0.04)" stroke="rgba(255,102,51,0.20)" stroke-width="1"/>
+        <text x="306" y="86" text-anchor="middle" fill="#FF6633" font-family="Montserrat,sans-serif" font-size="9" font-weight="700" letter-spacing="0.5">LATEST · EXTENDED</text>
+        <rect x="240" y="98" width="132" height="20" rx="4" fill="rgba(168,191,69,0.08)"/>
+        <text x="248" y="112" fill="#A8BF45" font-family="Open Sans,sans-serif" font-size="10">PASS  P-001  Platform</text>
+        <rect x="240" y="124" width="132" height="20" rx="4" fill="rgba(168,191,69,0.08)"/>
+        <text x="248" y="138" fill="#A8BF45" font-family="Open Sans,sans-serif" font-size="10">PASS  G4-002 Gateway</text>
+        <rect x="240" y="150" width="132" height="20" rx="4" fill="rgba(255,107,107,0.08)"/>
+        <text x="248" y="164" fill="#FF6B6B" font-family="Open Sans,sans-serif" font-size="10">FAIL  M-007  Mongo storage</text>
+        <text x="248" y="180" fill="#475569" font-family="Open Sans,sans-serif" font-size="9">  · directly evaluated</text>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ═══ FEATURE 3: WebUI Wheel ═══ -->
+  <div class="feature">
+    <div>
+      <span class="feature-tag tag-webui">Distribution</span>
+      <h2>WebUI ships separately</h2>
+      <p>
+        Some teams can't accept any server component in their environment. Atlas v1.7 splits
+        the optional WebUI into its own wheel: <span class="feature-code">platform-atlas-webui</span>.
+      </p>
+      <p>
+        The core CLI wheel <span class="feature-code">platform-atlas</span> is unchanged — install
+        it alone for the strictest environments, or pair it with the WebUI wheel for a browser
+        experience that imports Atlas as a library.
+      </p>
+      <p>
+        Both wheels are signed and uploaded to GitHub releases on every tag. Pick what your policy allows.
+      </p>
+    </div>
+    <div class="feature-visual">
+      <svg viewBox="0 0 400 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Core wheel -->
+        <rect x="32" y="60" width="148" height="80" rx="8" fill="rgba(27,147,210,0.06)" stroke="#1B93D2" stroke-width="1.5"/>
+        <text x="106" y="84" text-anchor="middle" fill="#1B93D2" font-family="Montserrat,sans-serif" font-size="9" font-weight="700" letter-spacing="0.5">CORE WHEEL</text>
+        <text x="106" y="104" text-anchor="middle" fill="#e2e8f0" font-family="JetBrains Mono,monospace" font-size="11">platform-atlas</text>
+        <text x="106" y="122" text-anchor="middle" fill="#64748b" font-family="Open Sans,sans-serif" font-size="9">CLI only · no server</text>
+        <rect x="60" y="130" width="92" height="3" rx="1.5" fill="rgba(168,191,69,0.30)"/>
+
+        <!-- Plus sign -->
+        <text x="194" y="106" text-anchor="middle" fill="#475569" font-family="Open Sans,sans-serif" font-size="22" font-weight="700">+</text>
+
+        <!-- WebUI wheel -->
+        <rect x="208" y="60" width="160" height="80" rx="8" fill="rgba(153,202,60,0.06)" stroke="#99CA3C" stroke-width="1.5" stroke-dasharray="4 3"/>
+        <text x="288" y="84" text-anchor="middle" fill="#99CA3C" font-family="Montserrat,sans-serif" font-size="9" font-weight="700" letter-spacing="0.5">WEBUI WHEEL · OPTIONAL</text>
+        <text x="288" y="104" text-anchor="middle" fill="#e2e8f0" font-family="JetBrains Mono,monospace" font-size="11">platform-atlas-webui</text>
+        <text x="288" y="122" text-anchor="middle" fill="#64748b" font-family="Open Sans,sans-serif" font-size="9">FastAPI · imports Atlas</text>
+        <rect x="240" y="130" width="96" height="3" rx="1.5" fill="rgba(168,191,69,0.30)"/>
+
+        <!-- Footer note -->
+        <text x="200" y="170" text-anchor="middle" fill="#64748b" font-family="Open Sans,sans-serif" font-size="10">Both signed wheels, downloaded from GitHub releases.</text>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ═══ HIGHLIGHTS STRIP ═══ -->
+  <div class="highlights">
+    <div class="highlight-card">
+      <div class="highlight-icon">🧭</div>
+      <h3>Sessions bind a tier <span class="version-badge badge-17">1.7</span></h3>
+      <p>
+        Every session captures its tier at create time, alongside environment and ruleset.
+        Switch sessions, switch contexts. Pre-1.7 sessions are preserved as Extended for
+        historical fidelity.
+      </p>
+    </div>
+    <div class="highlight-card">
+      <div class="highlight-icon">🛡️</div>
+      <h3>Standard mode is hard-isolated <span class="version-badge badge-17">1.7</span></h3>
+      <p>
+        Standard captures can't accidentally touch SSH, Mongo, or Redis — the registry, the
+        credential store, and per-collector guards all enforce the boundary. No surprise
+        connection attempts.
+      </p>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══ FOOTER ═══ -->
+<div class="footer">
+  <img src="{{ITENTIAL_LOGO}}" alt="Itential">
+  <p>Platform Atlas v1.7 Series · Itential · May 2026</p>
+</div>
+
+</body>
+</html>

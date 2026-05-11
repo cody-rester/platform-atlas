@@ -25,7 +25,7 @@ from platform_atlas.capture.collectors.base import BaseCollector
 from platform_atlas.core.exceptions import RedisCollectorError, RedisConnectionNotEstablishedError
 from redis.exceptions import RedisError, ConnectionError as RedisConnectionError
 
-from platform_atlas.core.context import ctx
+from platform_atlas.core.context import ctx, require_extended
 from platform_atlas.core.preflight import CheckResult
 
 __all__ = ["RedisCollector", "RedisCollectorError", "RedisSettings", "RedisMode"]
@@ -104,6 +104,10 @@ class RedisCollector(BaseCollector[RedisSettings]):
             *,
             settings: RedisSettings | None = None
             ) -> None:
+        require_extended(
+            "RedisCollector",
+            hint="Redis collection requires Extended Mode.",
+        )
         super().__init__(settings=settings)
         self.redis_uri = redis_uri
         self._mode: RedisMode | None = None
@@ -115,6 +119,10 @@ class RedisCollector(BaseCollector[RedisSettings]):
     @classmethod
     def from_config(cls, *, settings: RedisSettings | None = None) -> Self | None:
         """Create a collector using the application configuration"""
+        require_extended(
+            "RedisCollector.from_config",
+            hint="Redis collection requires Extended Mode.",
+        )
         config = ctx().config
         uri = config.redis_uri
         if not uri:

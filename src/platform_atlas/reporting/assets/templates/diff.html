@@ -576,6 +576,23 @@
 
     .footnotes:empty { display: none; }
 
+    .tier-footer-note {
+      margin-top: 10px;
+      padding: 10px 14px;
+      border-left: 3px solid #1B93D2;
+      background: rgba(27, 147, 210, 0.06);
+      font-size: 0.78rem;
+      line-height: 1.55;
+      color: var(--text-muted);
+    }
+    .tier-footer-note code {
+      background: rgba(27, 147, 210, 0.14);
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 0.75rem;
+      color: var(--text-primary);
+    }
+
     .system-info {
       margin-top: auto;
       padding-top: 0.75rem;
@@ -1218,6 +1235,10 @@
       <div class="report-label">Diff report</div>
       <h1 class="report-title">{{TITLE}}</h1>
       <p class="report-subtitle">{{ORGANIZATION_NAME}} • {{SUBTITLE}}</p>
+      <div class="report-tier-row" style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span style="background:{{TIER_COLOR}};color:#fff;padding:2px 10px;border-radius:4px;font-weight:700;letter-spacing:0.5px;font-size:11px;">{{TIER_LABEL}}</span>
+        <span style="opacity:0.8;font-size:13px;">{{TIER_COVER_KIND}}</span>
+      </div>
     </div>
 
     <!-- Comparison Banner -->
@@ -1369,6 +1390,7 @@
 
     <div class="footnotes">
       {{MODULES_FOOTNOTE}}
+      {{TIER_FOOTER}}
     </div>
   </main>
 

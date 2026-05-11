@@ -65,7 +65,7 @@ QSTYLE = Style(
         ("answer", f"fg:{theme.success_glow} bold"),
         ("pointer", f"fg:{theme.accent} bold"),
         ("highlighted", f"fg:#000000 bg:{theme.primary} bold"),
-        ("selected", "fg:#888888 bg:default"),
+        ("selected", f"fg:{theme.success_glow} bold"),
         ("instruction", f"fg:{theme.text_muted} italic"),
         ("text", "fg:#888888"),
         ("disabled", "fg:#555555 italic"),
@@ -390,6 +390,86 @@ def _ask_ssh_host_key_policy() -> str:
     ).ask()
     return result or "auto_add"
 
+
+def _ask_iap_transport(target_label: str = "the Platform (IAP) server") -> str:
+    """Ask how Atlas should connect to a server.
+
+    Returns "ssh", "control_master", or "local".
+    SSH is the default and recommended option for most deployments.
+    """
+    result = questionary.select(
+        f"How should Atlas connect to {target_label}?",
+        choices=[
+            questionary.Choice(
+                "SSH (recommended)  — Key or agent-based direct SSH",
+                value="ssh",
+            ),
+            questionary.Choice(
+                "ControlMaster      — Multiplex through a pre-opened SSH session "
+                "(use for CyberArk PSMP or jump hosts without direct key access)",
+                value="control_master",
+            ),
+            questionary.Choice(
+                "Local              — Atlas CLI is installed on the server itself",
+                value="local",
+            ),
+        ],
+        default="ssh",
+        style=QSTYLE,
+    ).ask()
+    if result is None:
+        _bail()
+    if result == "local":
+        _hint(
+            "Local transport selected. Atlas will collect system and config data\n"
+            "  directly from this machine's filesystem instead of over SSH.\n"
+            "  Ensure Atlas is run on the Platform server for this environment."
+        )
+    return result or "ssh"
+
+
+def _ask_control_master_settings(host: str = "") -> tuple[str, str, int]:
+    """Collect ControlMaster socket path, SSH destination, and port for one node.
+
+    Returns (socket_path, ssh_target, port).
+    """
+    default_socket = f"/tmp/atlas-{host}.sock" if host else "/tmp/atlas-cm.sock"
+    target_example = (
+        f"user@{host}@psmp-host.example.com"
+        if host
+        else "user@target-ip@psmp-host.example.com"
+    )
+
+    _hint(
+        "Before running Atlas, open the ControlMaster session for this node:\n"
+        f"  ssh -M -S <socket> [-p <port>] -o ControlPersist=10m -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -fN <ssh_destination>\n"
+        f"  Example: ssh -M -S {default_socket} -o ControlPersist=10m -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -fN {target_example}"
+    )
+
+    socket_path = questionary.text(
+        "Socket path",
+        instruction=f"(default: {default_socket}) ",
+        style=QSTYLE,
+    ).ask()
+    if socket_path is None:
+        _bail()
+    socket_path = socket_path.strip() or default_socket
+
+    ssh_target = questionary.text(
+        "SSH destination",
+        instruction=f"(e.g. {target_example}) ",
+        style=QSTYLE,
+    ).ask()
+    if ssh_target is None:
+        _bail()
+    ssh_target = ssh_target.strip()
+    if not ssh_target:
+        _bail("SSH destination is required for ControlMaster transport.")
+
+    ssh_port = _ask_ssh_port()
+
+    return socket_path, ssh_target, ssh_port
+
 def _ask_node_count(label: str, minimum: int, default: int) -> int:
     """Ask how many nodes of a type, with a minimum"""
     def _v(v: str):
@@ -485,14 +565,17 @@ def _ask_capture_scope() -> str:
 
 def _build_ssh_defaults(topology: DeploymentTopology) -> dict[str, Any]:
     """
-    Extract shared SSH settings from the first node to store as
-    ssh_defaults in the config. Nodes that differ will keep their
-    own values via per-node overrides.
+    Extract shared SSH settings from the first SSH node to store as
+    ssh_defaults in the config. Local and Kubernetes nodes are skipped.
+    Nodes that differ keep their own values via per-node overrides.
     """
     if not topology.nodes:
         return {}
 
-    first = topology.nodes[0]
+    first = next((n for n in topology.nodes if n.transport == "ssh"), None)
+    if first is None:
+        return {}
+
     defaults: dict[str, Any] = {"username": first.ssh_user}
 
     if first.ssh_key:
@@ -522,6 +605,7 @@ def _display_topology_review(
     table.add_column("Node", style=f"bold {theme.text_primary}", min_width=16)
     table.add_column("Role", style=theme.accent, min_width=8)
     table.add_column("Host", style=theme.secondary, min_width=16)
+    table.add_column("Transport", min_width=8)
     table.add_column("Primary", justify="center", min_width=8)
     table.add_column("Modules", style=theme.text_dim, min_width=24)
 
@@ -540,10 +624,20 @@ def _display_topology_review(
             if is_captured
             else f"[{theme.text_dim}]— (topology only)[/{theme.text_dim}]"
         )
+        transport_label = node.transport or "ssh"
+        if transport_label == "local":
+            transport_badge = f"[bold {theme.warning}]LOCAL[/bold {theme.warning}]"
+        elif transport_label == "kubernetes":
+            transport_badge = f"[{theme.accent}]K8S[/{theme.accent}]"
+        elif transport_label == "control_master":
+            transport_badge = f"[{theme.info}]CM[/{theme.info}]"
+        else:
+            transport_badge = f"[{theme.text_dim}]SSH[/{theme.text_dim}]"
         table.add_row(
             node.label,
             node.role.value.upper(),
             node.host,
+            transport_badge,
             primary_badge,
             modules_str,
         )
@@ -572,36 +666,48 @@ def _display_topology_review(
 def _wizard_standalone_all() -> DeploymentTopology:
     """Guide: single server with everything"""
     _hint("All services (IAP, MongoDB, Redis) on one server.")
-    _hint("Atlas connects over SSH for system/config data, and uses")
-    _hint("pymongo/redis-py/OAuth for service-specific collection.\n")
+    _hint("pymongo/redis-py/OAuth handle service-specific data collection.\n")
 
     host = _ask_host("Server hostname")
-    ssh_user = _ask_ssh_user()
-    ssh_key = _ask_ssh_key()
-    ssh_key_passphrase = _ask_ssh_key_passphrase(ssh_key)
-    ssh_port = _ask_ssh_port()
-    ssh_discover_keys = _ask_ssh_discover_keys(ssh_key)
-    ssh_host_key_policy = _ask_ssh_host_key_policy()
+    iap_transport = _ask_iap_transport()
 
-    common = {
-        "ssh_user": ssh_user, "ssh_key": ssh_key,
-        "ssh_key_passphrase": ssh_key_passphrase,
-        "ssh_port": ssh_port, "ssh_discover_keys": ssh_discover_keys,
-        "ssh_host_key_policy": ssh_host_key_policy,
-    }
-
-    # Ask which gateway version (if any) runs on the server
     gw_version = _ask_gateway_version()
-
     base_modules = ["system", "filesystem", "mongo", "redis", "platform"]
     if gw_version:
         base_modules.append(gw_version)
 
-
-    nodes = [TargetNode(
-        role=NodeRole.ALL, host=host,
-        modules=base_modules, **common,
-    )]
+    if iap_transport == "local":
+        nodes = [TargetNode(
+            role=NodeRole.ALL, host=host,
+            transport="local", modules=base_modules,
+        )]
+    elif iap_transport == "control_master":
+        cm_socket, cm_target, cm_port = _ask_control_master_settings(host)
+        nodes = [TargetNode(
+            role=NodeRole.ALL, host=host,
+            transport="control_master",
+            ssh_port=cm_port,
+            ssh_control_socket=cm_socket,
+            ssh_control_target=cm_target,
+            modules=base_modules,
+        )]
+    else:
+        ssh_user = _ask_ssh_user()
+        ssh_key = _ask_ssh_key()
+        ssh_key_passphrase = _ask_ssh_key_passphrase(ssh_key)
+        ssh_port = _ask_ssh_port()
+        ssh_discover_keys = _ask_ssh_discover_keys(ssh_key)
+        ssh_host_key_policy = _ask_ssh_host_key_policy()
+        common = {
+            "ssh_user": ssh_user, "ssh_key": ssh_key,
+            "ssh_key_passphrase": ssh_key_passphrase,
+            "ssh_port": ssh_port, "ssh_discover_keys": ssh_discover_keys,
+            "ssh_host_key_policy": ssh_host_key_policy,
+        }
+        nodes = [TargetNode(
+            role=NodeRole.ALL, host=host,
+            modules=base_modules, **common,
+        )]
 
     return DeploymentTopology(mode=DeploymentMode.STANDALONE, nodes=nodes)
 
@@ -610,6 +716,65 @@ def _wizard_standalone_split() -> DeploymentTopology:
     """Guide: separate servers for IAP, Mongo, Redis"""
     _hint("IAP, MongoDB, and Redis each on their own server.")
     _hint("Enter the hostname or IP for each.\n")
+
+    iap_transport = _ask_iap_transport()
+    console.print()
+
+    if iap_transport == "control_master":
+        _hint(
+            "Each server requires its own pre-opened ControlMaster session.\n"
+            "  Open them before running Atlas — one per target node."
+        )
+        iap_host = _ask_host("IAP server")
+        mongo_host = _ask_host("MongoDB server")
+        redis_host = _ask_host("Redis server")
+
+        console.print(f"\n  [{theme.primary_glow}]── IAP ({iap_host}) ──[/{theme.primary_glow}]")
+        iap_sock, iap_tgt, iap_cm_port = _ask_control_master_settings(iap_host)
+
+        console.print(f"\n  [{theme.primary_glow}]── MongoDB ({mongo_host}) ──[/{theme.primary_glow}]")
+        mongo_sock, mongo_tgt, mongo_cm_port = _ask_control_master_settings(mongo_host)
+
+        console.print(f"\n  [{theme.primary_glow}]── Redis ({redis_host}) ──[/{theme.primary_glow}]")
+        redis_sock, redis_tgt, redis_cm_port = _ask_control_master_settings(redis_host)
+
+        nodes: list[TargetNode] = [
+            TargetNode(role=NodeRole.IAP, host=iap_host,
+                       transport="control_master",
+                       ssh_port=iap_cm_port,
+                       ssh_control_socket=iap_sock, ssh_control_target=iap_tgt),
+            TargetNode(role=NodeRole.MONGO, host=mongo_host,
+                       transport="control_master",
+                       ssh_port=mongo_cm_port,
+                       ssh_control_socket=mongo_sock, ssh_control_target=mongo_tgt),
+            TargetNode(role=NodeRole.REDIS, host=redis_host,
+                       transport="control_master",
+                       ssh_port=redis_cm_port,
+                       ssh_control_socket=redis_sock, ssh_control_target=redis_tgt),
+        ]
+
+        gw_version = _ask_gateway_version()
+        if gw_version:
+            gw_count = _ask_node_count("How many gateway servers", minimum=1, default=1)
+            gw_hosts = _ask_hosts_for_role("Gateway", gw_count)
+            gw_modules = ["system", gw_version, "filesystem"]
+            for i, gw_host in enumerate(gw_hosts, 1):
+                console.print(
+                    f"\n  [{theme.primary_glow}]── Gateway ({gw_host}) ──[/{theme.primary_glow}]"
+                )
+                gw_sock, gw_tgt, gw_cm_port = _ask_control_master_settings(gw_host)
+                nodes.append(TargetNode(
+                    role=NodeRole.IAG, host=gw_host, label=f"iag-{i:02d}",
+                    transport="control_master", modules=gw_modules,
+                    ssh_port=gw_cm_port,
+                    ssh_control_socket=gw_sock, ssh_control_target=gw_tgt,
+                ))
+
+        return DeploymentTopology(mode=DeploymentMode.STANDALONE, nodes=nodes)
+
+    if iap_transport == "local":
+        _hint("SSH credentials below apply to MongoDB and Redis servers.")
+    _hint("SSH credentials will be shared across all SSH-connected servers.\n")
 
     ssh_user = _ask_ssh_user()
     ssh_key = _ask_ssh_key()
@@ -629,8 +794,13 @@ def _wizard_standalone_split() -> DeploymentTopology:
     mongo_host = _ask_host("MongoDB server")
     redis_host = _ask_host("Redis server")
 
+    if iap_transport == "local":
+        iap_node = TargetNode(role=NodeRole.IAP, host=iap_host, transport="local")
+    else:
+        iap_node = TargetNode(role=NodeRole.IAP, host=iap_host, **common)
+
     nodes = [
-        TargetNode(role=NodeRole.IAP, host=iap_host, **common),
+        iap_node,
         TargetNode(role=NodeRole.MONGO, host=mongo_host, **common),
         TargetNode(role=NodeRole.REDIS, host=redis_host, **common),
     ]
@@ -650,7 +820,109 @@ def _wizard_ha2() -> DeploymentTopology:
     _hint("Atlas connects to the PRIMARY node of each role for capture.")
     _hint("Non-primary nodes are recorded for topology validation.\n")
 
+    iap_transport = _ask_iap_transport()
+    console.print()
+
+    if iap_transport == "control_master":
+        _hint(
+            "ControlMaster: each node requires its own pre-opened SSH session.\n"
+            "  Atlas will collect sockets for primary nodes now.\n"
+            "  Non-primary nodes use the same socket pattern — open them before capture.\n"
+            "  Primary-only capture scope is strongly recommended."
+        )
+        console.print()
+
+        # -- IAP nodes -------------------------------------------------------
+        console.print(f"  [{theme.primary_glow}]── IAP Servers ──[/{theme.primary_glow}]")
+        _hint("First host listed is the primary (SSH + OAuth target)")
+        iap_count = _ask_node_count("  How many IAP servers?", minimum=2, default=2)
+        iap_hosts = _ask_hosts_for_role("IAP", iap_count)
+        console.print()
+
+        # -- MongoDB nodes ---------------------------------------------------
+        console.print(f"  [{theme.primary_glow}]── MongoDB Replica Set ──[/{theme.primary_glow}]")
+        _hint("First host listed is the primary (SSH + pymongo target)")
+        mongo_count = _ask_node_count("  How many MongoDB servers?", minimum=3, default=3)
+        if mongo_count % 2 == 0:
+            console.print(
+                f"  [{theme.warning}]⚠ Even number of Mongo nodes "
+                f"— odd is recommended for elections[/{theme.warning}]"
+            )
+            keep_even = questionary.confirm(
+                "  Continue with even count?", default=True, style=QSTYLE,
+            ).ask()
+            if not keep_even:
+                mongo_count = _ask_node_count(
+                    "  How many MongoDB servers?", minimum=3, default=3,
+                )
+        mongo_hosts = _ask_hosts_for_role("MongoDB", mongo_count)
+        console.print()
+
+        # -- Redis nodes -----------------------------------------------------
+        console.print(f"  [{theme.primary_glow}]── Redis Sentinels ──[/{theme.primary_glow}]")
+        _hint("First host listed is the primary (SSH + redis-py target)")
+        redis_count = _ask_node_count("  How many Redis servers?", minimum=3, default=3)
+        redis_hosts = _ask_hosts_for_role("Redis", redis_count)
+        console.print()
+
+        # -- Collect per-node ControlMaster settings -------------------------
+        _hint("Now enter ControlMaster settings for each node.")
+        ha2_cm_nodes: list[TargetNode] = []
+
+        for i, host in enumerate(iap_hosts, 1):
+            console.print(f"\n  [{theme.primary_glow}]── IAP #{i} ({host}) ──[/{theme.primary_glow}]")
+            sock, tgt, cm_port = _ask_control_master_settings(host)
+            ha2_cm_nodes.append(TargetNode(
+                role=NodeRole.IAP, host=host, label=f"iap-{i:02d}",
+                transport="control_master",
+                ssh_port=cm_port,
+                ssh_control_socket=sock, ssh_control_target=tgt,
+            ))
+
+        for i, host in enumerate(mongo_hosts, 1):
+            console.print(f"\n  [{theme.primary_glow}]── MongoDB #{i} ({host}) ──[/{theme.primary_glow}]")
+            sock, tgt, cm_port = _ask_control_master_settings(host)
+            ha2_cm_nodes.append(TargetNode(
+                role=NodeRole.MONGO, host=host, label=f"mongo-{i:02d}",
+                transport="control_master",
+                ssh_port=cm_port,
+                ssh_control_socket=sock, ssh_control_target=tgt,
+            ))
+
+        for i, host in enumerate(redis_hosts, 1):
+            console.print(f"\n  [{theme.primary_glow}]── Redis #{i} ({host}) ──[/{theme.primary_glow}]")
+            sock, tgt, cm_port = _ask_control_master_settings(host)
+            ha2_cm_nodes.append(TargetNode(
+                role=NodeRole.REDIS, host=host, label=f"redis-{i:02d}",
+                transport="control_master",
+                ssh_port=cm_port,
+                ssh_control_socket=sock, ssh_control_target=tgt,
+            ))
+
+        gw_version = _ask_gateway_version()
+        if gw_version:
+            gw_count = _ask_node_count("How many gateway servers", minimum=1, default=1)
+            gw_hosts = _ask_hosts_for_role("Gateway", gw_count)
+            gw_modules = ["system", gw_version, "filesystem"]
+            for i, gw_host in enumerate(gw_hosts, 1):
+                console.print(
+                    f"\n  [{theme.primary_glow}]── Gateway #{i} ({gw_host}) ──[/{theme.primary_glow}]"
+                )
+                sock, tgt, cm_port = _ask_control_master_settings(gw_host)
+                ha2_cm_nodes.append(TargetNode(
+                    role=NodeRole.IAG, host=gw_host, label=f"iag-{i:02d}",
+                    transport="control_master", modules=gw_modules,
+                    ssh_port=cm_port,
+                    ssh_control_socket=sock, ssh_control_target=tgt,
+                ))
+
+        return DeploymentTopology(mode=DeploymentMode.HA2, nodes=ha2_cm_nodes)
+
     # -- Shared SSH credentials (stored as ssh_defaults in config) -----------
+    if iap_transport == "local":
+        _hint("SSH credentials apply to MongoDB, Redis, and non-primary IAP nodes.")
+    _hint("Enter shared SSH credentials used across all servers.\n")
+
     ssh_user = _ask_ssh_user()
     ssh_key = _ask_ssh_key()
     ssh_key_passphrase = _ask_ssh_key_passphrase(ssh_key)
@@ -670,7 +942,10 @@ def _wizard_ha2() -> DeploymentTopology:
 
     # -- IAP nodes -----------------------------------------------------------
     console.print(f"  [{theme.primary_glow}]── IAP Servers ──[/{theme.primary_glow}]")
-    _hint("First host listed is the primary (SSH + OAuth target)")
+    if iap_transport == "local":
+        _hint("First host is the primary (local transport). Remaining nodes use SSH.")
+    else:
+        _hint("First host listed is the primary (SSH + OAuth target)")
     iap_count = _ask_node_count("  How many IAP servers?", minimum=2, default=2)
     iap_hosts = _ask_hosts_for_role("IAP", iap_count)
     console.print()
@@ -705,10 +980,20 @@ def _wizard_ha2() -> DeploymentTopology:
     nodes: list[TargetNode] = []
 
     for i, host in enumerate(iap_hosts, 1):
-        nodes.append(TargetNode(
-            role=NodeRole.IAP, host=host,
-            label=f"iap-{i:02d}", **common,
-        ))
+        # Primary IAP node uses local transport when the user opted in.
+        # Non-primary nodes still connect over SSH (they may be visited in
+        # ALL_NODES scope, and Atlas won't be installed on all of them).
+        use_local = iap_transport == "local" and i == 1
+        if use_local:
+            nodes.append(TargetNode(
+                role=NodeRole.IAP, host=host,
+                label=f"iap-{i:02d}", transport="local",
+            ))
+        else:
+            nodes.append(TargetNode(
+                role=NodeRole.IAP, host=host,
+                label=f"iap-{i:02d}", **common,
+            ))
     for i, host in enumerate(mongo_hosts, 1):
         nodes.append(TargetNode(
             role=NodeRole.MONGO, host=host,
@@ -785,6 +1070,8 @@ def _wizard_custom() -> DeploymentTopology:
 
         role = NodeRole(role_val)
 
+        node_transport = _ask_iap_transport(target_label=f"this {role.value.upper()} server")
+
         # For custom role, let them pick modules
         modules = None
         if role == NodeRole.CUSTOM:
@@ -799,10 +1086,24 @@ def _wizard_custom() -> DeploymentTopology:
 
         label = ask_text_optional(f"  Label", instruction=f"(default: {role.value}-{host}) ")
 
-        nodes.append(TargetNode(
-            role=role, host=host, label=label,
-            modules=modules, **common,
-        ))
+        if node_transport == "local":
+            nodes.append(TargetNode(
+                role=role, host=host, label=label,
+                transport="local", modules=modules,
+            ))
+        elif node_transport == "control_master":
+            cm_sock, cm_tgt, cm_port = _ask_control_master_settings(host)
+            nodes.append(TargetNode(
+                role=role, host=host, label=label,
+                transport="control_master", modules=modules,
+                ssh_port=cm_port,
+                ssh_control_socket=cm_sock, ssh_control_target=cm_tgt,
+            ))
+        else:
+            nodes.append(TargetNode(
+                role=role, host=host, label=label,
+                modules=modules, **common,
+            ))
 
         console.print()
         add_more = questionary.confirm(
@@ -1103,27 +1404,269 @@ def _ask_env_name(default: str = "") -> str:
 # Environment Creation Wizard
 # =================================================
 
+def _ask_tier_choice(default: str = "standard") -> str:
+    """
+    Prompt the user to pick a tier for a new environment.
+
+    Returns "standard" or "extended". Cancelling raises KeyboardInterrupt
+    so the caller can roll back cleanly.
+    """
+    standard_label = (
+        "Standard — Platform OAuth (+ optional IAG4 API). "
+        "5-minute setup, no SSH/Mongo/Redis."
+    )
+    extended_label = (
+        "Extended — Full audit with SSH, MongoDB, Redis, Kubernetes. "
+        "Requires infrastructure-team coordination."
+    )
+
+    choice = questionary.select(
+        "What kind of environment is this?",
+        choices=[standard_label, extended_label],
+        default=standard_label if default == "standard" else extended_label,
+        style=QSTYLE,
+    ).ask()
+    if choice is None:
+        raise KeyboardInterrupt
+    return "standard" if choice.startswith("Standard") else "extended"
+
+
+def _create_standard_environment_wizard(
+    env_name: str | None = None,
+    from_env: str | None = None,
+    default_organization_name: str | None = None,
+) -> Environment | None:
+    """
+    Standard-tier environment wizard — the "5-minute setup" flow.
+
+    Collects only what's needed for a Platform OAuth audit (and optional
+    IAG4 API). Never prompts for Mongo, Redis, SSH, deployment topology,
+    or Kubernetes — those concepts belong to Extended Mode.
+
+    Sequence:
+        1. Environment name + description
+        2. Organization name
+        3. Platform URI
+        4. Platform OAuth client ID + secret
+        5. Optional Gateway4 (URI + username + password)
+        6. Verify SSL
+        7. Save environment + scoped credentials, set active.
+    """
+    _section(
+        "Create Standard Environment",
+        "Platform OAuth + optional IAG4 — no SSH or DB credentials needed",
+    )
+
+    mgr = get_environment_manager()
+
+    if from_env:
+        if not mgr.exists(from_env):
+            console.print(f"  [{theme.error}]Source environment '{from_env}' not found[/{theme.error}]")
+            return None
+        source = mgr.load(from_env)
+        new_env = Environment.from_dict(source.to_dict())
+        new_env.name = env_name or _ask_env_name()
+        new_env.tier = "standard"
+        # Strip Extended-only fields when copying from an Extended source.
+        new_env.deployment = None
+        new_env.values_yaml_path = ""
+        new_env.iag5_values_yaml_path = ""
+        new_env.kubectl_context = ""
+        new_env.kubectl_namespace = ""
+        new_env.use_kubectl = False
+        mgr.save(new_env)
+        mgr.set_active(new_env.name)
+        console.print(
+            f"\n  [{theme.success}]✓ Standard environment '{new_env.name}' "
+            f"created (copied from {from_env})[/{theme.success}]"
+        )
+        return new_env
+
+    # -- Verify keyring backend -----------------------------------------------
+    is_secure, backend = verify_keyring_backend()
+    if not is_secure:
+        console.print(Panel(
+            f"[bold {theme.error}]Insecure keyring backend detected: {backend}[/bold {theme.error}]\n\n"
+            f"[{theme.text_primary}]Platform Atlas requires a secure OS credential store.[/{theme.text_primary}]",
+            border_style=theme.error,
+            box=box.ROUNDED,
+            expand=False,
+        ))
+        return None
+
+    if env_name is None:
+        env_name = _ask_env_name()
+    elif mgr.exists(env_name):
+        console.print(f"  [{theme.error}]Environment '{env_name}' already exists[/{theme.error}]")
+        return None
+
+    description = ask_text_optional("Description", "(optional, e.g. 'Production US East') ")
+
+    # Silently inherit the org name from any of:
+    #   1. The caller (start_setup_process) — collected at the top of setup.
+    #   2. The global config.json — written at the end of initial setup.
+    # Users who genuinely need a different org per environment can change it
+    # later via `platform-atlas env edit`. Asking again every time is the
+    # actual bug — initial setup already collected this once.
+    default_org = default_organization_name or ""
+    if not default_org:
+        try:
+            if ATLAS_CONFIG_FILE.is_file():
+                import json as _json
+                with open(ATLAS_CONFIG_FILE, "r", encoding="utf-8") as _f:
+                    _cfg = _json.load(_f)
+                default_org = _cfg.get("organization_name", "")
+        except Exception:
+            pass
+
+    if default_org:
+        org_name = default_org
+    else:
+        org_name = ask_text(
+            "Organization Name",
+            "(e.g. 'Acme Corp') ",
+        )
+
+    platform_uri = ask_text(
+        "Platform (IAP) URL",
+        "(e.g. https://iap.acme.com) ",
+        uri=True,
+    )
+    platform_client_id = ask_text("Platform OAuth Client ID")
+    platform_client_secret = ask_secret("Platform OAuth Client Secret")
+
+    # -- Optional Gateway4 (IAG4) --------------------------------------------
+    gateway4_uri = ""
+    gateway4_username = ""
+    gateway4_password = ""
+    has_iag4 = questionary.confirm(
+        "Do you use Itential Automation Gateway 4 (IAG4)?",
+        default=False,
+        style=QSTYLE,
+    ).ask()
+    if has_iag4 is None:
+        raise KeyboardInterrupt
+    if has_iag4:
+        gateway4_uri = ask_text(
+            "Gateway4 API URL",
+            "(e.g. https://iag.acme.com) ",
+            uri=True,
+        )
+        gateway4_username = ask_text("Gateway4 Username", "(typically 'admin') ")
+        gateway4_password = ask_secret("Gateway4 Password")
+
+    # -- Verify SSL? ----------------------------------------------------------
+    verify_ssl = questionary.confirm(
+        "Verify SSL on Platform connections?",
+        default=True,
+        style=QSTYLE,
+    ).ask()
+    if verify_ssl is None:
+        raise KeyboardInterrupt
+
+    # -- Persist credentials in keyring scoped to this env -------------------
+    scoped_store = CredentialStore(
+        backend_type=CredentialBackendType.KEYRING,
+        env_name=env_name,
+    )
+    scoped_store.set(CredentialKey.PLATFORM_SECRET, platform_client_secret)
+    if gateway4_password:
+        scoped_store.set(CredentialKey.GATEWAY4_PASSWORD, gateway4_password)
+
+    # -- Build & save the Environment file -----------------------------------
+    env = Environment(
+        name=env_name,
+        description=description,
+        organization_name=org_name,
+        platform_uri=platform_uri,
+        platform_client_id=platform_client_id,
+        credential_backend="keyring",
+        deployment=None,
+        legacy_profile="",
+        gateway4_uri=gateway4_uri,
+        gateway4_username=gateway4_username,
+        tier="standard",
+    )
+    mgr.save(env)
+    mgr.set_active(env_name)
+
+    # -- If verify_ssl is False, persist that on the global config so it
+    #    sticks for this user. (verify_ssl is a global, not per-env, in
+    #    the current schema; honor the user's choice without renaming.)
+    try:
+        import json as _json
+        global_cfg: dict[str, Any] = {}
+        if ATLAS_CONFIG_FILE.is_file():
+            with open(ATLAS_CONFIG_FILE, "r", encoding="utf-8") as _f:
+                global_cfg = _json.load(_f)
+        global_cfg["verify_ssl"] = bool(verify_ssl)
+        # Standard tier should be the default for all new sessions until the
+        # user explicitly changes it via `tier set`.
+        global_cfg.setdefault("tier", "standard")
+        atomic_write_json(ATLAS_CONFIG_FILE, global_cfg)
+    except Exception as exc:
+        logger.debug("Could not persist verify_ssl/tier defaults: %s", exc)
+
+    console.print(Panel(
+        f"[{theme.success_glow} bold]Environment saved[/{theme.success_glow} bold] to "
+        f"[bold]{env.file_path}[/bold]\n"
+        f"[{theme.success_glow} bold]Mode[/{theme.success_glow} bold] Standard "
+        f"({'47 + 7 IAG4' if gateway4_uri else '47'} rules)\n"
+        f"[{theme.success_glow} bold]Active environment[/{theme.success_glow} bold] set to "
+        f"[bold]{env_name}[/bold]\n\n"
+        f"[{theme.text_dim}]Run [bold]platform-atlas session run capture[/bold] to generate "
+        f"your first audit. This typically takes under a minute.[/{theme.text_dim}]",
+        box=box.ROUNDED,
+        border_style=theme.success,
+        expand=False,
+    ))
+
+    return env
+
+
 def create_environment_wizard(
     env_name: str | None = None,
     from_env: str | None = None,
+    tier: str | None = None,
+    default_organization_name: str | None = None,
 ) -> Environment | None:
     """
     Interactive wizard to create a new environment.
 
-    This collects all the deployment-specific configuration:
-      - Environment name and description
-      - Platform URI and client ID
-      - Credential backend choice + secrets
-      - Deployment topology
+    Branches on tier:
+        - Standard: short 5-question flow (Platform OAuth + optional IAG4)
+        - Extended: full topology + SSH + Mongo/Redis + Kubernetes flow
+
+    If ``tier`` is not specified, prompts the user. ``--from`` (copy)
+    inherits the source environment's tier when ``tier`` is None.
 
     Returns the created Environment, or None if canceled.
     """
+    mgr = get_environment_manager()
+
+    # If copying, inherit the source tier when caller didn't specify one.
+    if tier is None and from_env and mgr.exists(from_env):
+        try:
+            src = mgr.load(from_env)
+            tier = getattr(src, "tier", None) or "extended"
+        except Exception:
+            tier = None
+
+    if tier is None:
+        tier = _ask_tier_choice()
+
+    if tier == "standard":
+        return _create_standard_environment_wizard(
+            env_name=env_name,
+            from_env=from_env,
+            default_organization_name=default_organization_name,
+        )
+
+    # ── Extended-tier flow (existing wizard) ──────────────────────────────
     _section(
         "Create Environment",
         "Configure a new deployment target",
     )
-
-    mgr = get_environment_manager()
 
     # -- Copy from existing environment if --from was specified ----------------
     if from_env:
@@ -1145,22 +1688,27 @@ def create_environment_wizard(
     description = ask_text_optional("Description", "(optional, e.g. 'Production US East') ")
 
     # -- Organization name ---------------------------------------------------
-    # Try to default from global config if it exists
-    default_org = ""
-    try:
-        if ATLAS_CONFIG_FILE.is_file():
-            import json as _json
-            with open(ATLAS_CONFIG_FILE, "r", encoding="utf-8") as _f:
-                _cfg = _json.load(_f)
-            default_org = _cfg.get("organization_name", "")
-    except Exception:
-        pass
+    # Silently inherit the org name from the caller (start_setup_process) or
+    # from config.json. Per-env overrides happen via `env edit`, so prompting
+    # again here is redundant and produced the "asked twice" complaint.
+    default_org = default_organization_name or ""
+    if not default_org:
+        try:
+            if ATLAS_CONFIG_FILE.is_file():
+                import json as _json
+                with open(ATLAS_CONFIG_FILE, "r", encoding="utf-8") as _f:
+                    _cfg = _json.load(_f)
+                default_org = _cfg.get("organization_name", "")
+        except Exception:
+            pass
 
-    org_name_input = ask_text_optional(
-        "Organization Name",
-        f"(e.g. 'Acme Corp'){' [default: ' + default_org + ']' if default_org else ''} ",
-    )
-    org_name = org_name_input or default_org
+    if default_org:
+        org_name = default_org
+    else:
+        org_name = ask_text(
+            "Organization Name",
+            "(e.g. 'Acme Corp') ",
+        )
 
     # If copying, just save with new name and let user tweak later
     if source:
@@ -1236,9 +1784,17 @@ def create_environment_wizard(
     platform_uri = ask_text("Platform URI", "(Example: https://localhost:3443) ", uri=True)
     platform_client_id = ask_text("Platform Client ID")
 
+    # Ask for the Client Secret immediately after the Client ID so the OAuth
+    # pair is captured together. On the Vault backend the secret is read from
+    # Vault at runtime, so we skip the prompt and leave platform_client_secret
+    # as None — Vault path will still source it correctly via vault_config.
+    platform_client_secret: str | None = None
+    if backend_choice != "vault":
+        platform_client_secret = ask_secret("Platform Client Secret (hidden)")
+
     # -- Vault-specific setup -------------------------------------------------
     vault_config: VaultConfig | None = None
-    mongo_uri = redis_uri = platform_client_secret = None
+    mongo_uri = redis_uri = None
 
     # Scoped keyring service for this environment's credentials
     scoped = scoped_service_name(env_name)
@@ -1255,6 +1811,9 @@ def create_environment_wizard(
         try:
             test_backend = VaultBackend(vault_config, service=scoped)
             console.print(f"  [{theme.success}]✓ Connected to Vault at {vault_config.url}[/{theme.success}]")
+            if test_backend.token_ttl > 0:
+                _hint(f"Token TTL: {test_backend.token_ttl // 60}m {test_backend.token_ttl % 60}s"
+                      + (" (renewable)" if test_backend.token_renewable else " (not renewable)"))
         except CredentialError as e:
             console.print(f"  [{theme.error}]✘ Vault connection failed: {e}[/{theme.error}]")
             retry = questionary.confirm("Retry Vault configuration?", default=True, style=QSTYLE).ask()
@@ -1263,6 +1822,9 @@ def create_environment_wizard(
                 VaultBackend.save_config_to_keyring(vault_config, service=scoped)
                 test_backend = VaultBackend(vault_config, service=scoped)
                 console.print(f"  [{theme.success}]✓ Connected to Vault[/{theme.success}]")
+                if test_backend.token_ttl > 0:
+                    _hint(f"Token TTL: {test_backend.token_ttl // 60}m {test_backend.token_ttl % 60}s"
+                          + (" (renewable)" if test_backend.token_renewable else " (not renewable)"))
             else:
                 _bail("Cannot continue without a working Vault connection.")
 
@@ -1358,20 +1920,26 @@ def create_environment_wizard(
                 try:
                     test_backend = VaultBackend(vault_config, service=scoped)
                     console.print(f"  [{theme.success}]✓ Connected to Vault at {vault_config.url}[/{theme.success}]")
+                    if test_backend.token_ttl > 0:
+                        _hint(f"Token TTL: {test_backend.token_ttl // 60}m {test_backend.token_ttl % 60}s"
+                              + (" (renewable)" if test_backend.token_renewable else " (not renewable)"))
                 except CredentialError as e:
                     console.print(f"  [{theme.error}]✘ Connection failed: {e}[/{theme.error}]")
                     continue
             # else "retry" — just loops back to the top
 
-        # No local secret prompts — they live in Vault
-        mongo_uri = redis_uri = platform_client_secret = None
+        # No local secret prompts — Mongo/Redis URIs and the Platform secret
+        # are all read from Vault at runtime. platform_client_secret was
+        # already set to None up top.
+        mongo_uri = redis_uri = None
 
     # -- Keyring path: prompt for each secret locally -------------------------
     else:
+        # Platform Client Secret was already collected right after the Client
+        # ID above; only Mongo and Redis URIs are left to ask about here.
         _hint("MongoDB and Redis URIs are optional — skip if not needed for your deployment")
         mongo_uri = ask_uri_optional("MongoDB URI", "(leave blank to skip) ")
         redis_uri = ask_uri_optional("Redis URI", "(leave blank to skip) ")
-        platform_client_secret = ask_secret("Platform Client Secret (hidden)")
 
     # -- Deployment Topology --------------------------------------------------
     deployment, k8s_meta = ask_deployment()
@@ -1532,6 +2100,7 @@ def create_environment_wizard(
         legacy_profile=legacy_profile,
         gateway4_uri=gateway4_uri,
         gateway4_username=gateway4_username,
+        tier="extended",
         values_yaml_path=k8s_meta.get("values_yaml_path", ""),
         iag5_values_yaml_path=k8s_meta.get("iag5_values_yaml_path", ""),
         kubectl_context=k8s_meta.get("kubectl_context", ""),
@@ -1615,6 +2184,10 @@ def start_setup_process() -> None:
 
     org_name = ask_text("Organization Name", "(Example: Acme Org) ")
 
+    # Tier choice — Standard is the default for new users, but they can opt
+    # into Extended right away if they know they need it.
+    tier_default = _ask_tier_choice(default="standard")
+
     # -- Write global config --------------------------------------------------
     global_data: dict[str, Any] = {
         "organization_name": org_name,
@@ -1622,8 +2195,8 @@ def start_setup_process() -> None:
         "dark_mode": True,
         "theme": "horizon-dark",
         "extended_validation_checks": True,
-        "multi_tenant_mode": False,
         "debug": False,
+        "tier": tier_default,
     }
 
     atomic_write_json(ATLAS_CONFIG_FILE, global_data)
@@ -1646,7 +2219,7 @@ def start_setup_process() -> None:
     # Ensure environments directory exists
     ATLAS_ENVIRONMENTS_DIR.mkdir(mode=0o700, exist_ok=True)
 
-    create_environment_wizard()
+    create_environment_wizard(tier=tier_default, default_organization_name=org_name)
 
     # -- Offer to create additional environments ------------------------------
     while True:

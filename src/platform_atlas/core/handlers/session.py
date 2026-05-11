@@ -47,6 +47,33 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
+def _atomic_write_json_text(target: Path, data, *, mode: int = 0o600) -> None:
+    """Serialize ``data`` to JSON and atomically replace ``target``.
+
+    Writes to a same-directory temp file, fsyncs, sets 0600, then
+    ``os.replace`` — on a SIGINT or disk-full mid-write the original
+    file remains intact rather than being left half-written.
+    """
+    import json as _j
+    import tempfile
+    parent = target.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".tmp_", suffix="_" + target.name, dir=str(parent))
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            _j.dump(data, fh, indent=2, default=str, ensure_ascii=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, target)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 # =================================================
 # Session Binding Helpers
 # =================================================
@@ -251,6 +278,12 @@ def _show_session_status(session, *, show_bindings: bool = True) -> None:
         org = meta.organization_name
         if org:
             console.print(f"    Organization: [bold]{org}[/bold]")
+        # Tier badge — distinguish Standard (blue) from Extended (orange)
+        session_tier = getattr(meta, "tier", "") or "standard"
+        tier_color = theme.primary if session_tier == "standard" else theme.accent
+        console.print(
+            f"    Mode: [{tier_color} bold]{session_tier.upper()}[/{tier_color} bold]"
+        )
         if meta.environment:
             console.print(f"    Environment: [{theme.accent}]{meta.environment}[/{theme.accent}]")
         if meta.ruleset_id:
@@ -325,6 +358,11 @@ def handle_session_create(args: Namespace) -> int:
                 console.print(f"  [{theme.text_dim}]Cancelled[/{theme.text_dim}]")
                 return 1
 
+        # ── Resolve tier ─────────────────────────────────────────
+        # Explicit --tier wins; otherwise defer to manager.create()'s
+        # active-config fallback so existing scripts keep working.
+        tier_arg = (getattr(args, "tier", None) or "").strip().lower()
+
         # ── Create session ───────────────────────────────────────
         session = manager.create(
             name=session_name,
@@ -334,6 +372,7 @@ def handle_session_create(args: Namespace) -> int:
             environment=env_name,
             ruleset_id=ruleset_id,
             ruleset_profile=profile_id,
+            tier=tier_arg,
         )
 
         # Activate the session (also restores env + ruleset context)
@@ -488,6 +527,12 @@ def handle_session_run_capture(args: Namespace) -> int:
 
         # Attach session log
         session_handler = attach_session_log(session.log_file)
+
+        # Hold an exclusive POSIX lock for the entire capture so concurrent
+        # CLI runs against the same session can't trample each other's
+        # outputs (parquet/JSON corruption). Released in the finally below.
+        _capture_lock = session.exclusive_lock()
+        _capture_lock.__enter__()
 
         try:
             logger.info("Starting capture for session '%s'", session.name)
@@ -686,6 +731,35 @@ def handle_session_run_capture(args: Namespace) -> int:
                 )
                 set_parser_config(log_config)
 
+                # Raw-capture debug export: env-persistent flag OR per-run CLI flag.
+                # Writes the reshaped pre-filter capture to 01_raw_capture.json
+                # so rule authors can browse the full dot-path tree.
+                _raw_debug_on = (
+                    bool(getattr(ctx().config, "debug_export_raw_capture", False))
+                    or bool(getattr(args, "debug_raw_capture", False))
+                )
+                _raw_callback = None
+                if _raw_debug_on:
+                    import json as _json_raw
+                    _raw_path = session.directory / "01_raw_capture.json"
+
+                    def _write_raw(structured_data: dict) -> None:
+                        _raw_path.parent.mkdir(parents=True, exist_ok=True)
+                        _raw_path.write_text(
+                            _json_raw.dumps(
+                                structured_data,
+                                indent=2,
+                                default=str,
+                                ensure_ascii=False,
+                            ),
+                            encoding="utf-8",
+                        )
+                        console.print(
+                            f"  [{theme.text_dim}][debug] Raw capture written → "
+                            f"{_raw_path.name}[/{theme.text_dim}]"
+                        )
+                    _raw_callback = _write_raw
+
                 try:
                     captured_data = run_capture(
                         modules,
@@ -694,6 +768,7 @@ def handle_session_run_capture(args: Namespace) -> int:
                         headless=headless,
                         log_since=log_since,
                         log_until=log_until,
+                        on_raw_capture=_raw_callback,
                     )
                     logger.info("Capture returned %d top-level keys", len(captured_data))
                 except ConnectionError as e:
@@ -717,29 +792,37 @@ def handle_session_run_capture(args: Namespace) -> int:
             # Architecture Validation Questions
             skip_arch = hasattr(args, 'skip_architecture') and args.skip_architecture
 
+            # Architecture answers are stored per environment under
+            # ``~/.atlas/architecture/<env>.json``. Scope to the env this
+            # session was created against — never the (possibly different)
+            # currently-active env.
+            arch_env = session.metadata.environment or ""
+
             if not skip_arch:
                 from platform_atlas.capture.collectors.manual import (
                     run_architecture_collection,
                     load_architecture_progress
                 )
 
-                existing_arch = load_architecture_progress()
+                existing_arch = load_architecture_progress(arch_env)
                 if existing_arch:
                     captured_data.setdefault("checks", {})["architecture_validation"] = existing_arch["architecture_validation"]
                     console.print(
                         f"  [{theme.text_dim}]Architecture data loaded from previous "
-                        f"collection — skipping questions.[/{theme.text_dim}]"
+                        f"collection for env '{arch_env or '_default'}' — skipping questions.[/{theme.text_dim}]"
                     )
                     logger.info(
-                        "Architecture validation reused from ~/.atlas/architecture.json (%d sections)",
+                        "Architecture validation reused for env=%s (%d sections)",
+                        arch_env or "_default",
                         len(existing_arch["architecture_validation"])
                     )
                 else:
                     try:
-                        arch_data = run_architecture_collection()
+                        arch_data = run_architecture_collection(environment=arch_env)
                         captured_data.setdefault("checks", {})["architecture_validation"] = arch_data["architecture_validation"]
                         logger.info(
-                            "Architecture validation collected %d sections",
+                            "Architecture validation collected for env=%s (%d sections)",
+                            arch_env or "_default",
                             len(arch_data["architecture_validation"])
                         )
                     except KeyboardInterrupt:
@@ -748,7 +831,7 @@ def handle_session_run_capture(args: Namespace) -> int:
                         )
                         # Partial progress is already saved by the collector
                         # Pull in whatever sections completed before the interrupt
-                        partial = load_architecture_progress()
+                        partial = load_architecture_progress(arch_env)
                         if partial:
                             captured_data.setdefault("checks", {})["architecture_validation"] = partial["architecture_validation"]
             else:
@@ -756,13 +839,13 @@ def handle_session_run_capture(args: Namespace) -> int:
                 from platform_atlas.capture.collectors.manual import (
                     load_architecture_progress
                 )
-                arch_from_progress = load_architecture_progress()
+                arch_from_progress = load_architecture_progress(arch_env)
 
                 if arch_from_progress:
                     captured_data.setdefault("checks", {})["architecture_validation"] = arch_from_progress["architecture_validation"]
                     console.print(
                         f"[{theme.text_dim}]Using architecture data from "
-                        f"previous collection.[/{theme.text_dim}]"
+                        f"previous collection for env '{arch_env or '_default'}'.[/{theme.text_dim}]"
                     )
                 elif session.capture_file.exists():
                     # Fall back to pulling from a previous capture file
@@ -780,20 +863,14 @@ def handle_session_run_capture(args: Namespace) -> int:
                     except Exception:
                         logger.debug("No previous architecture data to reuse")
 
-            # Save to session directory
+            # Save to session directory.
+            # Pop logs out of captured_data first so we serialize once — previously
+            # we wrote the file, popped, then re-wrote, leaving a half-written
+            # file on SIGINT/disk-full between the two writes.
             import json
-            session.capture_file.write_text(
-                json.dumps(captured_data, indent=2, default=str, ensure_ascii=False),
-                encoding='utf-8'
-            )
-            os.chmod(session.capture_file, 0o600) # owner-only read/write
-
-            # Extract log data into separate file to keep capture JSON lean
-            import json as _json
             platform_data = captured_data.get("platform", {})
             mongo_data = captured_data.get("mongo", {})
-            logs_payload = {}
-
+            logs_payload: dict[str, object] = {}
             if "log_analysis" in platform_data:
                 logs_payload["log_analysis"] = platform_data.pop("log_analysis")
             if "webserver_logs" in platform_data:
@@ -801,19 +878,11 @@ def handle_session_run_capture(args: Namespace) -> int:
             if "log_analysis" in mongo_data:
                 logs_payload["mongo_log_analysis"] = mongo_data.pop("log_analysis")
 
-            if logs_payload:
-                session.logs_file.write_text(
-                    _json.dumps(logs_payload, indent=2, default=str, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-                os.chmod(session.logs_file, 0o600)
-                logger.info("Log analysis saved separately (%d keys)", len(logs_payload))
+            _atomic_write_json_text(session.capture_file, captured_data)
 
-                # Rewrite capture file without the log data
-                session.capture_file.write_text(
-                    _json.dumps(captured_data, indent=2, default=str, ensure_ascii=False),
-                    encoding="utf-8",
-                )
+            if logs_payload:
+                _atomic_write_json_text(session.logs_file, logs_payload)
+                logger.info("Log analysis saved separately (%d keys)", len(logs_payload))
 
             # Persist log date range in session metadata so it survives
             # across separate report runs and logs file cleanup
@@ -831,14 +900,18 @@ def handle_session_run_capture(args: Namespace) -> int:
             console.print(f"  Saved to: {session.capture_file}")
 
             # ── Optional: MongoDB Operational Pipelines ──────────────────────
-            if not headless:
+            # Standard tier has no MongoDB collector — skip the prompt entirely.
+            if not headless and not ctx().is_standard:
                 _prompt_operational_collection(session)
 
             console.print()
             ui.next_step("platform-atlas session run validate")
             return 0
         finally:
-            detach_handler(session_handler)
+            try:
+                _capture_lock.__exit__(None, None, None)
+            finally:
+                detach_handler(session_handler)
 
     except (SessionError, NoActiveSessionError) as e:
         console.print(f"[red]✗[/red] {e.message}")
@@ -869,6 +942,11 @@ def handle_session_run_validate(args: Namespace) -> int:
 
         # Attach session log
         session_handler = attach_session_log(session.log_file)
+
+        # Serialize concurrent runs against the same session — see capture
+        # handler for rationale. Released in the finally below.
+        _validate_lock = session.exclusive_lock()
+        _validate_lock.__enter__()
 
         try:
             # Check that capture is complete
@@ -904,8 +982,25 @@ def handle_session_run_validate(args: Namespace) -> int:
             console.print(f"[{theme.primary}]Running validation for session:[/{theme.primary}] {session.name}\n")
             df = validate_from_files(session.capture_file)
 
-            df.to_parquet(session.validation_file, engine="pyarrow", compression="snappy")
-            os.chmod(session.validation_file, 0o600)
+            # Atomic parquet write — pyarrow's writer is not crash-safe on its
+            # own; render to a temp file, fsync, then os.replace.
+            import tempfile as _tf
+            _parquet_dir = session.validation_file.parent
+            _parquet_dir.mkdir(parents=True, exist_ok=True)
+            _pq_fd, _pq_tmp = _tf.mkstemp(
+                prefix=".tmp_", suffix="_" + session.validation_file.name, dir=str(_parquet_dir)
+            )
+            os.close(_pq_fd)
+            try:
+                df.to_parquet(_pq_tmp, engine="pyarrow", compression="snappy")
+                os.chmod(_pq_tmp, 0o600)
+                os.replace(_pq_tmp, session.validation_file)
+            except Exception:
+                try:
+                    os.unlink(_pq_tmp)
+                except OSError:
+                    pass
+                raise
 
             # Update metadata with stats
             session.metadata.total_rules = len(df)
@@ -921,7 +1016,10 @@ def handle_session_run_validate(args: Namespace) -> int:
             ui.next_step("platform-atlas session run report")
             return 0
         finally:
-            detach_handler(session_handler)
+            try:
+                _validate_lock.__exit__(None, None, None)
+            finally:
+                detach_handler(session_handler)
 
     except (SessionError, NoActiveSessionError) as e:
         console.print(f"[red]✗[/red] {e.message}")
@@ -942,6 +1040,11 @@ def handle_session_run_report(args: Namespace) -> int:
             session = manager.get_active()
 
         session_handler = attach_session_log(session.log_file)
+
+        # Serialize concurrent runs against the same session — see capture
+        # handler for rationale. Released in the finally below.
+        _report_lock = session.exclusive_lock()
+        _report_lock.__enter__()
 
         try:
             if not session.metadata.validation_completed:
@@ -968,7 +1071,7 @@ def handle_session_run_report(args: Namespace) -> int:
                     df.to_csv(export_path, index=False)
                 elif fmt in ('json', 'md'):
                     extended_results = _load_extended_results(df, session)
-                    architecture_data = _load_architecture_data()
+                    architecture_data = _load_architecture_data(session.metadata.environment, session.capture_file)
                     from platform_atlas.reporting.reporting_engine import (
                         export_json_report,
                         export_markdown_report,
@@ -1010,7 +1113,7 @@ def handle_session_run_report(args: Namespace) -> int:
             organization_name = df.attrs.get('organization_name', "unknown")
 
             extended_results = _load_extended_results(df, session)
-            architecture_data = _load_architecture_data()
+            architecture_data = _load_architecture_data(session.metadata.environment, session.capture_file)
 
             knowledgebase = {}
             if not getattr(args, "no_fixes", False):
@@ -1019,6 +1122,10 @@ def handle_session_run_report(args: Namespace) -> int:
 
             hostname = _read_hostname(session)
             config = ctx().config
+
+            # Tier comes from the captured session, not the active config —
+            # session tier is immutable once captured.
+            session_tier = getattr(session.metadata, "tier", None) or df.attrs.get("tier") or "extended"
 
             # ── 1. 03_report.html — Compliance ──────────────────────────────
             from platform_atlas.reporting.report_renderer import render_html_report
@@ -1036,40 +1143,52 @@ def handle_session_run_report(args: Namespace) -> int:
                 modules_ran=session.metadata.modules_ran,
                 knowledgebase=knowledgebase,
                 extended_results=extended_results,
+                tier=session_tier,
             )
             console.print(f"  [{theme.success}]✓[/{theme.success}] Compliance report  → {output_path.name}")
 
-            # ── 2. 04_operational.html — Logs + MongoDB ──────────────────────
-            from platform_atlas.reporting.report_renderer import generate_log_sections_html
-            from platform_atlas.reporting.operational_renderer import render_operational_report
-            from platform_atlas.reporting.operational_engine import OperationalReport
-
-            log_html = generate_log_sections_html(extended_results)
-
-            # Read log date range from session metadata (persists across runs)
-            _meta_since = session.metadata.log_since or None
-            _meta_until = session.metadata.log_until or None
-            log_date_range = (_meta_since, _meta_until) if (_meta_since or _meta_until) else None
-
-            has_mongo = session.operational_data_file.exists()
-            if has_mongo:
-                mongo_report = OperationalReport.from_json(session.operational_data_file)
+            # ── 2. 04_operational.html — Logs + MongoDB (Extended only) ─────
+            # Declared before the tier branch so the WebUI viewmodel write
+            # at the end of this function can pass it regardless of which
+            # branch ran. Standard tier leaves it None; Extended assigns
+            # the loaded OperationalReport (possibly empty).
+            mongo_report = None
+            if session_tier == "standard":
+                console.print(
+                    f"  [{theme.text_dim}]–[/{theme.text_dim}] "
+                    f"Operational report skipped (Standard tier — logs and MongoDB pipelines require Extended)"
+                )
             else:
-                mongo_report = OperationalReport(results=[])
+                from platform_atlas.reporting.report_renderer import generate_log_sections_html
+                from platform_atlas.reporting.operational_renderer import render_operational_report
+                from platform_atlas.reporting.operational_engine import OperationalReport
 
-            render_operational_report(
-                mongo_report,
-                template_path=OPERATIONAL_TEMPLATE,
-                output_path=session.operational_file,
-                title="Operational Metrics Report",
-                subtitle=session.name,
-                organization_name=organization_name,
-                hostname=hostname,
-                log_sections_html=log_html,
-                has_mongo_data=has_mongo,
-                log_date_range=log_date_range,
-            )
-            console.print(f"  [{theme.success}]✓[/{theme.success}] Operational report  → {session.operational_file.name}")
+                log_html = generate_log_sections_html(extended_results)
+
+                _meta_since = session.metadata.log_since or None
+                _meta_until = session.metadata.log_until or None
+                log_date_range = (_meta_since, _meta_until) if (_meta_since or _meta_until) else None
+
+                has_mongo = session.operational_data_file.exists()
+                if has_mongo:
+                    mongo_report = OperationalReport.from_json(session.operational_data_file)
+                else:
+                    mongo_report = OperationalReport(results=[])
+
+                render_operational_report(
+                    mongo_report,
+                    template_path=OPERATIONAL_TEMPLATE,
+                    output_path=session.operational_file,
+                    title="Operational Metrics Report",
+                    subtitle=session.name,
+                    organization_name=organization_name,
+                    hostname=hostname,
+                    log_sections_html=log_html,
+                    has_mongo_data=has_mongo,
+                    log_date_range=log_date_range,
+                    tier=session_tier,
+                )
+                console.print(f"  [{theme.success}]✓[/{theme.success}] Operational report  → {session.operational_file.name}")
 
             # ── 3. 05_arch.html — Architecture & Maintenance ─────────────────
             from platform_atlas.reporting.arch_renderer import render_arch_report
@@ -1082,8 +1201,34 @@ def handle_session_run_report(args: Namespace) -> int:
                 title="Architecture & Maintenance",
                 subtitle=session.name,
                 organization_name=organization_name,
+                tier=session_tier,
             )
             console.print(f"  [{theme.success}]✓[/{theme.success}] Architecture report → {session.arch_file.name}")
+
+            # ── 4. 06_webui_viewmodel.json — WebUI tabbed experience ────────
+            # Typed JSON contract consumed by the WebUI's unified report view.
+            # Built from the same in-scope inputs as the HTML reports so the
+            # numbers stay in lockstep. Failure here never blocks the rest of
+            # reporting — the WebUI route falls back to building on the fly.
+            try:
+                from platform_atlas.reporting.webui_viewmodel import write_webui_viewmodel
+                write_webui_viewmodel(
+                    session.webui_viewmodel_file,
+                    df,
+                    extended_results=extended_results,
+                    architecture_data=architecture_data,
+                    operational_report=mongo_report,
+                    session_name=session.name,
+                    modules_ran=session.metadata.modules_ran,
+                    tier=session_tier,
+                )
+                console.print(f"  [{theme.success}]✓[/{theme.success}] WebUI viewmodel    → {session.webui_viewmodel_file.name}")
+            except Exception as exc:  # noqa: BLE001 — never block reporting on viewmodel failure
+                logger.warning("WebUI viewmodel write failed: %s", exc)
+                console.print(
+                    f"  [{theme.warning}]⚠[/{theme.warning}] WebUI viewmodel skipped ({exc}) — "
+                    f"WebUI will rebuild on first request"
+                )
 
             session.mark_stage_complete(SessionStage.REPORT)
             _cleanup_logs_file(session)
@@ -1098,7 +1243,10 @@ def handle_session_run_report(args: Namespace) -> int:
             return 0
 
         finally:
-            detach_handler(session_handler)
+            try:
+                _report_lock.__exit__(None, None, None)
+            finally:
+                detach_handler(session_handler)
 
     except (SessionError, NoActiveSessionError) as e:
         console.print(f"[red]✗[/red] {e.message}")
@@ -1851,6 +1999,8 @@ def _prompt_operational_collection(session) -> None:
     pipelines now. Shows a colored callout panel to draw attention.
     """
     from rich.panel import Panel
+    from platform_atlas.capture.utils import discover_pipelines
+    from platform_atlas.core.paths import ATLAS_PIPELINES_DIR
 
     console.print()
     console.print(Panel(
@@ -1877,11 +2027,75 @@ def _prompt_operational_collection(session) -> None:
         )
         return
 
-    _collect_operational_pipelines(session)
+    # Discover pipelines so the user can choose which ones to run.
+    available = discover_pipelines(ATLAS_PIPELINES_DIR)
+
+    # With 0 or 1 pipeline there's nothing meaningful to choose between — just run.
+    if len(available) <= 1:
+        _collect_operational_pipelines(session)
+        return
+
+    console.print()
+    mode = questionary.select(
+        f"Found {len(available)} pipelines. Which would you like to run?",
+        choices=[
+            questionary.Choice(
+                title=f"Run all ({len(available)} pipelines)",
+                value="all",
+            ),
+            questionary.Choice(
+                title="Select specific pipelines…",
+                value="select",
+            ),
+        ],
+        style=QSTYLE,
+    ).ask()
+
+    if mode is None:
+        raise KeyboardInterrupt
+
+    if mode == "all":
+        _collect_operational_pipelines(session)
+        return
+
+    # Build a checkbox list — all pre-checked so the user only needs to
+    # uncheck the ones they want to skip.
+    choices = []
+    for p in available:
+        label = p.name
+        if p.collection:
+            label += f"  [{p.collection}]"
+        if p.desc:
+            label += f"  — {p.desc}"
+        choices.append(questionary.Choice(title=label, value=p.name, checked=False))
+
+    selected = questionary.checkbox(
+        "Select pipelines to run  (Space = toggle, Enter = confirm):",
+        choices=choices,
+        style=QSTYLE,
+    ).ask()
+
+    if selected is None:
+        raise KeyboardInterrupt
+
+    if not selected:
+        console.print(
+            f"  [{theme.text_dim}]No pipelines selected — skipped.[/{theme.text_dim}]"
+        )
+        return
+
+    _collect_operational_pipelines(session, pipeline_names=selected)
 
 
-def _collect_operational_pipelines(session) -> None:
-    """Run MongoDB aggregation pipelines and save results to 04_operational.json."""
+def _collect_operational_pipelines(
+    session,
+    pipeline_names: list[str] | None = None,
+) -> None:
+    """Run MongoDB aggregation pipelines and save results to 04_operational.json.
+
+    When ``pipeline_names`` is provided only those pipelines are executed;
+    pass ``None`` to run every pipeline in ~/.atlas/pipelines/.
+    """
     from platform_atlas.capture.collectors.mongo import MongoCollector
     from platform_atlas.reporting.operational_engine import run_operational_pipelines
 
@@ -1893,10 +2107,11 @@ def _collect_operational_pipelines(session) -> None:
         )
         return
 
-    console.print(f"\n  [{theme.primary}]Running MongoDB operational pipelines…[/{theme.primary}]")
+    scope = f"{len(pipeline_names)} selected" if pipeline_names else "all"
+    console.print(f"\n  [{theme.primary}]Running MongoDB operational pipelines ({scope})…[/{theme.primary}]")
     try:
         with collector:
-            report = run_operational_pipelines(collector)
+            report = run_operational_pipelines(collector, pipeline_names=pipeline_names)
 
         if report.pipeline_count == 0:
             console.print(
@@ -1959,15 +2174,47 @@ def _load_extended_results(df, session) -> list:
         return []
 
 
-def _load_architecture_data() -> dict:
-    """Load architecture overview data from the global architecture store."""
+def _load_architecture_data(environment: str = "", capture_file=None) -> dict:
+    """Load architecture overview data for ``environment``.
+
+    Resolution order:
+      1. Per-env architecture store (``~/.atlas/architecture/<env>.json``) — authoritative,
+         reflects any post-capture edits the user made via the form.
+      2. ``01_capture.json`` — fallback for sessions whose environment has no store file
+         yet (e.g., a new env that hasn't had the architecture form filled in).
+
+    Empty ``environment`` falls back to the ``_default`` bucket (matches
+    architecture_store's resolution). Includes partial data — any completed
+    sections are used in the report even if the form is not yet marked
+    status='complete'.
+    """
     try:
-        from platform_atlas.capture.collectors.manual import load_architecture_progress
-        arch = load_architecture_progress()
-        if arch:
-            return arch.get("architecture_validation", {})
+        from platform_atlas.capture.collectors.manual import ArchitectureProgress
+        progress = ArchitectureProgress.load(environment)
+        if progress.completed:
+            return progress.completed
     except Exception as e:
-        logger.debug("Could not load architecture data: %s", e)
+        logger.debug("Could not load architecture data for env=%s: %s",
+                     environment or "_default", e)
+
+    # Fallback: read architecture data captured during session capture
+    if capture_file is not None:
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            cap_path = _Path(capture_file)
+            if cap_path.exists():
+                cap = _json.loads(cap_path.read_text(encoding="utf-8"))
+                arch = cap.get("checks", {}).get("architecture_validation")
+                if arch:
+                    logger.debug(
+                        "Architecture data for env=%s loaded from capture file (no store file for env)",
+                        environment or "_default",
+                    )
+                    return arch
+        except Exception as fb_exc:
+            logger.debug("Architecture fallback from capture file failed: %s", fb_exc)
+
     return {}
 
 
@@ -1997,51 +2244,11 @@ def _cleanup_logs_file(session) -> None:
 
 
 def _rehydrate_attrs(df, session) -> None:
+    """Thin shim around session_manager.rehydrate_validation_attrs.
+
+    The shared helper now lives in session_manager so the WebUI's diff
+    route can use the same code path — see CLAUDE.md hard-won lesson #3
+    for the parquet-attrs-don't-survive background.
     """
-    Rehydrate DataFrame .attrs from the capture JSON file.
-
-    Parquet round-trips lose .attrs (lesson #3 from the reference doc).
-    This reads the _atlas metadata block from the capture file and
-    restores the attrs that the reporting engine needs.
-    """
-    import json as _json
-
-    if not session.capture_file.exists():
-        # Fall back to session metadata for what we can
-        meta = session.metadata
-        df.attrs.setdefault("organization_name", meta.organization_name or "Unknown")
-        df.attrs.setdefault("environment", meta.environment or "")
-        df.attrs.setdefault("ruleset_id", meta.ruleset_id or "")
-        df.attrs.setdefault("ruleset_version", meta.ruleset_version or "")
-        df.attrs.setdefault("ruleset_profile", meta.ruleset_profile or "")
-        return
-
-    try:
-        with open(session.capture_file, encoding="utf-8") as f:
-            capture = _json.load(f)
-
-        atlas = capture.get("_atlas", {})
-        metadata = atlas.get("metadata", {})
-        system_facts = atlas.get("system_facts", {})
-        platform_data = capture.get("platform", {})
-        health_server = (
-            platform_data.get("health_server", {})
-            if isinstance(platform_data, dict) else {}
-        )
-
-        df.attrs["hostname"] = system_facts.get("hostname", "Unknown")
-        df.attrs["platform_ver"] = health_server.get("version", "Unknown")
-        df.attrs["ruleset_id"] = metadata.get("ruleset_id", "")
-        df.attrs["ruleset_version"] = metadata.get("ruleset_version", "")
-        df.attrs["ruleset_profile"] = metadata.get("ruleset_profile", "")
-        df.attrs["modules_ran"] = metadata.get("modules_ran", [])
-        df.attrs["captured_at"] = metadata.get("captured_at", "")
-        df.attrs["organization_name"] = metadata.get("organization_name", "")
-        df.attrs["environment"] = metadata.get("environment", "")
-
-    except Exception as e:
-        logger.debug("Failed to rehydrate attrs from capture JSON: %s", e)
-        # Fall back to session metadata
-        meta = session.metadata
-        df.attrs.setdefault("organization_name", meta.organization_name or "Unknown")
-        df.attrs.setdefault("environment", meta.environment or "")
+    from platform_atlas.core.session_manager import rehydrate_validation_attrs
+    rehydrate_validation_attrs(df, session)

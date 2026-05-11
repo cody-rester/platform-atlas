@@ -96,8 +96,28 @@ class SessionInvalidStateError(SessionError):
 class NoActiveSessionError(SessionError):
     """No active session set"""
 
+class SessionLockedError(SessionError):
+    """Another process holds the exclusive lock on this session."""
+
 class CredentialError(AtlasError):
     """Raised when a credential operation fails"""
 
 class InsecureBackendError(CredentialError):
     """Raised when the keyring backend is not secure"""
+
+class TierViolationError(AtlasError):
+    """
+    Raised when Extended-only code is invoked while the active tier is Standard.
+
+    This is a programming error, not a user error — Standard-mode workflows
+    must never reach Extended-only code paths. The hard mode boundary is
+    enforced by registry pruning at AtlasContext init plus require_extended()
+    guards inside Extended-only collectors and transports.
+    """
+    def __init__(self, component: str, *, hint: str = "") -> None:
+        msg = f"'{component}' requires Extended Mode (current tier: standard)"
+        if hint:
+            msg += f". {hint}"
+        super().__init__(msg)
+        self.component = component
+        self.hint = hint

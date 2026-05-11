@@ -900,6 +900,10 @@ class NetworkSecurityCollector(ArchitectureSection):
             console.print(
                 f"  [{theme.warning}]MTU 9000 has been observed to cause issues with Platform. MTU 1500 is recommended.[/{theme.warning}]"
             )
+        elif self.data["mtu_size"] == "Other":
+            self.data["mtu_size_other"] = _ask_text(
+                "  Specify MTU size (bytes, e.g., 1492):"
+            )
 
         # Connectivity concerns
         self.data["has_connectivity_concerns"] = _ask_confirm(
@@ -931,14 +935,79 @@ class NetworkSecurityCollector(ArchitectureSection):
         return self.data
 
 
-# ─────────────── PROGRESS TRACKING ─────────────── #
+class VulnerabilityAssessmentsCollector(ArchitectureSection):
+    """Vulnerability assessment program — tools, frequency, ownership."""
 
-ATLAS_ARCHITECTURE_FILE = ATLAS_HOME / "architecture.json"
+    def __init__(self, hints: TopologyHints | None = None) -> None:
+        super().__init__(name="vulnerability_assessments", hints=hints or TopologyHints())
+
+    def collect(self) -> dict[str, Any]:
+        _section_banner(
+            "Vulnerability Assessments",
+            "How (and whether) this environment is scanned for known vulnerabilities.",
+        )
+
+        cadence = _ask_select(
+            "Does this environment undergo vulnerability assessments?",
+            choices=["Yes — regularly", "Yes — ad-hoc / on demand", "No"],
+        )
+        self.data["performs_assessments"] = cadence
+
+        if cadence == "No":
+            return self.data
+
+        self.data["tools"] = _ask_checkbox(
+            "Which tool(s) are used? (select all that apply)",
+            choices=[
+                "Tenable / Nessus",
+                "Qualys VMDR",
+                "Rapid7 InsightVM",
+                "Wiz",
+                "Prisma Cloud / Twistlock",
+                "Aqua Security",
+                "CrowdStrike Falcon",
+                "Trivy",
+                "Grype",
+                "Snyk",
+                "Anchore",
+                "OpenSCAP",
+                "In-house / custom tooling",
+                "Other",
+            ],
+        )
+        if "Other" in self.data["tools"]:
+            self.data["tools_other"] = _ask_text(
+                "  Specify (e.g., Acunetix, Black Duck, Tanium Comply):"
+            )
+
+        self.data["frequency"] = _ask_select(
+            "How often are assessments run?",
+            choices=[
+                "Continuously (always-on)",
+                "Monthly",
+                "Quarterly",
+                "Annually",
+                "Ad-hoc / on demand",
+                "Unknown",
+            ],
+        )
+
+        return self.data
+
+
+# ─────────────── PROGRESS TRACKING (per-environment) ─────────────── #
 
 
 @dataclass
 class ArchitectureProgress:
-    """Tracks which architecture sections have been collected (install-wide)"""
+    """Tracks which architecture sections have been collected for ONE environment.
+
+    Architecture answers are stored per environment under
+    ``~/.atlas/architecture/<env>.json`` so prod / staging / dev can carry
+    different deployments. Use the ``architecture_store`` helpers for I/O —
+    this class is just an in-memory view with the resume helpers.
+    """
+    environment: str = ""
     completed: dict[str, Any] = field(default_factory=dict)
     skipped: list[str] = field(default_factory=list)
     status: str = "in_progress"
@@ -951,50 +1020,44 @@ class ArchitectureProgress:
         return self.status == "complete"
 
     def save(self) -> None:
-        """Persist progress to ~/.atlas/architecture.json"""
-        payload = {
+        """Persist this env's progress under ~/.atlas/architecture/<env>.json"""
+        from platform_atlas.core import architecture_store
+        architecture_store.save(self.environment, {
             "completed": self.completed,
             "skipped": self.skipped,
             "status": self.status,
-        }
-        ATLAS_ARCHITECTURE_FILE.write_text(
-            json.dumps(payload, indent=2, default=str),
-            encoding="utf-8",
+        })
+        logger.debug(
+            "Architecture progress saved (env=%s, %d sections done)",
+            self.environment or "_default", len(self.completed),
         )
-        logger.debug("Architecture progress saved (%d sections done)", len(self.completed))
 
     @classmethod
-    def load(cls) -> ArchitectureProgress:
-        """Load progress from ~/.atlas/architecture.json, or return fresh if none exists"""
-        if not ATLAS_ARCHITECTURE_FILE.exists():
-            return cls()
-
-        try:
-            data = json.loads(ATLAS_ARCHITECTURE_FILE.read_text(encoding="utf-8"))
-            return cls(
-                completed=data.get("completed", {}),
-                skipped=data.get("skipped", []),
-                status=data.get("status", "in_progress"),
-            )
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.debug("Corrupt architecture progress file, starting fresh: %s", e)
-            return cls()
+    def load(cls, environment: str = "") -> ArchitectureProgress:
+        """Load this env's progress from disk, or return a fresh record."""
+        from platform_atlas.core import architecture_store
+        data = architecture_store.load(environment)
+        return cls(
+            environment=environment or data.get("environment_name", ""),
+            completed=data.get("completed") or {},
+            skipped=list(data.get("skipped") or []),
+            status=str(data.get("status") or "in_progress"),
+        )
 
 
 # ─────────────── ORCHESTRATOR ─────────────── #
 
 @dataclass
 class ArchitectureValidationCollector:
-    """Orchestrates all manual architecture validation data collection.
+    """Orchestrates all manual architecture validation data collection for ONE env.
 
-    Architecture data is stored install-wide at ~/.atlas/architecture.json
-    rather than per-session, so it only needs to be collected once and is
-    reused across all sessions.
-
-    When an environment is active, topology hints are extracted and passed
-    to each section collector to pre-fill known values.
+    Architecture answers are stored at ``~/.atlas/architecture/<env>.json`` so
+    prod / staging / dev can carry different deployments. Run-time pre-fill
+    sources (in order of precedence): user's already-saved answers for this env,
+    optional copy-from-source-env, topology hints from the active config.
     """
 
+    environment: str = ""
     sections: list[ArchitectureSection] = field(default_factory=list)
     progress: ArchitectureProgress = field(init=False)
 
@@ -1014,6 +1077,11 @@ class ArchitectureValidationCollector:
                 hints.has_gateway5,
             )
 
+        # Resolve the env we're scoping to. Prefer the explicit constructor
+        # argument; fall back to the active env from topology hints.
+        if not self.environment and hints.environment_name:
+            self.environment = hints.environment_name
+
         self.sections = [
             EnvironmentOverviewCollector(hints),
             PlatformArchitectureCollector(hints),
@@ -1025,13 +1093,57 @@ class ArchitectureValidationCollector:
             KubernetesArchitectureCollector(hints),
             MonitoringHealthCheckCollector(hints),
             NetworkSecurityCollector(hints),
+            VulnerabilityAssessmentsCollector(hints),
         ]
-        self.progress = ArchitectureProgress.load()
+        self.progress = ArchitectureProgress.load(self.environment)
 
     @property
     def pending_sections(self) -> list[ArchitectureSection]:
         """Sections not yet completed or skipped"""
         return [s for s in self.sections if not self.progress.is_done(s.name)]
+
+    def seed_from_env(self, source_env: str) -> int:
+        """Pre-fill ``completed`` from another environment's saved answers.
+
+        Returns the number of sections seeded. The user can still walk through
+        each section and tweak values — sections aren't marked done until the
+        user actually confirms them via ``collect()``. Called only on a fresh
+        run (no existing answers for the destination env).
+        """
+        from platform_atlas.core import architecture_store
+        try:
+            source_data = architecture_store.load(source_env)
+        except ValueError as exc:
+            console.print(f"[{theme.error}]Could not load env '{source_env}': {exc}[/{theme.error}]")
+            return 0
+        source_completed = source_data.get("completed") or {}
+        if not source_completed:
+            console.print(
+                f"[{theme.warning}]Env '{source_env}' has no completed sections to copy from.[/{theme.warning}]"
+            )
+            return 0
+        # Stash on each section so the section's own _ask_*-with-default
+        # prompts can use the seeded value when the user confirms.
+        seeded = 0
+        for section in self.sections:
+            seed = source_completed.get(section.name)
+            if isinstance(seed, dict) and seed:
+                section.data = json.loads(json.dumps(seed))  # deep copy
+                seeded += 1
+        return seeded
+
+    def adopt_from_env(self, source_env: str) -> int:
+        """Copy a source env's answers into THIS env wholesale, mark complete.
+
+        For the "prod and dev are identical" case — no per-field walk-through.
+        Returns the number of sections adopted.
+        """
+        from platform_atlas.core import architecture_store
+        result = architecture_store.copy(source_env, self.environment)
+        self.progress.completed = result.get("completed") or {}
+        self.progress.skipped = list(result.get("skipped") or [])
+        self.progress.status = result.get("status") or "complete"
+        return len(self.progress.completed)
 
     def collect_all(self, force: bool = False) -> dict[str, Any]:
         """Run all section collectors and return a unified dict.
@@ -1040,14 +1152,14 @@ class ArchitectureValidationCollector:
             force: If True, re-collect all sections even if already complete.
         """
         if force:
-            self.progress = ArchitectureProgress()
+            self.progress = ArchitectureProgress(environment=self.environment)
 
         pending = self.pending_sections
 
         if not pending:
             console.print(
                 f"\n[{theme.success}]All architecture sections already "
-                f"collected.[/{theme.success}]"
+                f"collected for env=[bold]{self.environment or '_default'}[/bold].[/{theme.success}]"
             )
             return {"architecture_validation": self.progress.completed}
 
@@ -1060,13 +1172,12 @@ class ArchitectureValidationCollector:
 
         # Show hints info if environment is active
         hints = self.sections[0].hints if self.sections else TopologyHints()
-        hints_note = ""
-        if hints.environment_name:
-            hints_note = (
-                f"\n[{theme.accent}]Active environment:[/{theme.accent}] "
-                f"[bold]{hints.environment_name}[/bold]"
-                f"\n[{theme.text_dim}]Values from your topology will be pre-filled where possible.[/{theme.text_dim}]"
-            )
+        env_label = self.environment or hints.environment_name or "_default"
+        hints_note = (
+            f"\n[{theme.accent}]Environment:[/{theme.accent}] [bold]{env_label}[/bold]"
+            f"\n[{theme.text_dim}]Answers are saved per-environment. "
+            f"Topology values from your config will be pre-filled where possible.[/{theme.text_dim}]"
+        )
 
         console.print(Panel(
             "[bold]This section collects architecture details that cannot be gathered\n"
@@ -1129,19 +1240,106 @@ def _should_use_html() -> bool:
     return True  # default to HTML when config is unavailable
 
 
-def run_architecture_collection(force: bool = False) -> dict[str, Any]:
+def _resolve_env_for_arch(explicit_env: str | None) -> str:
+    """Pick the env this architecture run targets — explicit > active > default."""
+    if explicit_env:
+        return explicit_env
+    try:
+        from platform_atlas.core.context import ctx
+        env = ctx().active_environment
+        if env:
+            return env
+    except Exception:
+        pass
+    return ""
+
+
+def _maybe_offer_copy_from(target_env: str) -> str | None:
+    """Offer to copy answers from another env. Returns the source env name, or None.
+
+    Skipped silently when the target already has any answers, when no other env
+    has data, or when the active session is the only one with data. The prompt
+    is intentionally compact — answering No proceeds with the normal flow.
+    """
+    from platform_atlas.core import architecture_store
+    if architecture_store.has_data(target_env):
+        return None  # don't clobber existing answers without an explicit user gesture
+    sources = [
+        e for e in architecture_store.list_envs_with_data()
+        if e != (target_env or architecture_store.DEFAULT_ENV_KEY)
+        and architecture_store.has_data(e)
+    ]
+    if not sources:
+        return None
+
+    target_label = target_env or "this environment"
+    pretty = ", ".join(sources)
+    console.print(
+        f"\n[{theme.accent}]Tip:[/{theme.accent}] you've already answered the architecture "
+        f"questionnaire for: [bold]{pretty}[/bold]."
+    )
+    console.print(
+        f"[{theme.text_dim}]If [bold]{target_label}[/bold] mostly matches one of those, you can "
+        f"copy those answers in and tweak just what's different.[/{theme.text_dim}]"
+    )
+
+    if not _ask_confirm(f"Copy answers from another environment into {target_label}?", default=True):
+        return None
+
+    if len(sources) == 1:
+        chosen = sources[0]
+    else:
+        chosen = _ask_select("Copy answers from which environment?", choices=sources)
+
+    mode = _ask_select(
+        "How would you like to use those answers?",
+        choices=[
+            "Copy and use as-is (mark complete; I'll edit later if needed)",
+            "Copy as starting values, then walk through each section to confirm/tweak",
+        ],
+    )
+    return f"{'adopt' if mode.startswith('Copy and use as-is') else 'seed'}::{chosen}"
+
+
+def run_architecture_collection(
+    force: bool = False,
+    *,
+    environment: str | None = None,
+) -> dict[str, Any]:
     """Entry point for the architecture validation manual collector.
 
-    Architecture data is stored at ~/.atlas/architecture.json and
-    persists across sessions. Use force=True to re-collect everything.
+    Architecture answers are scoped per-environment under
+    ``~/.atlas/architecture/<env>.json``. The first run after upgrading
+    silently migrates the legacy global ``architecture.json`` into the active
+    environment's bucket via ``architecture_store.migrate_legacy()``.
 
     When manual_input_mode is "html" (the default), opens the browser-based
-    form and imports the exported JSON.  Falls back to CLI prompts if the
-    user chooses or if the form cannot be opened.
+    form and imports the exported JSON. Falls back to CLI prompts if the user
+    chooses or if the form cannot be opened.
+
+    Returns an empty payload when the active tier is Standard — architecture
+    review is Extended-only and silently skipped during capture.
     """
+    try:
+        from platform_atlas.core.context import ctx
+        if ctx().is_standard:
+            return {"architecture_validation": {}}
+    except Exception:
+        pass
+
+    # One-time migration from the legacy global architecture.json. No-op after
+    # the sentinel exists, so this is safe to call on every invocation.
+    try:
+        from platform_atlas.core import architecture_store
+        architecture_store.migrate_legacy()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Legacy architecture migration skipped: %s", exc)
+
+    target_env = _resolve_env_for_arch(environment)
+
     if not force and _should_use_html():
         from platform_atlas.core.html_collector import launch_architecture_form
-        result = launch_architecture_form()
+        result = launch_architecture_form(environment=target_env)
 
         if result is None:
             # User chose CLI — fall through to terminal prompts below
@@ -1153,13 +1351,42 @@ def run_architecture_collection(force: bool = False) -> dict[str, Any]:
             # Successful HTML export: result has 'completed', 'skipped', 'status'
             return {"architecture_validation": result.get("completed", {})}
 
-    collector = ArchitectureValidationCollector()
+    # Offer to copy answers from another env BEFORE building the collector,
+    # so a successful "adopt" path skips section-by-section walk entirely.
+    copy_choice = None
+    try:
+        copy_choice = _maybe_offer_copy_from(target_env)
+    except KeyboardInterrupt:
+        raise
+
+    collector = ArchitectureValidationCollector(environment=target_env)
+
+    if copy_choice:
+        mode, _, source_env = copy_choice.partition("::")
+        if mode == "adopt":
+            adopted = collector.adopt_from_env(source_env)
+            console.print(
+                f"\n[{theme.success}]✓[/{theme.success}] Copied {adopted} sections "
+                f"from [bold]{source_env}[/bold] → [bold]{target_env or '_default'}[/bold]."
+            )
+            console.print(
+                f"[{theme.text_dim}]Re-run with [bold]--force[/bold] to walk through and tweak any answers.[/{theme.text_dim}]"
+            )
+            return {"architecture_validation": collector.progress.completed}
+        if mode == "seed":
+            seeded = collector.seed_from_env(source_env)
+            console.print(
+                f"\n[{theme.text_dim}]Pre-filled {seeded} sections from [bold]{source_env}[/bold] — "
+                f"each value is yours to confirm or change.[/{theme.text_dim}]"
+            )
+
     return collector.collect_all(force=force)
 
 
-def load_architecture_progress() -> dict[str, Any] | None:
-    """Load completed architecture data from ~/.atlas/architecture.json"""
-    progress = ArchitectureProgress.load()
+def load_architecture_progress(environment: str = "") -> dict[str, Any] | None:
+    """Load completed architecture data for ``environment`` (active env if blank)."""
+    env = environment or _resolve_env_for_arch(None)
+    progress = ArchitectureProgress.load(env)
     if progress.is_complete and progress.completed:
         return {"architecture_validation": progress.completed}
     return None

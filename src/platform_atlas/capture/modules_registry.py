@@ -266,6 +266,46 @@ def _compute_expected_ssh_modules(
     return expected
 
 
+def _build_modules_standard(
+    target: dict,
+) -> tuple[dict[str, Callable], list[str], dict[str, Callable]]:
+    """
+    Standard-tier module builder.
+
+    Only Platform (OAuth) and Gateway4 API (ipsdk) are registered. SSH
+    transports, Mongo/Redis protocol collectors, and Kubernetes flows are
+    not constructed under any condition — defense 1 of the hard mode
+    boundary.
+
+    Kubernetes targets are not honored in Standard. If a target asks for
+    a kubernetes transport, we still produce no modules — Standard does
+    not run cluster-side collection.
+    """
+    collectors_requested = set(target.get("modules", []))
+    if not collectors_requested:
+        return {}, [], {}
+
+    config = ctx().config
+    modules: dict[str, Callable] = {}
+
+    if "platform" in collectors_requested:
+        pc = PlatformCollector.from_config(
+            metrics_debug=config.debug,
+            verify_ssl=config.verify_ssl,
+        )
+        modules["platform"] = pc.get_platform_info
+
+    # Both names accepted — "gateway4" in target.modules during Standard
+    # captures resolves to the API collector (the SSH-based one is
+    # Extended-only and gated by require_extended()).
+    if "gateway4_api" in collectors_requested or "gateway4" in collectors_requested:
+        gw4_api = Gateway4ApiCollector.from_config()
+        if gw4_api is not None:
+            modules["gateway4_api"] = gw4_api.collect
+
+    return modules, [], {}
+
+
 def build_modules_for_target(
     target: dict,
     log_since=None,
@@ -274,24 +314,29 @@ def build_modules_for_target(
     """
     Build collector modules for a specific target.
 
-    SSH-based collectors (system, filesystem, gateway4) share a single
-    SSH transport to the target server.
+    Tier-aware:
+    - In Standard mode, only Platform (OAuth) and Gateway4 API (ipsdk)
+      are constructed; SSH and protocol-Extended collectors are pruned at
+      this layer (defense 1 of the hard mode boundary).
+    - In Extended mode (the existing flow):
+      SSH-based collectors (system, filesystem, gateway4) share a single
+      SSH transport to the target server. Protocol-based collectors
+      (mongo, redis, platform) open their own connections using URIs
+      from the application config. Kubernetes targets use the
+      KubernetesCollector to read values.yaml and optionally kubectl.
 
-    Protocol-based collectors (mongo, redis, platform) open their own
-    connections using URIs from the application config — no SSH needed.
-
-    Kubernetes targets use the KubernetesCollector to read values.yaml
-    and optionally kubectl — no SSH transport at all.
-
-    When the SSH transport fails:
+    When the SSH transport fails (Extended only):
     - Modules with protocol fallbacks (redis_conf, mongo_conf, etc.)
       are deferred for post-capture resolution — NOT shown as failures.
     - Modules without fallbacks (gateway4, system, etc.) are registered
       as immediate failures so they appear in the capture UI.
 
     Returns:
-        (modules_dict, deferred_module_names)
+        (modules_dict, deferred_module_names, ssh_fallbacks)
     """
+    if ctx().is_standard:
+        return _build_modules_standard(target)
+
     from platform_atlas.core.transport import transport_from_config
 
     collectors_requested = set(target.get("modules", []))
@@ -387,8 +432,14 @@ def build_modules_for_target(
                     # fails to get config data.
                     if "mongo" in collectors_requested:
                         ssh_fallbacks["mongo_conf"] = fs.get_mongo_conf
+                        _mongo_log_override = (
+                            getattr(config, "mongo_log_path_override", "") or None
+                        )
                         modules["mongo_logs"] = functools.partial(
-                            fs.get_mongo_logs, since=log_since, until=log_until
+                            fs.get_mongo_logs,
+                            since=log_since,
+                            until=log_until,
+                            log_path=_mongo_log_override,
                         )
 
                     if "redis" in collectors_requested:
@@ -414,11 +465,26 @@ def build_modules_for_target(
 
                             modules["agmanager_size"] = fs.check_agmanager_size
                             modules["python_version"] = fs.get_python_version
+                            # Honor the env's log_path_override when set; the
+                            # collector falls back to PLATFORM6_LOG_PATH_ROOT
+                            # when log_dir is empty/None.
+                            _log_dir_override = (
+                                getattr(config, "log_path_override", "") or None
+                            )
                             modules["platform_logs"] = functools.partial(
-                                fs.get_platform_logs, since=log_since, until=log_until
+                                fs.get_platform_logs,
+                                since=log_since,
+                                until=log_until,
+                                log_dir=_log_dir_override,
+                            )
+                            _webserver_log_override = (
+                                getattr(config, "webserver_log_path_override", "") or None
                             )
                             modules["webserver_logs"] = functools.partial(
-                                fs.get_webserver_logs, since=log_since, until=log_until
+                                fs.get_webserver_logs,
+                                since=log_since,
+                                until=log_until,
+                                log_path=_webserver_log_override,
                             )
 
                     # Only register gateway4-specific filesystem checks
@@ -486,15 +552,22 @@ def build_preflight_checks(
         *,
         include: frozenset[str] | None = None,
 ) -> dict[str, Callable]:
-    """Get all preflight check functions"""
+    """Get all preflight check functions.
+
+    Tier-aware: Standard mode never builds SSH-dependent or
+    Extended-only protocol checks (Mongo, Redis). Only Platform and
+    Gateway4 API preflights run in Standard.
+    """
     if transport is None:
         transport = LocalTransport()
 
     checks: dict[str, Callable] = {}
+    is_standard = ctx().is_standard
 
-    # SSH-dependent collectors - only build when requested or unfiltered
+    # SSH-dependent collectors - only build when requested or unfiltered.
+    # Skipped entirely in Standard (no SSH preflight in Standard).
     ssh_keys = {"gateway4", "gateway5", "filesystem", "system"}
-    if include is None or include & ssh_keys:
+    if not is_standard and (include is None or include & ssh_keys):
         gateway4 = Gateway4Collector(transport=transport)
         gateway5 = Gateway5Collector(transport=transport)
         filesystem = FileSystemInfoCollector(transport=transport)
@@ -504,12 +577,19 @@ def build_preflight_checks(
         checks["filesystem"] = filesystem.preflight
         checks["system"] = system.preflight
 
-    # Protocol-based collectors - static methods, no transport needed
+    # Protocol-based collectors - static methods, no transport needed.
+    # Standard mode runs only platform + gateway4_api.
     connector_keys = {"redis", "mongo", "platform", "gateway4_api"}
-    if include is None or include & connector_keys:
-        checks["redis"] = RedisCollector.preflight
-        checks["mongo"] = MongoCollector.preflight
-        checks["platform"] = PlatformCollector.preflight
-        checks["gateway4_api"] = Gateway4ApiCollector.preflight
+    standard_connector_keys = {"platform", "gateway4_api"}
+    allowed_connectors = standard_connector_keys if is_standard else connector_keys
+    if include is None or include & allowed_connectors:
+        if "platform" in allowed_connectors:
+            checks["platform"] = PlatformCollector.preflight
+        if "gateway4_api" in allowed_connectors:
+            checks["gateway4_api"] = Gateway4ApiCollector.preflight
+        if "redis" in allowed_connectors:
+            checks["redis"] = RedisCollector.preflight
+        if "mongo" in allowed_connectors:
+            checks["mongo"] = MongoCollector.preflight
 
     return checks

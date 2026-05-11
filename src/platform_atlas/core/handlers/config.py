@@ -153,7 +153,7 @@ def handle_config_deployment(args: Namespace) -> int:
     from platform_atlas.core.init_setup import ask_deployment
 
     config = ctx().config
-    new_deployment = ask_deployment()
+    new_deployment, k8s_meta = ask_deployment()
 
     # If an environment is active, write to the environment file
     if config.active_environment:
@@ -161,6 +161,19 @@ def handle_config_deployment(args: Namespace) -> int:
         mgr = get_environment_manager()
         env = mgr.load(config.active_environment)
         env.deployment = new_deployment
+        # Persist Kubernetes metadata alongside the topology so K8s-only
+        # fields don't get dropped on a topology reconfigure.
+        if k8s_meta:
+            if "values_yaml_path" in k8s_meta:
+                env.values_yaml_path = k8s_meta.get("values_yaml_path", "")
+            if "iag5_values_yaml_path" in k8s_meta:
+                env.iag5_values_yaml_path = k8s_meta.get("iag5_values_yaml_path", "")
+            if "kubectl_context" in k8s_meta:
+                env.kubectl_context = k8s_meta.get("kubectl_context", "")
+            if "kubectl_namespace" in k8s_meta:
+                env.kubectl_namespace = k8s_meta.get("kubectl_namespace", "")
+            if "use_kubectl" in k8s_meta:
+                env.use_kubectl = bool(k8s_meta.get("use_kubectl", False))
         mgr.save(env)
         console.print(
             f"\n[{theme.success}]✓[/{theme.success}] Deployment topology updated "
@@ -494,11 +507,15 @@ def _handle_vault_connection_update() -> int:
     # Test connection before saving — don't overwrite working settings with bad ones
     console.print(f"\n  [{theme.text_dim}]Testing Vault connection...[/{theme.text_dim}]")
     try:
-        VaultBackend(vault_config, service=service)
+        test_backend = VaultBackend(vault_config, service=service)
         console.print(
             f"  [{theme.success}]✓ Connected to Vault at "
             f"{vault_config.url}[/{theme.success}]"
         )
+        if test_backend.token_ttl > 0:
+            ttl_label = (f"{test_backend.token_ttl // 60}m {test_backend.token_ttl % 60}s"
+                         + (" (renewable)" if test_backend.token_renewable else " (not renewable)"))
+            console.print(f"  [{theme.text_dim}]Token TTL: {ttl_label}[/{theme.text_dim}]")
     except Exception as e:
         console.print(
             f"  [{theme.error}]✘ Connection failed: {e}[/{theme.error}]"

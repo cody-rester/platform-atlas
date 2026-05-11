@@ -10,37 +10,75 @@ Platform Atlas is a configuration auditing tool for the Itential Automation Plat
 
 The typical workflow looks like this:
 
-    Install → Configure → Create Environment → Preflight → Create Session → Capture → Validate → Report
+    Install → Configure → Choose Tier → Create Environment → Preflight → Create Session → Capture → Validate → Report
 
-Each step builds on the previous one. Once you've completed the initial setup, day-to-day usage is just two commands: create a session (which binds your environment, ruleset, and profile in one step) and run it. If you work with multiple deployments or organizations, switching between them is a single `platform-atlas session switch` command that restores the full context.
+Each step builds on the previous one. Once you've completed the initial setup, day-to-day usage is just two commands: create a session (which binds your environment, ruleset, tier, and profile in one step) and run it. If you work with multiple deployments or organizations, switching between them is a single `platform-atlas session switch` command that restores the full context.
 
 ---
 
-## What's New in v1.5
+## What's New in v1.7.0
 
-If you're upgrading from an earlier version of Platform Atlas, here are the key changes in v1.5:
+If you're upgrading from 1.6.x, here are the key changes in v1.7.0:
 
-### Sessions are now the primary unit of work
+### Standard and Extended tiers
 
-Previously, environments, rulesets, profiles, and sessions were all managed independently. You had to remember to switch each one separately, and it was easy to accidentally run a capture against the wrong environment or validate with the wrong ruleset.
+Atlas now ships with two distinct audit modes. **Standard** tier audits via Platform OAuth and the optional IAG4 API (~54 rules) and requires no SSH, MongoDB, or Redis access — ideal for quick application-layer audits or environments where infrastructure access is restricted. **Extended** tier adds the full infrastructure audit via SSH, MongoDB, Redis, Kubernetes, and Gateways (~107 rules).
 
-Starting in v1.5, **sessions bind everything together**. When you create a session, you select an environment, ruleset, and profile — and those choices are locked into the session. When you switch sessions, everything switches with it. One command, full context restored.
+Fresh installs default to Standard. Upgrades from 1.6.x default to Extended so existing workflows are unchanged.
 
-### Organization name lives on environments
+Sessions now bind a tier at creation time alongside the environment, ruleset, and profile. Cross-tier session diffs are flagged with a notice banner in the diff report.
 
-The organization name is no longer just a global setting. Each environment now carries its own `organization_name` field, which makes it easy to audit multiple customers without editing config files between runs. The global `organization_name` in `config.json` serves as a default for new environments.
+```bash
+platform-atlas tier show                 # see current tier
+platform-atlas tier set standard         # switch to Standard
+platform-atlas tier set extended         # switch to Extended
+platform-atlas tier upgrade              # interactive upgrade wizard
+platform-atlas tier downgrade            # interactive downgrade wizard
+```
 
-### Session edit (before capture)
+Use `--tier standard` or `--tier extended` as a one-off override on any command without changing the persisted setting.
 
-Made a mistake during session creation? Use `platform-atlas session edit` to change the environment, ruleset, or profile — as long as capture hasn't started yet. Once capture begins, the session is locked to prevent inconsistent data.
+### Continuous Audit
 
-### Report metadata improvements
+Schedule automatic drift monitoring that re-runs a Platform OAuth capture on a recurring schedule and surfaces rule changes as alerts. An OS-level schedule is installed on enable (systemd timer on Linux, launchd agent on macOS) so runs survive process restarts.
 
-JSON and Markdown report exports now include the environment name in the metadata block. The organization name is also correctly preserved across the capture → validation → report pipeline (fixing a bug in earlier versions where it could show as "Unknown" in some report formats).
+```bash
+platform-atlas continuous-audit run-once    # required test before enabling
+platform-atlas continuous-audit enable      # install schedule and start monitoring
+platform-atlas continuous-audit status      # enabled state, last run, alert count
+platform-atlas continuous-audit alerts      # view unacknowledged alerts
+platform-atlas continuous-audit ack <id>    # acknowledge an alert
+platform-atlas continuous-audit ack-all     # acknowledge all
+platform-atlas continuous-audit disable     # stop monitoring
+platform-atlas continuous-audit notify add  # add Slack or webhook notification
+platform-atlas continuous-audit policy <any|regression>  # alert policy
+platform-atlas continuous-audit watch add|remove|list    # rule watchlist filter
+```
+
+Drift runs are written to `~/.atlas/continuous/<env>/runs/` as bare JSON. An append-only `events.ndjson` timeline and `alerts.json` aggregate state track transitions over time.
+
+### Fleet dashboard
+
+Multi-environment compliance overview from local cache — never triggers captures:
+
+```bash
+platform-atlas fleet status              # overview of all environments
+platform-atlas fleet status --json       # machine-readable output
+```
+
+Shows per-environment tier, last session age, pass rate, continuous-audit state, and unacknowledged alert counts.
+
+### Outbound drift notifications
+
+Slack incoming webhooks and generic JSON webhooks (with optional HMAC-SHA256 signing). Channels are configured per environment and fire only on alert-state transitions — not on every drift cycle. Webhook URLs, HMAC secrets, and custom headers are stored in the OS keyring rather than the environment JSON file.
+
+### ControlMaster SSH transport
+
+New transport mode for CyberArk PSMP and other PAM-gateway environments where direct SSH key access is not available. The user opens one ControlMaster session per target node before running Atlas; Atlas multiplexes on those sessions with no credentials, no MFA interaction, and no knowledge of the PAM mechanism. Selected interactively during topology setup alongside the existing SSH and Local options.
 
 ### Backward compatibility
 
-All existing sessions, environments, and configurations continue to work without changes. Sessions created before v1.5 simply won't have bound environments or rulesets — they'll use whatever is globally active, matching the old behavior. You can upgrade and continue working immediately.
+All existing sessions, environments, and configurations continue to work without changes. Existing installs upgraded from 1.6.x default to Extended tier so capture behavior is preserved exactly. Sessions created before v1.7 do not have a bound tier — they use the globally active tier.
 
 ---
 
@@ -53,7 +91,7 @@ Platform Atlas is distributed as a Python wheel file. You'll need Python 3.11 or
 Your team lead or Itential contact will provide you with a `.whl` file. Install it with pip:
 
 ```bash
-pip install platform_atlas-1.5-py3-none-any.whl
+pip install platform_atlas-1.7.0-py3-none-any.whl
 ```
 
 Once installed, the `platform-atlas` command is available in your terminal. Verify it works:
@@ -62,7 +100,7 @@ Once installed, the `platform-atlas` command is available in your terminal. Veri
 platform-atlas --version
 ```
 
-You should see something like `platform-atlas 1.5`.
+You should see something like `platform-atlas 1.7.0`.
 
 ### A note about your system
 
@@ -122,6 +160,8 @@ All of these are stored in your OS keyring (scoped to the environment name) or V
 
 #### Deployment Topology
 
+> **Extended Tier only** — The topology wizard and all SSH configuration apply only when running in Extended tier. Standard tier does not connect to any servers via SSH and skips this section entirely.
+
 Atlas needs to know how this environment's IAP deployment is set up so it knows which servers to connect to and what collectors to run. The wizard asks you to pick a deployment mode:
 
 **Standalone** — A single-server deployment where IAP, MongoDB, and Redis all run on one machine (or are split across a few machines, but with one instance of each).
@@ -130,7 +170,11 @@ Atlas needs to know how this environment's IAP deployment is set up so it knows 
 
 **Custom** — A free-form layout where you manually assign roles and modules to each node.
 
-For each server in your topology, you'll configure SSH access (username, key file, port). Atlas uses SSH to read configuration files and run lightweight commands on each server. The SSH user needs read access to config files in `/etc/` and `/opt/` — it does not need root access, though passwordless sudo is used as a fallback if a file can't be read directly.
+For each server in your topology, you'll configure the transport method:
+
+- **SSH** (recommended) — Atlas SSHes into each server to read configuration files and run lightweight commands. The SSH user needs read access to config files in `/etc/` and `/opt/` — passwordless sudo is used as a fallback for root-owned files.
+- **ControlMaster** — For CyberArk PSMP and other PAM-gateway environments. You open one ControlMaster session per node before running Atlas; Atlas multiplexes on those sessions with no credentials.
+- **Local** — For the Platform (IAP) node only, when Atlas is installed on the same server. Reads config files and runs commands directly via the local filesystem. All other nodes remain SSH-connected.
 
 ### Creating Additional Environments
 
@@ -270,18 +314,19 @@ platform-atlas session create prod-q1-2026
 
 The session name should be descriptive — something like `prod-audit-march` or `staging-q1-2026`. Names must be 3-64 characters using letters, numbers, hyphens, and underscores.
 
-When you create a session, Atlas walks you through three quick prompts to bind the session to its context:
+When you create a session, Atlas walks you through prompts to bind the session to its context:
 
-1. **Select environment** — Pick which IAP deployment to audit. The list shows each environment's organization name and platform URI so you can easily tell them apart. If you need a new environment, there's a "Create new environment..." option right in the picker.
-2. **Select ruleset** — Pick which set of validation rules to use. The list shows version and rule count.
-3. **Select profile** — Pick a deployment profile overlay (e.g., standalone, HA2, HA2 with gateway). You can also choose "No profile" to use the ruleset as-is.
+1. **Select tier** — Choose **Standard** (Platform OAuth + optional IAG4 API, ~54 rules, no SSH required) or **Extended** (full infrastructure audit via SSH/MongoDB/Redis/Kubernetes, ~107 rules). Defaults to your currently active tier.
+2. **Select environment** — Pick which IAP deployment to audit. The list shows each environment's organization name and platform URI so you can easily tell them apart. If you need a new environment, there's a "Create new environment..." option right in the picker.
+3. **Select ruleset** — Pick which set of validation rules to use. The list shows version and rule count.
+4. **Select profile** — Pick a deployment profile overlay (e.g., standalone, HA2, HA2 with gateway). You can also choose "No profile" to use the ruleset as-is.
 
-These bindings are locked into the session. When you switch between sessions later, the environment, ruleset, and profile switch with it — no more forgetting to change one of them.
+These bindings are locked into the session. When you switch between sessions later, the tier, environment, ruleset, and profile all switch with it. Cross-tier diffs (comparing a Standard session against an Extended session) are flagged with a notice banner in the diff report.
 
 You can also bypass the interactive prompts with flags:
 
 ```bash
-platform-atlas session create prod-q1-2026 --env production --ruleset p6-master-ruleset --profile ha2-gateway
+platform-atlas session create prod-q1-2026 --env production --ruleset p6-master-ruleset --profile ha2-gateway --tier extended
 ```
 
 The session is automatically set as active after creation. You'll see a status summary showing the bound environment, ruleset, organization, and the next step to run.
@@ -298,15 +343,19 @@ platform-atlas session create prod-q1-2026 --description "Q1 production health c
 platform-atlas session run capture
 ```
 
-This connects to every server in your deployment topology and collects configuration data. You'll see a live progress display showing each collector as it runs. The capture phase collects things like:
+This connects to your deployment and collects configuration data. You'll see a live progress display showing each collector as it runs. What gets collected depends on your tier:
 
-- System info (CPU, memory, disk, kernel version)
+**Standard tier** collects:
+- Platform API health, adapter configurations, application states
+- IAG4 API configuration and version (if configured)
+
+**Extended tier** additionally collects:
+- System info (CPU, memory, disk, kernel version) via SSH
 - MongoDB server status and database statistics
 - Redis INFO, ACL rules, and Sentinel topology
-- Platform API health, adapter configurations, application states
-- Configuration files (mongod.conf, redis.conf, platform.properties)
-- Platform log analysis (error/warning frequency)
-- Webserver access log analysis
+- Configuration files (mongod.conf, redis.conf, platform.properties) via SSH
+- Platform log analysis (error/warning frequency) via SSH
+- Webserver access log analysis via SSH
 - Gateway packages and environment variables
 
 If a collector fails (for example, because a config file is missing), Atlas will offer to let you provide the data manually through a guided prompt. You can skip this with `--skip-guided`.
@@ -535,7 +584,148 @@ Pick a theme from the interactive list. The change takes effect the next time yo
 
 ---
 
+## Tiers
+
+Platform Atlas 1.7+ ships with two audit modes that control which collectors run, which rules are evaluated, and what credentials are required.
+
+### Standard tier
+
+Audits over Platform OAuth and the optional IAG4 API only (~54 rules). No SSH, MongoDB, or Redis access required. Designed for:
+- Quick application-layer health checks
+- Environments where infrastructure access is restricted
+- Teams that only need Platform-level compliance data
+
+### Extended tier
+
+Full infrastructure audit (~107 rules). Adds SSH-based collectors for system info, config files, and logs, plus MongoDB, Redis, Kubernetes, and Gateway collectors. Designed for:
+- Comprehensive compliance audits
+- All installs upgraded from 1.6.x (default)
+- Environments where the full Atlas ruleset applies
+
+### Managing your tier
+
+```bash
+platform-atlas tier show                 # current tier and where it was set
+platform-atlas tier set standard         # switch to Standard
+platform-atlas tier set extended         # switch to Extended
+platform-atlas tier upgrade              # interactive upgrade (adds credential prompts)
+platform-atlas tier downgrade            # interactive downgrade
+```
+
+Tier resolution order: `--tier` flag → `ATLAS_TIER` env var → environment overlay → config → default.
+
+The `--tier` flag overrides for a single command without changing the persisted setting:
+
+```bash
+platform-atlas --tier standard session run capture   # one-off Standard capture
+```
+
+---
+
+## Fleet Dashboard
+
+The fleet dashboard provides a read-only compliance overview across all your configured environments from local session cache. No captures are triggered — it reads only from data already on disk.
+
+```bash
+platform-atlas fleet status              # overview table of all environments
+platform-atlas fleet status --json       # machine-readable output for scripts/CI
+```
+
+Each row shows: environment name, tier, last session age, compliance pass rate, continuous-audit state, and unacknowledged alert count. The fleet view is also available in the WebUI at `/fleet`.
+
+---
+
+## Continuous Audit
+
+Continuous audit schedules automatic drift monitoring for an environment. Each run re-captures via Platform OAuth against the active ruleset and surfaces changed observed values as alerts. An OS-level schedule is installed when enabled (systemd timer on Linux, launchd agent on macOS) so runs survive process restarts.
+
+### Setup
+
+A successful `run-once` test is required before you can enable continuous audit:
+
+```bash
+platform-atlas continuous-audit run-once   # test run — validates credentials and ruleset
+platform-atlas continuous-audit enable     # install OS schedule and start monitoring
+```
+
+### Status and alerts
+
+```bash
+platform-atlas continuous-audit status               # enabled state, last run, next run, alert count
+platform-atlas continuous-audit alerts               # view unacknowledged alerts with drift details
+platform-atlas continuous-audit ack <alert-id>       # acknowledge an alert
+platform-atlas continuous-audit ack-all              # acknowledge all alerts
+```
+
+Acked alerts automatically re-open if the same drift recurs.
+
+### Policy and filtering
+
+```bash
+platform-atlas continuous-audit policy any           # alert on any rule change (default)
+platform-atlas continuous-audit policy regression    # alert only on PASS → FAIL transitions
+platform-atlas continuous-audit watch add <rule-id>  # restrict alerts to specific rules
+platform-atlas continuous-audit watch remove <rule-id>
+platform-atlas continuous-audit watch list
+platform-atlas continuous-audit watch clear
+```
+
+### Notifications
+
+```bash
+platform-atlas continuous-audit notify add           # add a Slack webhook or generic JSON webhook
+platform-atlas continuous-audit notify list          # see configured channels
+platform-atlas continuous-audit notify remove        # remove a channel
+platform-atlas continuous-audit notify test          # send a test notification
+```
+
+Notifications fire only on alert-state transitions (new alert, re-opened acked alert) — not on every drift cycle, so persistent unacknowledged drift does not spam every run. Webhook URLs are validated against private/loopback address ranges at configuration time. Webhook URLs and HMAC signing secrets are stored in the OS keyring rather than the environment JSON file.
+
+### Data storage
+
+Continuous audit data for each environment is stored under `~/.atlas/continuous/<env>/`:
+
+| Path | Contents |
+|------|----------|
+| `runs/<run_id>.json` | Bare JSON report for each run with per-rule drift inline |
+| `events.ndjson` | Append-only event timeline (all drift, all transitions) |
+| `alerts.json` | Current aggregate alert state (ack status, transition history) |
+| `status.json` | Last run timestamp, enabled state, next scheduled run |
+| `latest.json` | Pointer to the most recent run |
+
+### Stopping
+
+```bash
+platform-atlas continuous-audit disable   # remove OS schedule and stop monitoring
+```
+
+Existing run data and alerts are preserved.
+
+---
+
 ## Frequently Asked Questions
+
+### Tiers
+
+**Q: I upgraded from 1.6.x. Do I need to change anything for tiers?**
+
+No. Upgrades from 1.6.x default to **Extended** tier, which preserves the exact capture behavior you had before. The tier system is additive — nothing is removed or changed from your existing workflow.
+
+**Q: Which tier should I use?**
+
+Start with **Standard** if you only have Platform credentials (client ID + secret) and don't have SSH access or MongoDB/Redis URIs. Use **Extended** if you want full infrastructure coverage and have the necessary access configured. You can upgrade at any time with `platform-atlas tier upgrade`.
+
+**Q: Can I mix tiers within the same environment?**
+
+Yes. Each session binds a tier at creation time, so you can create both a Standard session and an Extended session against the same environment. The `--tier` flag also lets you run a one-off command in a different tier without changing the persisted setting. If you diff a Standard session against an Extended session, the diff report will flag the tier mismatch with a notice banner.
+
+**Q: The report shows a "†" obelisk next to some rules in Standard mode.**
+
+It shouldn't — Standard reports do not show the partial-capture obelisk. That symbol only appears in Extended mode when a collector didn't run. If you are seeing it in Standard, the session may have been created with Extended tier and subsequently switched. Check `platform-atlas session show` to see which tier the session was bound to at creation.
+
+**Q: I set the tier to Standard but capture is still trying to connect via SSH.**
+
+Make sure the session itself was created under Standard tier. The session's bound tier (set at creation) takes precedence over the global tier setting. Run `platform-atlas session show` to check the session's tier. If needed, create a new session with `--tier standard`.
 
 ### Setup and Installation
 
@@ -764,7 +954,8 @@ Everything lives under `~/.atlas/` in your home directory:
 - `config.json` — Global configuration (default org name, theme, debug settings — no secrets)
 - `settings.json` — Active ruleset and profile pointers
 - `environments/` — One file per named deployment target (production.json, dev.json, etc.), each with its own org name, credentials backend, and topology
-- `sessions/` — One folder per audit session containing capture data, validation results, reports, and a `session.json` with the session's bound environment, ruleset, and profile
+- `sessions/` — One folder per audit session containing capture data, validation results, reports, and a `session.json` with the session's bound environment, ruleset, tier, and profile
+- `continuous/` — Continuous audit data per environment: runs, events timeline, alerts state, status
 - `atlas.log` — Application log (rotated at 5 MB)
 
 **Q: How do I get debug output for troubleshooting?**

@@ -128,7 +128,7 @@ class RulesetManager:
             json.dump({
                 'active_ruleset': ruleset_id,
                 'active_profile': profile_id,
-            }, f, indent=4)
+            }, f, indent=4, ensure_ascii=False)
 
     def _load_profile(self, profile_id: str) -> dict:
         """Load a profile overlay from file"""

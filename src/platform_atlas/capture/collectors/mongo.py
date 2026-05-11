@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from pymongo.database import Database
     from platform_atlas.capture.utils import Pipeline
 
-from platform_atlas.core.context import ctx
+from platform_atlas.core.context import ctx, require_extended
 from platform_atlas.core.preflight import CheckResult
 from platform_atlas.core.exceptions import (
     MongoCollectorError,
@@ -148,7 +148,10 @@ class MongoCollector:
             database: str | None = None,
     ) -> None:
         """Initialize the collector with a MongoDB URI"""
-
+        require_extended(
+            "MongoCollector",
+            hint="MongoDB collection requires Extended Mode.",
+        )
         self._uri = encode_mongo_uri(uri)
         self._settings = settings or MongoSettings()
         self._client: MongoClient | None = None
@@ -157,6 +160,10 @@ class MongoCollector:
 
     @classmethod
     def from_config(cls, *, settings: MongoSettings | None = None) -> Self | None:
+        require_extended(
+            "MongoCollector.from_config",
+            hint="MongoDB collection requires Extended Mode.",
+        )
         config = ctx().config
         uri = config.mongo_uri
         if not uri:

@@ -1,8 +1,20 @@
 # Platform Atlas — Prerequisites Checklist
 
 Work through these items before installing Platform Atlas. Gather credentials, verify access,
-and confirm your deployment topology before you begin. Gateway sections can be skipped if not
-applicable.
+and confirm your deployment topology before you begin.
+
+**New in v1.7 — Two Tiers:** Platform Atlas now ships with two audit modes. Choose which one
+applies to you before working through this checklist.
+
+| Tier | What it audits | What you need |
+|---|---|---|
+| **Standard** | Platform application layer only (Platform OAuth + IAG4 API) | Sections 1, 2, and optionally 7 |
+| **Extended** | Full infrastructure (all of Standard + SSH, MongoDB, Redis, Gateways) | All applicable sections |
+
+If you are not sure which tier to use, start with **Standard**. You can upgrade to Extended
+at any time with `platform-atlas tier upgrade`.
+
+> Fresh installs default to Standard. Upgrades from 1.6.x default to Extended.
 
 ---
 
@@ -16,9 +28,10 @@ applicable.
     not supported.
 - [ ] pip is available and up to date
   - Verify with `pip3 --version`. Update with `pip3 install --upgrade pip`.
-- [ ] Platform Atlas `.whl` file received from your Itential contact
-  - The wheel file will be named something like `platform_atlas-1.6-py3-none-any.whl`. If you
-    haven't received it yet, contact your Itential Customer Success representative.
+- [ ] Platform Atlas `.whl` file(s) received from your Itential contact
+  - The core wheel is named `platform_atlas-1.7.0-py3-none-any.whl`. If you want the optional
+    browser interface, also request `platform_atlas_webui-1.7.0-py3-none-any.whl`. If you
+    haven't received them yet, contact your Itential Customer Success representative.
 - [ ] Credential storage backend is ready
   - Atlas never stores secrets in plain text. Choose one:
     - **macOS:** Keychain is built-in — nothing to do.
@@ -46,7 +59,7 @@ applicable.
 
 ---
 
-## 3. MongoDB `Required for full audit`
+## 3. MongoDB `Extended tier only`
 
 - [ ] MongoDB connection URI is known
   - Standard: `mongodb://user:pass@host:27017/`
@@ -64,7 +77,7 @@ applicable.
 
 ---
 
-## 4. Redis `Required for full audit`
+## 4. Redis `Extended tier only`
 
 - [ ] Redis connection URI is known
   - Standard: `redis://host:6379` or `redis://user:pass@host:6379`
@@ -82,7 +95,12 @@ applicable.
 
 ---
 
-## 5. SSH Access to Servers `Required`
+## 5. SSH Access to Servers `Extended tier only`
+
+Atlas supports three transport options for connecting to each node. Most deployments use
+**SSH** for everything — the items below cover that path. If direct SSH to the Platform server
+is not possible (CyberArk PSMP, etc.) see Section 5b *ControlMaster*. If Atlas is installed
+**on** the Platform server itself, see Section 5c *Local transport*.
 
 - [ ] Full list of server hostnames or IP addresses is available
   - Every server Atlas will connect to: IAP nodes, MongoDB nodes, Redis nodes, and any Gateway
@@ -116,7 +134,48 @@ applicable.
 
 ---
 
-## 6. Deployment Topology `Required`
+## 5b. ControlMaster Transport `Optional — only if direct SSH is blocked`
+
+*Skip this section if you are using normal SSH (Section 5).*
+
+Use ControlMaster when direct key-based SSH to the **Platform (IAP)** node is not possible —
+typically because all privileged SSH is routed through CyberArk PSMP or another PAM gateway
+that requires interactive MFA. You open one master session manually (which performs the MFA
+tap) and Atlas multiplexes through that socket without ever holding the underlying credentials.
+
+- [ ] OpenSSH client 7.x or newer is installed on the workstation
+  - Verify with: `ssh -V`
+- [ ] You can complete an interactive SSH login through the PAM gateway by hand
+  - Example (CyberArk PSMP): `ssh <user>@<target>@<psmp-gateway>`
+  - If this fails interactively, ControlMaster will not work — Atlas piggybacks on whatever
+    authentication you can perform manually.
+- [ ] You have a writable directory for the control socket
+  - Atlas defaults to `/tmp/atlas-cm.sock`. Any path the running user can write to works.
+- [ ] You know the full SSH destination string for each node you'll use ControlMaster on
+  - PSMP destination format: `<user>@<target-ip-or-hostname>@<psmp-gateway>`. The CLI wizard and
+    the WebUI environment form both prompt for it during topology setup.
+
+> **Scope:** ControlMaster is selected per-node during topology setup. The CLI wizard applies
+> your choice to every node when you select it for IAP; the WebUI form applies it to the IAP
+> node only and preserves whatever the CLI set for Mongo/Redis. See the ControlMaster section
+> in `SSH_SETUP_GUIDE.md` for end-to-end setup steps.
+
+---
+
+## 5c. Local Transport `Optional — only if Atlas runs on the Platform server`
+
+*Skip this section if you are running Atlas from a separate workstation.*
+
+When Atlas itself is installed on the IAP server, the IAP node can be configured with **Local**
+transport — Atlas reads config files and runs system commands through the local filesystem
+instead of SSH. MongoDB, Redis, and Gateway nodes still use SSH (Section 5).
+
+- [ ] The user running Atlas on the IAP server has read access to `/etc/itential/`, `/opt/itential/`, and other paths the active ruleset references
+- [ ] *(Optional)* Passwordless sudo for `cat`, `stat`, `realpath`, `test` configured for the running user — same setup as Section 5
+
+---
+
+## 6. Deployment Topology `Extended tier only`
 
 - [ ] Deployment mode is identified: Standalone, HA2, or Custom
   - **Standalone** — Single IAP server, one MongoDB instance, one Redis instance.
@@ -134,7 +193,7 @@ applicable.
 
 ---
 
-## 7. Automation Gateway 4 `Optional`
+## 7. Automation Gateway 4 `Optional — Standard and Extended`
 
 *Skip this section if Gateway 4 is not part of your IAP deployment.*
 
@@ -153,7 +212,7 @@ applicable.
 
 ---
 
-## 8. Automation Gateway 5 `Optional`
+## 8. Automation Gateway 5 `Optional — Extended tier only`
 
 *Skip this section if Gateway 5 is not part of your IAP deployment.*
 
@@ -179,11 +238,39 @@ applicable.
 
 ---
 
-Once all applicable items are checked, run:
+## 9. WebUI `Optional — Standard and Extended`
+
+*Skip this section if you only intend to use the CLI.*
+
+The WebUI ships as a separate `platform_atlas_webui-1.7.0-py3-none-any.whl` and runs on the
+same machine as the CLI. It is local-only — there is no remote / multi-tenant deployment mode.
+
+- [ ] You'll run the WebUI on the same machine where Platform Atlas is installed
+  - Both share `~/.atlas/`. The WebUI cannot manage a remote Atlas install.
+- [ ] A modern browser is available on that machine
+  - Chrome / Edge / Firefox / Safari current. The WebUI uses self-signed TLS, so the browser
+    will warn the first time — accept it for `localhost`.
+- [ ] One of the following high TCP ports is free on `localhost`
+  - The WebUI binds to `127.0.0.1:8765` by default and falls back to the next free port.
+- [ ] *(Optional, daemon mode)* `--daemon` is supported on Linux and macOS only
+  - Windows users run the foreground command in a terminal that stays open.
+
+> The WebUI authenticates the OS user that started it (via a token file at `~/.atlas/.webui-token`).
+> No additional credentials are required beyond what the CLI already has — environments,
+> credentials, sessions, and tier are all read from the shared `~/.atlas/` directory.
+
+---
+
+Once all applicable items are checked, install:
 
 ```bash
-pip install platform_atlas-1.6-py3-none-any.whl
+# Core CLI (required)
+pip install platform_atlas-1.7.0-py3-none-any.whl
+
+# Optional WebUI — browser-based interface
+pip install platform_atlas_webui-1.7.0-py3-none-any.whl
 ```
 
 Then follow the Installation & Usage Guide to configure your first environment and run your
-first audit.
+first audit. During setup you will be asked to choose a tier — refer to the table at the top
+of this checklist to confirm which sections you completed.

@@ -3,11 +3,11 @@
   "ruleset": {
     "id": "2023-master-ruleset",
     "name": "2023.x Master Ruleset",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "Master ruleset for 2023.x — all rules, all systems",
     "author": "Itential",
     "target_product": "2023_1",
-    "updated_at": "2026-02-26"
+    "updated_at": "2026-05-10"
   },
   "rules": [
     {
@@ -1833,6 +1833,26 @@
       },
       "created_at": "2026-02-19",
       "updated_at": "2026-02-19"
+    },
+    {
+      "category": "platform",
+      "description": "Validate Template Builder execution timeout is not set too high",
+      "enabled": true,
+      "messages": {
+        "pass": "Template Builder execution timeout is within the recommended limit of 10000ms",
+        "fail": "Template Builder execution timeout exceeds 10000ms — high values can cause long-running template executions that degrade platform performance"
+      },
+      "name": "Template Builder Execution Timeout",
+      "path": "platform.application_props.results.TemplateBuilder.properties.templateExecutionTimeout",
+      "rule_number": "PLAT-048",
+      "severity": "warning",
+      "validation": {
+        "expected": 10000,
+        "operator": "lte",
+        "type": "int"
+      },
+      "created_at": "2026-05-10",
+      "updated_at": "2026-05-10"
     },
     {
       "rule_number": "RDS-001",

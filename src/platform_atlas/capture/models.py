@@ -89,6 +89,7 @@ class ResolvedModules:
     is_subset: bool
     deferred_ssh_modules: tuple[str, ...] = ()
     ssh_fallbacks: dict[str, Callable] = field(default_factory=dict)
+    target_errors: list[tuple[str, str]] = field(default_factory=list)
 
 @dataclass(slots=True)
 class CaptureState:
@@ -182,3 +183,17 @@ class CaptureState:
     @property
     def failed_count(self) -> int:
         return sum(1 for m in self.modules.values() if m.status == ModuleStatus.FAILED)
+
+    @property
+    def failed_modules_summary(self) -> list[dict[str, str]]:
+        """Name + error_message for every failed module.
+
+        Persisted to ``_atlas.metadata.failed_modules`` so post-capture
+        consumers (e.g. the WebUI session detail page) can introspect
+        failures without re-running the engine.
+        """
+        return [
+            {"name": name, "error_message": result.error_message or ""}
+            for name, result in self.modules.items()
+            if result.status == ModuleStatus.FAILED
+        ]
