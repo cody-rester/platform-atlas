@@ -20,7 +20,6 @@ from platform_atlas.core._version import __version__
 from platform_atlas.core.context import ctx
 from platform_atlas.capture.capture_engine import reshape_capture, finalize_capture
 from platform_atlas.capture.collectors.platform import PlatformCollector
-from platform_atlas.validation.validation_engine import validate
 
 from platform_atlas.continuous import storage
 from platform_atlas.continuous.scope import platform_only_scope
@@ -200,6 +199,7 @@ def _run_once_locked(*, env_name: str, context: Any, config: Any) -> RunResult:
                 config=config,
                 modules_ran=["platform"],
             )
+            from platform_atlas.validation.validation_engine import validate
             df = validate(ruleset_dict, limited, headless=True)
             df_records = df.to_dict(orient="records")
         except Exception as exc:  # noqa: BLE001

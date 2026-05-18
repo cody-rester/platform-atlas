@@ -80,6 +80,38 @@ console = Console()
 __author__ = "Cody Rester"
 __license__ = "GPL-3.0-or-later"
 
+import signal
+import threading
+import time as _time
+
+_SIGINT_EVENT: threading.Event = threading.Event()
+_LAST_SIGINT: float = 0.0
+
+
+def _setup_sigint_handler() -> None:
+    """Register a cooperative SIGINT handler for graceful capture shutdown."""
+    from platform_atlas.core.shutdown import request_shutdown
+
+    def _handler(signum, frame):  # noqa: ARG001
+        global _LAST_SIGINT
+        now = _time.monotonic()
+        if _SIGINT_EVENT.is_set() and (now - _LAST_SIGINT) < 2.0:
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            import os
+            os.kill(os.getpid(), signal.SIGINT)
+            return
+        _LAST_SIGINT = now
+        _SIGINT_EVENT.set()
+        request_shutdown()
+        import sys as _sys
+        print(
+            "\n⚠ Interrupt received — cleaning up… (Ctrl-C again to force-exit)",
+            file=_sys.stderr,
+        )
+
+    signal.signal(signal.SIGINT, _handler)
+
+
 #----############## MAIN ##############----#
 @handle_errors(exit_on_error=True, show_traceback=False)
 def main() -> int:
@@ -87,6 +119,8 @@ def main() -> int:
 
     # Initialize ATLAS Environment
     init_env()
+    # Register cooperative SIGINT handler (after env init, before dispatch)
+    _setup_sigint_handler()
     args = parse_args()
 
     # Persist --plain to config so future invocations activate compatibility
@@ -272,11 +306,14 @@ def main() -> int:
     # ── Always-on continuous-audit reminder ────────────────────────
     # Printed on every invocation (including subcommands) when the active
     # environment has continuous audit enabled. Decorative — never blocks.
-    try:
-        from platform_atlas.continuous.banner import print_banner
-        print_banner(context.active_environment)
-    except Exception:
-        pass
+    # Guard on active_environment so the banner module (and its imports)
+    # are never loaded when no environment is configured.
+    if context.active_environment:
+        try:
+            from platform_atlas.continuous.banner import print_banner
+            print_banner(context.active_environment)
+        except Exception:
+            pass
 
     #----############## DISPATCH ##############----#
     return dispatch(args)

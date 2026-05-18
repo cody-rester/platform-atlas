@@ -106,6 +106,9 @@ def _stage_color(done: bool) -> str:
 
 
 def _stage_glyph(done: bool) -> str:
+    from platform_atlas.core.ui import is_plain_mode
+    if is_plain_mode():
+        return "*" if done else "o"
     return "◉" if done else "◯"
 
 
@@ -116,6 +119,9 @@ def _pipeline_chain(meta) -> Text:
     complete — so a half-done pipeline reads at a glance: filled, green link,
     filled, dim link, hollow.
     """
+    from platform_atlas.core.ui import is_plain_mode
+    plain = is_plain_mode()
+    connector = "---" if plain else "━━━"
     out = Text()
     stages = [
         meta.capture_completed,
@@ -126,7 +132,7 @@ def _pipeline_chain(meta) -> Text:
     for i, done in enumerate(stages):
         if i > 0:
             link_done = stages[i - 1] and done
-            out.append("━━━", style=theme.success if link_done else theme.text_ghost)
+            out.append(connector, style=theme.success if link_done else theme.text_ghost)
         out.append(_stage_glyph(done), style=f"bold {_stage_color(done)}")
         out.append(f" {labels[i]}", style=theme.text_secondary if done else theme.text_ghost)
     return out
@@ -134,6 +140,8 @@ def _pipeline_chain(meta) -> Text:
 
 def _pipeline_compact(meta) -> Text:
     """Tight 3-glyph pipeline chain for the sessions table — no labels."""
+    from platform_atlas.core.ui import is_plain_mode
+    plain = is_plain_mode()
     out = Text()
     stages = [
         meta.capture_completed,
@@ -143,7 +151,7 @@ def _pipeline_compact(meta) -> Text:
     for i, done in enumerate(stages):
         if i > 0:
             link_done = stages[i - 1] and done
-            out.append("─", style=theme.success if link_done else theme.text_ghost)
+            out.append("-" if plain else "─", style=theme.success if link_done else theme.text_ghost)
         out.append(_stage_glyph(done), style=f"bold {_stage_color(done)}")
     return out
 
@@ -250,6 +258,20 @@ def _build_banner() -> Panel:
     tier_name = active_ctx.tier if active_ctx else None
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
+    # Resolve env_tint for the banner border
+    _env_tint: str | None = None
+    if active_ctx and env_name:
+        try:
+            from platform_atlas.core.environment import get_environment_manager as _gem
+            _mgr = _gem()
+            if _mgr.exists(env_name):
+                _env_obj = _mgr.load(env_name)
+                _env_tint = getattr(_env_obj, "env_tint", None)
+        except Exception:
+            pass
+    _TINT_MAP = {"high": "#C5258F", "medium": "#FDD058", "low": "#99CA3C"}
+    banner_border = _TINT_MAP.get(_env_tint or "", theme.banner_rule)
+
     parts: list[str] = []
     if tier_name:
         tier_color = theme.tier_standard if tier_name == "standard" else theme.tier_extended
@@ -278,7 +300,7 @@ def _build_banner() -> Panel:
     return Panel(
         layout,
         box=box.HEAVY,
-        border_style=theme.banner_rule,
+        border_style=banner_border,
         style=f"on {theme.banner_bg}",
         padding=(1, 2),
         expand=True,

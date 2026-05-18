@@ -62,6 +62,7 @@ class SessionStatus(str, Enum):
     VALIDATED = "validated"
     REPORTED = "reported"
     FAILED = "failed"
+    ABORTED = "aborted"
     ARCHIVED = "archived"
 
     def __str__(self) -> str:
@@ -598,6 +599,21 @@ class SessionManager:
         # Clear active if this was the active session
         if self.get_active_session_name() == name:
             self.clear_active()
+
+    def set_status(self, name: str, status: str) -> None:
+        """Update a session's status if it is not already in a terminal state."""
+        _TERMINAL = {SessionStatus.REPORTED, SessionStatus.ARCHIVED}
+        try:
+            session = self.get(name)
+            current = session.metadata.status
+            if current in _TERMINAL:
+                logger.debug(
+                    "set_status(%s, %s) skipped — already terminal (%s)", name, status, current
+                )
+                return
+            session.update_status(SessionStatus(status))
+        except Exception as exc:
+            logger.debug("set_status(%s, %s) failed: %s", name, status, exc)
 
     def set_active(self, name: str) -> None:
         """Set a session as active."""

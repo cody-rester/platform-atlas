@@ -1,3 +1,3 @@
 """Platform Atlas Version"""
-__version__ = "1.7.2"
-__build__ = "20260501.a5319cb"
+__version__ = "1.7.3"
+__build__ = "20260518.a5319cb"

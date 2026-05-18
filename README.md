@@ -76,10 +76,10 @@ python3 -m venv atlas-venv
 source atlas-venv/bin/activate
 
 # Install the CLI (required)
-pip3 install -U platform_atlas-<version>-py3-none-any.whl
+pip3 install platform_atlas-<version>-py3-none-any.whl
 
 # Install the WebUI (optional — adds the browser interface)
-pip3 install -U platform_atlas_webui-<version>-py3-none-any.whl
+pip3 install platform_atlas_webui-<version>-py3-none-any.whl
 ```
 
 Verify the installation:
@@ -87,6 +87,21 @@ Verify the installation:
 ```bash
 platform-atlas --version
 ```
+
+### Upgrading
+
+When a new version is available, use `--force-reinstall` and `--no-compile` instead of a plain `pip install -U`:
+
+```bash
+pip install --force-reinstall --no-compile platform_atlas-<version>-py3-none-any.whl
+
+# If you also use the WebUI:
+pip install --force-reinstall --no-compile platform_atlas_webui-<version>-py3-none-any.whl
+```
+
+**Why not just `pip install -U`?** A plain upgrade can leave stale `.pyc` bytecode files from the previous version in place — especially if a module was renamed or removed between releases. On some filesystems (NFS, RHEL with coarse timestamp resolution) these stale files are not detected as out of date and can cause confusing import errors or silently run old code. `--force-reinstall` does a full file replacement; `--no-compile` skips pre-generating bytecode so Python regenerates it fresh on the first run instead.
+
+> **Note on first-run speed after upgrade:** Because `--no-compile` defers bytecode compilation, the very first run after upgrading will be slightly slower than usual while Python builds the cache. This is a one-time cost — every subsequent run is normal speed.
 
 ### Starting the WebUI
 

@@ -45,7 +45,7 @@ def handle_errors(
             except KeyboardInterrupt:
                 print("\n\nOperation cancelled by user.", file=sys.stderr)
                 if exit_on_error:
-                    sys.exit(1)
+                    sys.exit(130)
                 return default_return
             except Exception as e:
                 print(f"\nUNEXPECTED ERROR: {type(e).__name__}: {e}\n", file=sys.stderr)
@@ -61,17 +61,47 @@ def handle_errors(
     return decorator
 
 def show_premium_header(title: str = "Platform Atlas"):
-    # Create gradient-like title effect
+    """Print the Atlas brand panel, optionally tinted by the active env's env_tint."""
     title_text = Text()
     title_text.append("Platform ", style=f"bold {theme.primary_glow}")
     title_text.append("Atlas", style=f"bold {theme.accent}")
 
+    # Attempt to read active env for tint and env/tier subtitle.
+    env_tint: str | None = None
+    subtitle_str: str | None = None
+    try:
+        from platform_atlas.core.context import ctx as _ctx
+        config = _ctx().config
+        if config.active_environment:
+            from platform_atlas.core.environment import get_environment_manager
+            _mgr = get_environment_manager()
+            if _mgr.exists(config.active_environment):
+                _env = _mgr.load(config.active_environment)
+                env_tint = getattr(_env, "env_tint", None)
+            tier = getattr(config, "tier", None) or "standard"
+            if config.compatibility_mode:
+                _prefix_map = {"high": "[PROD]", "medium": "[STAGE]", "low": "[DEV]"}
+                _prefix = _prefix_map.get(env_tint or "", "")
+                _env_label = f"{_prefix} {config.active_environment}".strip()
+            else:
+                _env_label = config.active_environment
+            subtitle_str = f"env: {_env_label} · tier: {tier}"
+    except Exception:
+        pass
+
+    _TINT = {"high": "#C5258F", "medium": "#FDD058", "low": "#99CA3C"}
+    border = _TINT.get(env_tint or "", theme.border_primary)
+
     console.clear()
     console.print(Panel(
         title_text,
-        border_style=theme.border_primary,
+        border_style=border,
         box=box.DOUBLE,
-        subtitle=f"[{theme.text_dim}]Itential Platform Configuration Auditing[/]",
+        subtitle=(
+            f"[{theme.text_dim}]{subtitle_str}[/{theme.text_dim}]"
+            if subtitle_str
+            else f"[{theme.text_dim}]Itential Platform Configuration Auditing[/]"
+        ),
         subtitle_align="right",
         padding=(1, 4),
         style=f"{theme.text_primary} on {theme.bg_secondary}",

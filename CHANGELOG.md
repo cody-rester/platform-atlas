@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.7.3] - 2026-05-15
+
+### Added
+
+- **Environment banner tint** — optional `env_tint` field (`low` / `medium` / `high`) on environment overlays tints the banner border and capture status panel (green / amber / pink). Configurable in `env create` and `env edit`. Plain/compatibility mode uses `[DEV]` / `[STAGE]` / `[PROD]` prefix instead.
+- **`session prune`** rework — `--older-than DURATION` (`30d`, `7d`, `1w`, `24h`, …), `--keep-last N`, `--status`, `--env` filters (ANDed). Dry-run by default; `--no-dry-run` to delete with confirmation. Shows name, env, age, status, and size; prompts to show all sessions when more than 10 are truncated. Active session always excluded.
+- **`config doctor --json`** — emits structured JSON (`atlas-doctor/v1` schema) to stdout; exit codes unchanged (`0` / `1` / `2`).
+- **`config doctor --no-url-probes`** — skips TCP reachability checks for CI/offline use.
+- **`config doctor` spinner** — shown while probing Platform and Gateway4 URLs; suppressed with `--json` or `--no-url-probes`.
+- **`core/shutdown.py`** — cooperative shutdown registry used by the SIGINT handler (`register_cleanup`, `request_shutdown`, `shutdown_requested`, `run_cleanups`).
+- **MongoDB/Redis connectivity test in `env create`** — after entering each URI, Atlas probes the connection directly. On failure: re-enter, skip test and save anyway, clear and continue without, or cancel. Notes that SSH-tunnelled hosts are expected to fail the direct test.
+- **URI credential redaction** — MongoDB and Redis URIs in the `env create` review screen show `scheme://•••:•••@host:port/db` instead of exposing credentials.
+
+### Changed
+
+- **Plain-mode glyph fallbacks** — `--plain` mode now maps all status glyphs (`●○✓✘◌⚠`) and pipeline stage markers (`◉◯`) to ASCII equivalents (`* o OK X - ! * o`). Dashboard pipeline connectors (`━━━`) render as `---`. Previously these were passed through unchanged and appeared as `?` on terminals that don't support the characters.
+- **Truncated error messages show log path** — When the capture status footer has errors or warnings, a dim hint line `Full details: ~/.atlas/atlas.log` is appended. The hardcoded panel height constraint on the footer panel was removed to accommodate the extra line.
+- **`session list` status column** — Status values now render with theme colors (green for `validated`/`reported`, blue for `capturing`, yellow for `validating`/`aborted`, red for `failed`, dim for `created`). The previous `style="yellow"` column default was removed since inline markup handles all cases. `aborted` added to the color map.
+- **Next-step chips after all terminal session commands** — `session run report` now shows an `Audit Complete — View Dashboard` chip on completion. `env create` now shows an `Environment Ready` chip pointing to `session create <name>`.
+- **Duration formatting standardized** — Module durations and capture elapsed time now use a consistent `Xm Ys` / `Xs` / `Xms` format. Previously displayed as raw `1234ms` or `83.4s` with inconsistent precision.
+- **Validation summary panel** — `session run validate` now prints a styled `Validation Results` panel (pass / fail / skip counts + compliance %) instead of a plain text line, consistent with the existing report score panel.
+- **`session create`** validates name (`[a-z0-9-]`, 3–64 chars, no leading digit or trailing hyphen) before prompting. Interactive: shows a cleaned suggestion with rename / use-suggestion / cancel. Non-interactive: exits 1 immediately.
+- **`session create` collision handling** — offers timestamp suffix, replace-with-backup (`<name>.bak-<HHMM>`), or cancel. No silent overwrite.
+- `SessionStatus` gains `ABORTED = "aborted"`; `SessionManager` gains `set_status()`.
+- `--older-than` duration grammar extended with `1d`, `7d`, `30d`.
+
+### Performance
+
+- **Faster startup** — `pandas`, all CLI handler modules, and the continuous-audit banner module are no longer imported on every invocation. Dashboard load time reduced by ~50%.
+
+### Fixed
+
+- **Graceful Ctrl-C during capture** — SIGINT stops the capture loop, lets in-flight modules finish, releases the Rich Live panel, marks the session `aborted`, saves partial capture JSON, and restores the cursor. Exit code `130`. Second Ctrl-C within 2s force-exits.
+- `handle_errors` now exits `130` (was `1`) on `KeyboardInterrupt`.
+- **`ChainerBackend` falsely flagged as unencrypted on macOS** — `verify_keyring_backend()` now inspects the chain. If it wraps a native OS keyring (`macOS.Keyring`, `WinVaultKeyring`, `SecretService`), it is classified as secure and the display name reflects the actual backend (e.g. "macOS Keychain") instead of "ChainerBackend".
+
 ## [1.7.2] - 2026-05-12
 
 ### Added
