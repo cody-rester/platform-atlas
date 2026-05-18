@@ -156,6 +156,30 @@ platform-atlas --version
 
 You should see something like `platform-atlas 1.7.0`.
 
+### Upgrading
+
+When a new version is available, use the following command instead of a plain `pip install -U`:
+
+```bash
+pip install --force-reinstall --no-compile platform_atlas-<version>-py3-none-any.whl
+
+# If you also use the WebUI:
+pip install --force-reinstall --no-compile platform_atlas_webui-<version>-py3-none-any.whl
+```
+
+**Why these flags?**
+
+A plain `pip install -U` replaces source files but does not always clean up `.pyc` bytecode files left over from the previous version. If a module was renamed or removed between releases, the stale bytecode can survive on disk and cause confusing import errors — or worse, silently run old code. This is especially common on RHEL and NFS-mounted filesystems where file timestamps have coarse resolution and Python's normal cache-invalidation check does not fire reliably.
+
+- `--force-reinstall` — forces pip to fully remove and reinstall the package from scratch, regardless of whether the version number changed. Orphaned files from the old version are cleaned up properly.
+- `--no-compile` — skips pre-generating `.pyc` bytecode during install. Python generates it fresh on the first run instead, so there is no window where stale bytecode can coexist with new source files.
+
+**First run after upgrading will be slightly slower.** Because `--no-compile` defers bytecode compilation, the very first invocation of `platform-atlas` after an upgrade takes a second or two longer than usual while Python builds the cache. This is a one-time cost — every subsequent run is normal speed.
+
+Your existing configuration, environments, sessions, and captured data in `~/.atlas/` are never touched by an upgrade.
+
+---
+
 ### A note about your system
 
 Platform Atlas stores its configuration and session data in a folder called `~/.atlas/` in your home directory. This folder is created automatically the first time you run the tool. You don't need to create it yourself.

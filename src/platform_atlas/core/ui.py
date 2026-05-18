@@ -4,6 +4,8 @@ Shared UI instances for Platform Atlas
 
 from __future__ import annotations
 
+import os
+
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
@@ -28,6 +30,15 @@ class _ThemeProxy:
         return "<ThemeProxy unresolved>"
 
 theme = _ThemeProxy()
+
+
+def is_plain_mode() -> bool:
+    """Return True when plain/compatibility mode is active."""
+    try:
+        from platform_atlas.core.context import ctx as _ctx
+        return _ctx().config.compatibility_mode
+    except Exception:
+        return bool(os.environ.get("NO_COLOR"))
 
 
 # ── Reusable styled panels ───────────────────────────────────────

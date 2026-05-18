@@ -1227,6 +1227,25 @@ def verify_keyring_backend() -> tuple[bool, bool, str]:
     is_functional = name not in _BROKEN_BACKENDS
     is_secure = name not in _INSECURE_BACKENDS
 
+    # ChainerBackend is a wrapper — its security depends on what it chains to.
+    # On macOS it chains to macOS.Keyring (encrypted Keychain); on Windows to
+    # WinVaultKeyring; on Linux to SecretService.  If any chained backend is a
+    # native OS keyring, the credentials are actually encrypted even though the
+    # top-level class name says "ChainerBackend".
+    if name == "ChainerBackend":
+        _SECURE_MODULE_LABELS = {
+            "keyring.backends.macOS":          "macOS Keychain",
+            "keyring.backends.Windows":        "Windows Credential Locker",
+            "keyring.backends.SecretService":  "SecretService",
+        }
+        chained = getattr(backend, "backends", [])
+        for b in chained:
+            label = _SECURE_MODULE_LABELS.get(type(b).__module__)
+            if label:
+                is_secure = True
+                name = label
+                break
+
     return is_secure, is_functional, name
 
 

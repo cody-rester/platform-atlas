@@ -108,6 +108,7 @@ class Environment:
     kubectl_namespace: str = ""
     use_kubectl: bool = False
     kubectl_binary_path: str = ""
+    env_tint: str | None = None
 
     # ── Serialization ─────────────────────────────────────────────
 

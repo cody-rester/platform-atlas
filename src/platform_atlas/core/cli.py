@@ -158,7 +158,10 @@ _CONTINUOUS_INTERVAL_CHOICES: dict[str, int] = {
     '6h':   21600,
     '12h':  43200,
     '24h':  86400,
+    '1d':   86400,
+    '7d':   604800,
     '1w':   604800,
+    '30d':  2592000,
 }
 
 
@@ -916,28 +919,63 @@ def _add_session_commands(subparsers):
     # session prune
     prune = session_subparsers.add_parser(
         'prune',
-        help='Delete uncaptured sessions older than N days',
+        help='Prune old sessions (default: --older-than 30d --dry-run)',
         formatter_class=AtlasHelpFormatter,
-        description='Bulk-delete sessions that were created but never captured, '
-                    'older than the specified number of days.'
+        description=(
+            'Delete sessions matching the specified filters. '
+            'Dry-run is the default — pass --no-dry-run (and confirm) to delete for real. '
+            'All filter flags AND together.'
+        ),
     )
     prune.add_argument(
         '--older-than',
         dest='older_than',
+        type=_continuous_interval,
+        default=_CONTINUOUS_INTERVAL_CHOICES['30d'],
+        metavar='DURATION',
+        help='Prune sessions older than DURATION (e.g. 30d, 7d, 1w, 24h). Default: 30d',
+    )
+    prune.add_argument(
+        '--keep-last',
+        dest='keep_last',
         type=int,
-        required=True,
-        metavar='DAYS',
-        help='Prune sessions created more than DAYS days ago (e.g. --older-than 90)'
+        metavar='N',
+        default=None,
+        help='Keep the N most-recent sessions (by updated_at); prune the rest',
+    )
+    prune.add_argument(
+        '--status',
+        dest='prune_status',
+        choices=['ok', 'warn', 'fail', 'aborted', 'empty'],
+        default=None,
+        metavar='STATUS',
+        help='Only prune sessions with this final status (ok|warn|fail|aborted|empty)',
+    )
+    prune.add_argument(
+        '--env',
+        dest='prune_env',
+        default=None,
+        metavar='NAME',
+        help='Only prune sessions bound to this environment',
     )
     prune.add_argument(
         '--dry-run',
+        dest='dry_run',
         action='store_true',
-        help='Show what would be deleted without removing anything'
+        default=True,
+        help='Show what would be deleted without removing anything (default)',
     )
     prune.add_argument(
-        '--force',
+        '--no-dry-run',
+        dest='dry_run',
+        action='store_false',
+        help='Run for real (requires confirmation unless --yes is also passed)',
+    )
+    prune.add_argument(
+        '--yes', '-y',
+        dest='yes',
         action='store_true',
-        help='Skip confirmation prompt'
+        help='Skip confirmation prompt (still respects --dry-run)',
     )
 
 # =================================================
@@ -1188,7 +1226,7 @@ def _add_config_commands(subparsers):
     )
 
     # config doctor
-    config_subparsers.add_parser(
+    doctor = config_subparsers.add_parser(
         'doctor',
         help='Run a health check on the current Atlas configuration',
         formatter_class=AtlasHelpFormatter,
@@ -1197,6 +1235,18 @@ def _add_config_commands(subparsers):
             'platform/gateway URLs, ruleset, and SSH key path in one pass. '
             'Useful after setup or when a capture failed for an unclear reason.'
         ),
+    )
+    doctor.add_argument(
+        '--json',
+        dest='json',
+        action='store_true',
+        help='Emit results as JSON to stdout (machine-readable; no Rich output)',
+    )
+    doctor.add_argument(
+        '--no-url-probes',
+        dest='no_url_probes',
+        action='store_true',
+        help='Skip the slow TCP reachability checks for Platform and Gateway4 URLs',
     )
 
 

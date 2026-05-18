@@ -272,7 +272,10 @@ def handle_env_create(args: Namespace) -> int:
         # as a cancellation. New code should use KeyboardInterrupt.
         return 1
 
-    return 0 if result else 1
+    if result:
+        ui.next_step("platform-atlas session create <name>", label="Environment Ready")
+        return 0
+    return 1
 
 
 @registry.register("env", "remove", description="Remove an environment")
@@ -332,6 +335,7 @@ _EDITABLE_FIELDS = [
     ("webserver_log_path_override", "Webserver Log File",     "text"),
     ("mongo_log_path_override",   "MongoDB Log File",       "text"),
     ("debug_export_raw_capture",  "Debug: Export Raw Capture", "bool"),
+    ("env_tint",                  "Banner Tint",               "choice"),
 ]
 
 _BACKEND_CHOICES = ["keyring", "vault"]
@@ -529,6 +533,23 @@ def handle_env_edit(args: Namespace) -> int:
             ).ask()
             if new_value is None:
                 continue
+        elif field_type == "choice" and field_name == "env_tint":
+            _DL_CHOICES = [
+                questionary.Choice("(none) — default theme", value="none"),
+                questionary.Choice("low — green tint (dev/test)", value="low"),
+                questionary.Choice("medium — amber tint (staging)", value="medium"),
+                questionary.Choice("high — pink tint (production)", value="high"),
+            ]
+            current_dl = current or "none"
+            new_value = questionary.select(
+                f"{label}:",
+                choices=_DL_CHOICES,
+                default=next((c for c in _DL_CHOICES if c.value == current_dl), _DL_CHOICES[0]),
+                style=QSTYLE,
+            ).ask()
+            if new_value is None:
+                continue
+            new_value = None if new_value == "none" else new_value
         elif field_type == "bool":
             new_value = questionary.confirm(
                 f"{label} (current: {'on' if current else 'off'})?",

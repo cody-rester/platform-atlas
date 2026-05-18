@@ -36,6 +36,25 @@ from platform_atlas.core.credentials import (
 )
 from platform_atlas.core import ui
 
+import re as _re
+from dataclasses import dataclass as _dataclass
+
+@_dataclass
+class DoctorRow:
+    """One row in the config-doctor results."""
+    id: str
+    label: str
+    status: str  # "ok" | "warn" | "fail"
+    detail: str
+    suggest: str
+
+    @classmethod
+    def from_tuple(cls, t: tuple[str, str, str, str]) -> "DoctorRow":
+        label, status, detail, suggest = t
+        row_id = _re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+        return cls(id=row_id, label=label, status=status, detail=detail, suggest=suggest or "")
+
+
 console = Console()
 theme = ui.theme
 MASK = "••••••••••••••••••"
@@ -635,14 +654,14 @@ def probe_gateway4_url(config) -> tuple[str, str, str, str] | None:
 
 
 def collect_doctor_rows(
-    *, skip_url_probes: bool = False,
-) -> tuple[list[tuple[str, str, str, str]], str | None, str | None]:
+    *, skip_url_probes: bool = False, show_spinner: bool = False,
+) -> tuple[list[DoctorRow], str | None, str | None]:
     """Build the config-doctor result rows without rendering them.
 
-    Returns ``(rows, env_name, tier)`` where each row is
-    ``(label, status, detail, suggestion)`` and ``status`` is one of
-    ``"ok" | "warn" | "fail"``. Shared between the CLI handler and the
-    WebUI ``/config/doctor`` route so both surfaces stay in lockstep.
+    Returns ``(rows, env_name, tier)`` where each row is a ``DoctorRow``
+    with status one of ``"ok" | "warn" | "fail"``. Shared between the CLI
+    handler and the WebUI ``/config/doctor`` route so both surfaces stay in
+    lockstep.
 
     When ``skip_url_probes`` is ``True``, the Platform / Gateway4 URL
     reachability rows are omitted — the WebUI uses this for an instant
@@ -658,42 +677,42 @@ def collect_doctor_rows(
         ATLAS_CONFIG_FILE, ATLAS_ENVIRONMENTS_DIR, ATLAS_HOME,
     )
 
-    rows: list[tuple[str, str, str, str]] = []
+    rows: list[DoctorRow] = []
 
     # ── Global config ─────────────────────────────────────────────
     cfg_path = _P(ATLAS_CONFIG_FILE)
     if not cfg_path.is_file():
-        rows.append((
+        rows.append(DoctorRow.from_tuple((
             "Config file", "fail",
             f"not found at {cfg_path}",
             "Run `platform-atlas config init` to create one.",
-        ))
+        )))
         return rows, None, None
 
     mode = cfg_path.stat().st_mode & 0o777
     if os.name == "posix" and mode & 0o077:
-        rows.append((
+        rows.append(DoctorRow.from_tuple((
             "Config file", "warn",
             f"{cfg_path} (chmod {oct(mode)} — should be 600)",
             f"Run `chmod 600 {cfg_path}` to tighten permissions.",
-        ))
+        )))
     else:
-        rows.append(("Config file", "ok", str(cfg_path), ""))
+        rows.append(DoctorRow.from_tuple(("Config file", "ok", str(cfg_path), "")))
 
     # ── Python version ────────────────────────────────────────────
     vi = _sys.version_info
     py_ver = f"{vi.major}.{vi.minor}.{vi.micro}"
     if vi >= (3, 11):
-        rows.append(("Python version", "ok", f"{py_ver} (supported)", ""))
+        rows.append(DoctorRow.from_tuple(("Python version", "ok", f"{py_ver} (supported)", "")))
     else:
-        rows.append((
+        rows.append(DoctorRow.from_tuple((
             "Python version", "fail",
             f"{py_ver} is below the 3.11 minimum",
             "Install Python 3.11+ and reinstall Platform Atlas in that interpreter.",
-        ))
+        )))
 
     # ── Python binary path (informational) ────────────────────────
-    rows.append(("Python binary", "ok", _sys.executable, ""))
+    rows.append(DoctorRow.from_tuple(("Python binary", "ok", _sys.executable, "")))
 
     # ── Available disk space ──────────────────────────────────────
     probe_dir = _P(ATLAS_HOME) if _P(ATLAS_HOME).exists() else _P.home()
@@ -706,25 +725,25 @@ def collect_doctor_rows(
             free_val = f"{free_gb:.2f} GB free"
         detail = f"{free_val} at {probe_dir}"
         if free_gb >= 5:
-            rows.append(("Available disk space", "ok", detail, ""))
+            rows.append(DoctorRow.from_tuple(("Available disk space", "ok", detail, "")))
         elif free_gb >= 0.5:
-            rows.append((
+            rows.append(DoctorRow.from_tuple((
                 "Available disk space", "warn",
                 detail,
                 "Capture + report artifacts can use ~100 MB per session — free up space.",
-            ))
+            )))
         else:
-            rows.append((
+            rows.append(DoctorRow.from_tuple((
                 "Available disk space", "fail",
                 detail,
                 "Free at least 500 MB before running capture / report.",
-            ))
+            )))
     except OSError as exc:
-        rows.append((
+        rows.append(DoctorRow.from_tuple((
             "Available disk space", "warn",
             f"could not stat {probe_dir}: {exc}",
             "",
-        ))
+        )))
 
     # ── Environment file ──────────────────────────────────────────
     config = ctx().config
@@ -733,75 +752,89 @@ def collect_doctor_rows(
     if env_name:
         env_path = _P(ATLAS_ENVIRONMENTS_DIR) / f"{env_name}.json"
         if env_path.is_file():
-            rows.append((f"Environment '{env_name}'", "ok", str(env_path), ""))
+            rows.append(DoctorRow.from_tuple((f"Environment '{env_name}'", "ok", str(env_path), "")))
         else:
-            rows.append((
+            rows.append(DoctorRow.from_tuple((
                 f"Environment '{env_name}'", "fail",
                 f"file missing at {env_path}",
                 "Run `platform-atlas env create` to recreate it.",
-            ))
+            )))
     else:
-        rows.append((
+        rows.append(DoctorRow.from_tuple((
             "Active environment", "warn",
             "no environment is active",
             "Run `platform-atlas env list` then `platform-atlas env use <name>`.",
-        ))
+        )))
 
     # ── Tier ──────────────────────────────────────────────────────
     tier = config.tier
-    rows.append(("Tier", "ok", tier, ""))
+    rows.append(DoctorRow.from_tuple(("Tier", "ok", tier, "")))
 
     # ── Credential backend ────────────────────────────────────────
     try:
         is_secure, is_functional, backend_name = verify_keyring_backend()
         if not is_functional:
-            rows.append((
+            rows.append(DoctorRow.from_tuple((
                 "Credential backend", "fail",
                 f"{backend_name} is not functional",
                 "Install gnome-keyring (Linux), or configure HashiCorp Vault.",
-            ))
+            )))
         elif not is_secure:
-            rows.append((
+            rows.append(DoctorRow.from_tuple((
                 "Credential backend", "warn",
                 f"{backend_name} (unencrypted)",
                 "Switch to Secret Service / Keychain / Vault for production use.",
-            ))
+            )))
         else:
-            rows.append(("Credential backend", "ok", backend_name, ""))
+            rows.append(DoctorRow.from_tuple(("Credential backend", "ok", backend_name, "")))
     except Exception as exc:
-        rows.append((
+        rows.append(DoctorRow.from_tuple((
             "Credential backend", "fail",
             f"probe raised {type(exc).__name__}: {exc}",
             "Re-run with --debug for the full traceback.",
-        ))
+        )))
 
     # ── Platform secret ───────────────────────────────────────────
     try:
         store = credential_store()
         if store.exists(CredentialKey.PLATFORM_SECRET):
-            rows.append(("Platform Client Secret", "ok", "stored", ""))
+            rows.append(DoctorRow.from_tuple(("Platform Client Secret", "ok", "stored", "")))
         else:
-            rows.append((
+            rows.append(DoctorRow.from_tuple((
                 "Platform Client Secret", "fail",
                 "missing from credential store",
                 "Run `platform-atlas config credentials` to set it.",
-            ))
+            )))
     except CredentialError as exc:
-        rows.append((
+        rows.append(DoctorRow.from_tuple((
             "Credential store", "fail",
             f"unavailable: {exc}",
             "Run `platform-atlas config credentials` to reconfigure.",
-        ))
+        )))
 
     # ── URL reachability (Platform + optional Gateway4) ───────────
     # Slow checks (~3s TCP timeout each) — the WebUI passes
     # skip_url_probes=True for an instant initial render and pulls these
     # in via separate htmx endpoints.
     if not skip_url_probes:
-        rows.append(probe_platform_url(config))
-        gw4_row = probe_gateway4_url(config)
-        if gw4_row is not None:
-            rows.append(gw4_row)
+        try:
+            _compat = ctx().config.compatibility_mode
+        except Exception:
+            _compat = True
+        if show_spinner and not _compat:
+            from rich.status import Status
+            with console.status("[blue]Probing reachability…[/blue]", spinner="dots") as _s:
+                _s.update("[blue]Probing Platform OAuth URL…[/blue]")
+                rows.append(DoctorRow.from_tuple(probe_platform_url(config)))
+                _s.update("[blue]Probing Gateway4 health endpoint…[/blue]")
+                _gw4 = probe_gateway4_url(config)
+                if _gw4 is not None:
+                    rows.append(DoctorRow.from_tuple(_gw4))
+        else:
+            rows.append(DoctorRow.from_tuple(probe_platform_url(config)))
+            _gw4 = probe_gateway4_url(config)
+            if _gw4 is not None:
+                rows.append(DoctorRow.from_tuple(_gw4))
 
     # ── Ruleset ──────────────────────────────────────────────────
     try:
@@ -810,26 +843,26 @@ def collect_doctor_rows(
         active_id = rm.get_active_ruleset_id()
         if active_id:
             meta = rm.get_metadata(active_id)
-            rows.append((
+            rows.append(DoctorRow.from_tuple((
                 "Active ruleset",
                 "ok",
                 f"{active_id} ({meta.rule_count} rules)",
                 "",
-            ))
+            )))
         else:
-            rows.append((
+            rows.append(DoctorRow.from_tuple((
                 "Active ruleset",
                 "warn",
                 "no ruleset selected",
                 "Run `platform-atlas ruleset list` and `ruleset set <id>`.",
-            ))
+            )))
     except Exception as exc:
-        rows.append((
+        rows.append(DoctorRow.from_tuple((
             "Active ruleset",
             "warn",
             f"could not load: {type(exc).__name__}: {exc}",
             "",
-        ))
+        )))
 
     # ── SSH key path (Extended only) ─────────────────────────────
     if tier == "extended" and config.deployment:
@@ -838,28 +871,28 @@ def collect_doctor_rows(
         if key_path:
             p = _P(key_path).expanduser()
             if not p.is_file():
-                rows.append((
+                rows.append(DoctorRow.from_tuple((
                     "SSH key path",
                     "fail",
                     f"{p} not found",
                     "Run `platform-atlas env edit` to point at the right key.",
-                ))
+                )))
             elif p.suffix == ".pub":
-                rows.append((
+                rows.append(DoctorRow.from_tuple((
                     "SSH key path",
                     "fail",
                     f"{p} is a public key (.pub) — Atlas needs the private key",
                     "Pick the private key (the file without `.pub`).",
-                ))
+                )))
             else:
-                rows.append(("SSH key path", "ok", str(p), ""))
+                rows.append(DoctorRow.from_tuple(("SSH key path", "ok", str(p), "")))
         else:
-            rows.append((
+            rows.append(DoctorRow.from_tuple((
                 "SSH key",
                 "ok",
                 "no key path — using ssh-agent",
                 "",
-            ))
+            )))
 
     return rows, env_name, tier
 
@@ -869,25 +902,60 @@ def collect_doctor_rows(
     description="Run a health check on the current Atlas configuration",
 )
 def handle_config_doctor(args: Namespace) -> int:
-    """One-shot health check that surfaces every config / credential / ruleset
-    issue at once so the user doesn't discover them one-at-a-time at capture
-    time (UX8).
+    """One-shot health check. Returns 0=ok, 1=warnings, 2=failures.
 
-    Returns 0 when every check is OK, 1 if there were warnings, 2 if any
-    check failed (so this composes with shell scripts).
+    With --json: emits structured JSON to stdout (nothing else).
+    With --no-url-probes: skips the slow TCP reachability checks.
     """
-    rows, env_name, tier = collect_doctor_rows()
-    _render_doctor_rows(rows, env_name=env_name, tier=tier)
+    use_json: bool = getattr(args, "json", False)
+    skip_probes: bool = getattr(args, "no_url_probes", False)
 
-    if any(r[1] == "fail" for r in rows):
+    rows, env_name, tier = collect_doctor_rows(
+        skip_url_probes=skip_probes,
+        show_spinner=(not use_json),
+    )
+
+    has_fail = any(r.status == "fail" for r in rows)
+    has_warn = any(r.status == "warn" for r in rows)
+
+    if use_json:
+        from platform_atlas.core._version import __version__ as _ver
+        import sys as _sys
+        output = {
+            "schema": "atlas-doctor/v1",
+            "version": _ver,
+            "env": env_name,
+            "tier": tier,
+            "summary": {
+                "ok":   sum(1 for r in rows if r.status == "ok"),
+                "warn": sum(1 for r in rows if r.status == "warn"),
+                "fail": sum(1 for r in rows if r.status == "fail"),
+            },
+            "checks": [
+                {
+                    "id":      r.id,
+                    "label":   r.label,
+                    "status":  r.status,
+                    "detail":  r.detail,
+                    "suggest": r.suggest or None,
+                }
+                for r in rows
+            ],
+        }
+        _sys.stdout.write(json.dumps(output, ensure_ascii=False, indent=2))
+        _sys.stdout.write("\n")
+    else:
+        _render_doctor_rows(rows, env_name=env_name, tier=tier)
+
+    if has_fail:
         return 2
-    if any(r[1] == "warn" for r in rows):
+    if has_warn:
         return 1
     return 0
 
 
 def _render_doctor_rows(
-    rows: list[tuple[str, str, str, str]],
+    rows: list[DoctorRow],
     *,
     env_name: str | None,
     tier: str | None,
@@ -904,17 +972,17 @@ def _render_doctor_rows(
     console.print()
 
     counts = {"ok": 0, "warn": 0, "fail": 0}
-    for label, status, detail, suggestion in rows:
-        counts[status] = counts.get(status, 0) + 1
-        if status == "ok":
+    for row in rows:
+        counts[row.status] = counts.get(row.status, 0) + 1
+        if row.status == "ok":
             badge = f"[{theme.success}]✓[/{theme.success}]"
-        elif status == "warn":
+        elif row.status == "warn":
             badge = f"[{theme.warning}]⚠[/{theme.warning}]"
         else:
             badge = f"[{theme.error}]✘[/{theme.error}]"
-        console.print(f"{badge} [bold]{label:<28}[/bold] [dim]{detail}[/dim]")
-        if status != "ok" and suggestion:
-            console.print(f"   [dim]→ {suggestion}[/dim]")
+        console.print(f"{badge} [bold]{row.label:<28}[/bold] [dim]{row.detail}[/dim]")
+        if row.status != "ok" and row.suggest:
+            console.print(f"   [dim]→ {row.suggest}[/dim]")
 
     summary = (
         f"Summary: {counts.get('ok', 0)} OK · "

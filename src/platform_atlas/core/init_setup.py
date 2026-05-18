@@ -89,6 +89,25 @@ def mask(s: str, keep: int = 4) -> str:
         return "•" * len(s)
     return ("•" * (len(s) - keep)) + s[-keep:]
 
+
+def _redact_uri_credentials(uri: str) -> str:
+    """Replace username and password in a URI with bullets, leaving host/port/path readable.
+
+    ``mongodb://user:pass@host:27017/db``  →  ``mongodb://•••:•••@host:27017/db``
+    ``redis://:pass@host:6379``            →  ``redis://:•••@host:6379``
+    ``redis://host:6379``                  →  ``redis://host:6379``  (no credentials)
+    """
+    def _replace(m: re.Match) -> str:
+        scheme_sep = m.group(1)       # "://"
+        user = m.group(2)             # username, possibly ""
+        password_part = m.group(3)    # ":password" or None
+        redacted_user = "•••" if user else ""
+        redacted_pass = ":•••" if password_part is not None else ""
+        return f"{scheme_sep}{redacted_user}{redacted_pass}@"
+
+    return re.sub(r"(://)([^:@/]*)(:[^@/]*)?@", _replace, uri)
+
+
 # Strict HTTP/HTTPS URL guard used for Platform / Gateway4 / Vault URLs.
 # The previous "generic URI" regex was permissive enough to accept ``htttp://``,
 # ``https:///``, and other typos that only surfaced as a confusing connection
@@ -353,6 +372,133 @@ def _test_platform_oauth(
         return False, msg
 
     return True, "OAuth handshake succeeded"
+
+
+def _test_mongo_connection(uri: str, timeout_ms: int = 5000) -> tuple[bool, str]:
+    """Probe a MongoDB connection using pymongo.
+
+    Returns ``(ok, message)``. Uses the admin ``ping`` command with a short
+    server-selection timeout so the wizard doesn't hang on unreachable hosts.
+    """
+    try:
+        import pymongo
+        from pymongo.errors import ConnectionFailure, OperationFailure, ConfigurationError
+    except Exception as exc:
+        return False, f"pymongo not importable: {exc}"
+
+    client = None
+    try:
+        client = pymongo.MongoClient(
+            uri,
+            serverSelectionTimeoutMS=timeout_ms,
+            connectTimeoutMS=timeout_ms,
+        )
+        client.admin.command("ping")
+        return True, "MongoDB connection succeeded"
+    except OperationFailure as exc:
+        return False, f"Authentication failed: {exc}"
+    except ConnectionFailure as exc:
+        return False, f"Cannot reach MongoDB: {exc}"
+    except ConfigurationError as exc:
+        return False, f"MongoDB URI is malformed: {exc}"
+    except Exception as exc:
+        return False, str(exc) or type(exc).__name__
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
+def _test_redis_connection(uri: str, timeout: int = 5) -> tuple[bool, str]:
+    """Probe a Redis connection using redis-py.
+
+    Returns ``(ok, message)``. Uses PING with a short socket timeout so the
+    wizard doesn't hang on unreachable hosts.
+    """
+    try:
+        import redis as redis_py
+    except Exception as exc:
+        return False, f"redis-py not importable: {exc}"
+
+    client = None
+    try:
+        client = redis_py.Redis.from_url(
+            uri,
+            socket_connect_timeout=timeout,
+            socket_timeout=timeout,
+        )
+        client.ping()
+        return True, "Redis connection succeeded"
+    except redis_py.exceptions.AuthenticationError as exc:
+        return False, f"Authentication failed: {exc}"
+    except redis_py.exceptions.ConnectionError as exc:
+        return False, f"Cannot reach Redis: {exc}"
+    except Exception as exc:
+        return False, str(exc) or type(exc).__name__
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
+def _collect_and_verify_db_uri(
+    label: str,
+    schemes: tuple[str, ...],
+    test_fn,
+    instruction: str = "(leave blank to skip) ",
+) -> str:
+    """Prompt for a database URI, then probe connectivity (UX1 pattern).
+
+    Mirrors ``_collect_and_verify_platform_oauth``:  loops until the user gets
+    a successful test, opts to save without verifying, skips entirely, or
+    cancels.  Returns the final URI string ("" = user chose not to provide one).
+
+    On failure the dialog notes that SSH-tunnelled hosts are expected to fail
+    the direct connectivity test, so users aren't confused in infrastructure-
+    behind-a-bastion setups.
+    """
+    while True:
+        uri = ask_scheme_uri_optional(label, schemes=schemes, instruction=instruction)
+        if not uri:
+            return ""
+
+        display = _redact_uri_credentials(uri)
+        console.print(f"  [{theme.text_dim}]Testing connection to {display} ...[/{theme.text_dim}]")
+        ok, detail = test_fn(uri)
+
+        if ok:
+            console.print(f"  [{theme.success}]✓ {detail}[/{theme.success}]")
+            return uri
+
+        console.print(f"  [{theme.error}]✘ {detail}[/{theme.error}]")
+        console.print(
+            f"  [{theme.text_dim}]Note: if this host is only reachable via SSH tunnel, "
+            f"a direct connectivity test is expected to fail — choose 'Skip the test' "
+            f"to save the URI anyway.[/{theme.text_dim}]"
+        )
+
+        choice = questionary.select(
+            "How would you like to proceed?",
+            choices=[
+                questionary.Choice("Re-enter the URI", value="retry"),
+                questionary.Choice("Skip the test, save this URI anyway (advanced)", value="skip"),
+                questionary.Choice("Clear URI and continue without", value="clear"),
+                questionary.Choice("Cancel setup", value="cancel"),
+            ],
+            style=QSTYLE,
+        ).ask()
+
+        if choice is None or choice == "cancel":
+            _bail()
+        if choice == "clear":
+            return ""
+        if choice == "skip":
+            return uri
+        # "retry" — loop back to re-prompt
 
 
 def _collect_and_verify_platform_oauth(
@@ -2284,6 +2430,26 @@ def _ask_tier_choice(default: str = "standard") -> str:
     return "standard" if choice.startswith("Standard") else "extended"
 
 
+def _ask_env_tint(topology: str) -> str | None:
+    """Prompt for the environment banner tint (colors the border during capture)."""
+    _choices = [
+        questionary.Choice("(none) — default theme", value="none"),
+        questionary.Choice("low — green (dev / test)", value="low"),
+        questionary.Choice("medium — amber (staging)", value="medium"),
+        questionary.Choice("high — pink (production)", value="high"),
+    ]
+    default_value = "low" if topology == "standalone" else "none"
+    result = questionary.select(
+        "Banner tint (colors the capture border for this environment):",
+        choices=_choices,
+        default=next((c for c in _choices if c.value == default_value), _choices[0]),
+        style=QSTYLE,
+    ).ask()
+    if result is None:
+        raise KeyboardInterrupt
+    return None if result == "none" else result
+
+
 def _create_standard_environment_wizard(
     env_name: str | None = None,
     from_env: str | None = None,
@@ -2564,6 +2730,9 @@ def _create_standard_environment_wizard(
         if gateway4_password:
             scoped_store.set(CredentialKey.GATEWAY4_PASSWORD, gateway4_password)
 
+    # -- Danger level (banner border tint) -----------------------------------
+    env_tint = _ask_env_tint(topology="standalone")
+
     # -- Build & save the Environment file -----------------------------------
     env = Environment(
         name=env_name,
@@ -2577,6 +2746,7 @@ def _create_standard_environment_wizard(
         gateway4_uri=gateway4_uri,
         gateway4_username=gateway4_username,
         tier="standard",
+        env_tint=env_tint,
     )
     mgr.save(env)
 
@@ -2987,19 +3157,23 @@ def create_environment_wizard(
         # Platform Client Secret was already collected right after the Client
         # ID above; only Mongo and Redis URIs are left to ask about here.
         _hint("MongoDB and Redis URIs are optional — skip if not needed for your deployment")
-        mongo_uri = ask_scheme_uri_optional(
+        mongo_uri = _collect_and_verify_db_uri(
             "MongoDB URI",
             schemes=("mongodb://", "mongodb+srv://"),
-            instruction="(leave blank to skip) ",
+            test_fn=_test_mongo_connection,
         )
-        redis_uri = ask_scheme_uri_optional(
+        redis_uri = _collect_and_verify_db_uri(
             "Redis URI",
             schemes=("redis://", "rediss://"),
-            instruction="(leave blank to skip) ",
+            test_fn=_test_redis_connection,
         )
 
     # -- Deployment Topology --------------------------------------------------
     deployment, k8s_meta = ask_deployment()
+
+    # -- Danger level (banner border tint) -----------------------------------
+    _topo_mode = deployment.get("mode", "standalone")
+    env_tint = _ask_env_tint(topology=_topo_mode)
 
     # -- Gateway4 API Credentials (if gateway4 is in the topology) ----------
     # Gateway4 is not supported in Kubernetes mode
@@ -3049,8 +3223,8 @@ def create_environment_wizard(
         creds_table.add_row("vault_auth", vault_config.auth_method.value)
         creds_table.add_row("vault_path", f"{vault_config.mount_point}/{vault_config.secret_path}")
     else:
-        creds_table.add_row("mongo_uri", mask(mongo_uri, keep=20) if mongo_uri else f"[{theme.text_dim}]— skipped[/{theme.text_dim}]")
-        creds_table.add_row("redis_uri", mask(redis_uri, keep=20) if redis_uri else f"[{theme.text_dim}]— skipped[/{theme.text_dim}]")
+        creds_table.add_row("mongo_uri", _redact_uri_credentials(mongo_uri) if mongo_uri else f"[{theme.text_dim}]— skipped[/{theme.text_dim}]")
+        creds_table.add_row("redis_uri", _redact_uri_credentials(redis_uri) if redis_uri else f"[{theme.text_dim}]— skipped[/{theme.text_dim}]")
         creds_table.add_row("platform_client_secret", mask(platform_client_secret))
 
     creds_table.add_row("platform_uri", platform_uri)
@@ -3134,6 +3308,7 @@ def create_environment_wizard(
         kubectl_context=k8s_meta.get("kubectl_context", ""),
         kubectl_namespace=k8s_meta.get("kubectl_namespace", ""),
         use_kubectl=k8s_meta.get("use_kubectl", False),
+        env_tint=env_tint,
     )
 
     mgr.save(env)

@@ -13,6 +13,36 @@ from typing import Any
 
 _PLAIN_MODE = bool(os.environ.get("NO_COLOR"))
 
+
+def _is_plain() -> bool:
+    """Runtime plain-mode check — respects compatibility_mode from config."""
+    try:
+        from platform_atlas.core.context import ctx as _ctx
+        return _ctx().config.compatibility_mode
+    except Exception:
+        return _PLAIN_MODE
+
+
+def _fmt_ms(ms: float) -> str:
+    """Format a millisecond duration as a compact human-readable string."""
+    if ms < 1000:
+        return f"{ms:.0f}ms"
+    s = ms / 1000
+    if s < 60:
+        return f"{s:.0f}s"
+    m = int(s) // 60
+    rs = int(s) % 60
+    return f"{m}m {rs}s"
+
+
+def _fmt_elapsed(s: float) -> str:
+    """Format an elapsed-seconds value as a compact human-readable string."""
+    if s < 60:
+        return f"{s:.0f}s"
+    m = int(s) // 60
+    rs = int(s) % 60
+    return f"{m}m {rs}s"
+
 from rich.console import Group
 from rich.spinner import Spinner
 from rich.panel import Panel
@@ -46,14 +76,26 @@ class CaptureUI:
     def __init__(self, state: CaptureState):
         self.state = state
         self.theme = theme
-        self._icons = {
-            ModuleStatus.PENDING: ("○", self.theme.text_ghost),
-            ModuleStatus.RUNNING: ("●", self.theme.primary_glow),
-            ModuleStatus.SUCCESS: ("✓", self.theme.success_glow),
-            ModuleStatus.FAILED: ("✗", self.theme.error_glow),
-            ModuleStatus.SKIPPED: ("◌", self.theme.warning_dim),
+
+    def _icons(self) -> dict:
+        """Return status icon map, using ASCII fallbacks in plain mode."""
+        if _is_plain():
+            return {
+                ModuleStatus.PENDING:  ("o",   self.theme.text_ghost),
+                ModuleStatus.RUNNING:  ("*",   self.theme.primary_glow),
+                ModuleStatus.SUCCESS:  ("OK",  self.theme.success_glow),
+                ModuleStatus.FAILED:   ("ERR", self.theme.error_glow),
+                ModuleStatus.SKIPPED:  ("-",   self.theme.warning_dim),
+                ModuleStatus.DEFERRED: ("-",   self.theme.text_dim),
+            }
+        return {
+            ModuleStatus.PENDING:  ("○", self.theme.text_ghost),
+            ModuleStatus.RUNNING:  ("●", self.theme.primary_glow),
+            ModuleStatus.SUCCESS:  ("✓", self.theme.success_glow),
+            ModuleStatus.FAILED:   ("✗", self.theme.error_glow),
+            ModuleStatus.SKIPPED:  ("◌", self.theme.warning_dim),
             ModuleStatus.DEFERRED: ("◌", self.theme.text_dim),
-    }
+        }
 
     def __repr__(self) -> str:
         progress = f"{self.state.completed_count}/{self.state.total_count}"
@@ -106,11 +148,11 @@ class CaptureUI:
                         dur_style = self.theme.warning
                     else:
                         dur_style = self.theme.error
-                    text.append(f"({module.duration_ms:.0f}ms)", style=dur_style)
+                    text.append(f"({_fmt_ms(module.duration_ms)})", style=dur_style)
             case ModuleStatus.FAILED:
-                text.append("✘", style=self.theme.error)
+                text.append("X" if _is_plain() else "✘", style=self.theme.error)
             case ModuleStatus.SKIPPED:
-                text.append("◌", style=self.theme.warning_dim)
+                text.append("-" if _is_plain() else "◌", style=self.theme.warning_dim)
             case ModuleStatus.DEFERRED:
                 text.append("SSH unavailable", style=f"italic {self.theme.text_dim}")
 
@@ -119,11 +161,15 @@ class CaptureUI:
     def _render_status_footer(self) -> Panel:
         """Always-present footer - shows errors/warnings or a clean status line"""
         rows = []
+        plain = _is_plain()
+        err_glyph = "ERR" if plain else "✘"
+        warn_glyph = "!" if plain else "⚠"
+
         if self.state.errors:
             for module_name, error_msg in self.state.errors:
                 display_msg = error_msg if len(error_msg) <= 100 else error_msg[:97] + "..."
                 row = Text()
-                row.append("✘ ", style=self.theme.error_glow)
+                row.append(f"{err_glyph} ", style=self.theme.error_glow)
                 row.append(f"{module_name:<20}", style=self.theme.error_glow)
                 row.append(display_msg, style=self.theme.text_primary)
                 rows.append(row)
@@ -137,18 +183,39 @@ class CaptureUI:
                 seen.add(key)
                 display_msg = msg if len(msg) <= 100 else msg[:97] + "..."
                 row = Text()
-                row.append("⚠ ", style=self.theme.warning)
+                row.append(f"{warn_glyph} ", style=self.theme.warning)
                 row.append(f"{category:<20}", style=self.theme.warning_dim)
                 row.append(display_msg, style=self.theme.text_primary)
                 rows.append(row)
 
         if not rows:
             rows.append(Text("No issues detected", style=self.theme.text_dim))
+        else:
+            hint = Text()
+            hint.append("  Full details: ", style=self.theme.text_dim)
+            hint.append("~/.atlas/atlas.log", style=f"dim {self.theme.primary_dim}")
+            rows.append(hint)
 
         content = Group(*rows)
 
-        title = "⚠ ISSUES" if (self.state.errors or self.state.warnings) else "STATUS"
+        title = f"{warn_glyph} ISSUES" if (self.state.errors or self.state.warnings) else "STATUS"
         border = self.theme.border_secondary if self.state.errors else self.theme.border_primary
+
+        if not self.state.errors:
+            try:
+                from platform_atlas.core.context import ctx as _ctx
+                from platform_atlas.core.environment import get_environment_manager as _gem
+                _config = _ctx().config
+                if _config.active_environment:
+                    _mgr = _gem()
+                    if _mgr.exists(_config.active_environment):
+                        _env = _mgr.load(_config.active_environment)
+                        _dl = getattr(_env, "env_tint", None)
+                        _TINT = {"high": "#C5258F", "medium": "#FDD058", "low": "#99CA3C"}
+                        if _dl in _TINT:
+                            border = _TINT[_dl]
+            except Exception:
+                pass
 
         return Panel(
             content,
@@ -156,7 +223,6 @@ class CaptureUI:
             title_align="left",
             border_style=border,
             padding=(0, 2),
-            height=6,
         )
 
     def render_progress_panel(self) -> Panel:
@@ -165,13 +231,13 @@ class CaptureUI:
         table.add_column("spinner", width=2)
         table.add_column("status")
 
+        icons = self._icons()
         for module in self.state.modules.values():
             if module.status == ModuleStatus.RUNNING:
-                # Create a new spinner for the running module
-                spinner = Spinner("line" if _PLAIN_MODE else "dots", style=f"bold {self.theme.spinner_color}")
+                spinner = Spinner("line" if (_PLAIN_MODE or _is_plain()) else "dots", style=f"bold {self.theme.spinner_color}")
                 table.add_row(spinner, self._render_module_row(module))
             else:
-                icon, style = self._icons[module.status]
+                icon, style = icons[module.status]
                 table.add_row(
                     Text(f"{icon}", style=style),
                     self._render_module_row(module)
@@ -333,7 +399,7 @@ class CaptureUI:
             progress_bar,
             Text(f"{percent:>3.0f}%", style=f"bold {self.theme.primary}"),
             Text(f"({completed}/{total})", style=self.theme.text_muted),
-            Text(f"{elapsed:.1f}s", style=f"dim {self.theme.primary_dim}"),
+            Text(_fmt_elapsed(elapsed), style=f"dim {self.theme.primary_dim}"),
         )
 
         return bar_table
@@ -370,6 +436,14 @@ class CaptureUI:
         components.append(self._render_status_footer())
 
         return Group(*components)
+
+    def stop(self) -> None:
+        """Restore terminal state (cursor) — called during cooperative shutdown."""
+        try:
+            from rich.console import Console as _Console
+            _Console().show_cursor(True)
+        except Exception:
+            pass
 
 class WarningCapture:
     """Context manager to capture warnings and add them to CaptureState"""

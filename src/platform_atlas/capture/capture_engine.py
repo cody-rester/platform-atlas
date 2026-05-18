@@ -28,6 +28,8 @@ from platform_atlas.capture.ui import CaptureUI, WarningCapture
 from platform_atlas.core import ui
 from platform_atlas.core.topology import COLLECTOR_TRANSPORT
 from platform_atlas.core.utils import show_premium_header
+from platform_atlas.core.shutdown import shutdown_requested, run_cleanups, register_cleanup
+from platform_atlas.core.exceptions import CaptureAborted
 from platform_atlas.capture.extended_captures import (
     capture_application_states,
     capture_all_adapter_data,
@@ -637,6 +639,7 @@ def run_capture(
     state = CaptureState()
     state.begin()
     capture_ui = CaptureUI(state)
+    register_cleanup("capture_ui", capture_ui.stop)
 
     # Initialize data structures. Per-module status lives in ``state.modules``
     # (CaptureState); the parallel ``manifest`` dict that used to be built
@@ -711,6 +714,8 @@ def run_capture(
 
         def _run_target_group(items: list[tuple[str, Callable]]) -> None:
             for name, func in items:
+                if shutdown_requested():
+                    break
                 with results_lock:
                     state.start_module(name)
                 # execute_module mutates ``state`` and ``results`` — both are
@@ -734,10 +739,16 @@ def run_capture(
                 for items in groups.values():
                     _run_target_group(items)
                     live.update(capture_ui.render())
+                    if shutdown_requested():
+                        break
             else:
                 with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="atlas-cap") as ex:
                     futures = [ex.submit(_run_target_group, items) for items in groups.values()]
                     while not all(f.done() for f in futures):
+                        if shutdown_requested():
+                            for _f in futures:
+                                _f.cancel()
+                            break
                         live.update(capture_ui.render())
                         # Coarse refresh — Rich's own refresh_per_second handles fine cadence.
                         try:
@@ -750,10 +761,18 @@ def run_capture(
                         time_module.sleep(0.1)
                     # Surface any worker exceptions deterministically.
                     for f in futures:
-                        f.result()
+                        try:
+                            f.result()
+                        except Exception:
+                            pass
             live.update(capture_ui.render())
 
         console.print()
+
+        # Check for cooperative shutdown
+        if shutdown_requested():
+            run_cleanups()
+            raise CaptureAborted("Capture stopped by user interrupt (Ctrl-C).")
 
         # ========= VERIFY PROTOCOL-PRIMARY CONFIG DATA =========
         # Config modules (mongo_conf, redis_conf, gateway4_conf) rely on

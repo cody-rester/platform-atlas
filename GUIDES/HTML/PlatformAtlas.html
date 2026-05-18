@@ -3624,6 +3624,7 @@ body {
     <a class="toc-link" href="#requirements">Requirements</a>
     <a class="toc-link" href="#installation">Installation</a>
     <a class="toc-link sub" href="#headless-linux">Headless Linux Setup</a>
+    <a class="toc-link sub" href="#upgrading">Upgrading</a>
 
     <span class="toc-heading">Configuration</span>
     <a class="toc-link" href="#first-setup">First-Time Setup</a>
@@ -3805,6 +3806,34 @@ EOF</pre>
       <pre>pip install platform_atlas_webui-1.0.0-py3-none-any.whl
 platform-atlas-webui</pre>
       <p>The WebUI shares <code>~/.atlas/</code> with the CLI — no separate setup. See the <a href="#webui">WebUI section</a> for the security model, daemon mode, and a tour of the pages.</p>
+
+      <h3 id="upgrading">Upgrading</h3>
+      <p>When a new version is available, use <code>--force-reinstall</code> and <code>--no-compile</code> instead of a plain <code>pip install -U</code>:</p>
+      <pre><span class="comment"># Upgrade the CLI</span>
+pip install --force-reinstall --no-compile platform_atlas-&lt;version&gt;-py3-none-any.whl
+
+<span class="comment"># Also upgrade the WebUI if you have it installed</span>
+pip install --force-reinstall --no-compile platform_atlas_webui-&lt;version&gt;-py3-none-any.whl</pre>
+
+      <p>A plain <code>pip install -U</code> replaces source files but does not reliably clean up <code>.pyc</code> bytecode left over from the previous version. If a module was renamed or removed between releases, stale bytecode can survive and cause confusing import errors — or silently run old code. This is most common on RHEL and NFS-mounted filesystems where coarse file timestamps prevent Python's normal cache-invalidation check from firing.</p>
+
+      <table>
+        <thead><tr><th>Flag</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>--force-reinstall</code></td><td>Forces a full remove-and-reinstall even if the version hasn't changed. Orphaned files from the old version are cleaned up properly.</td></tr>
+          <tr><td><code>--no-compile</code></td><td>Skips pre-generating <code>.pyc</code> bytecode during install. Python generates it fresh on first run instead, so stale bytecode can never coexist with new source files.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout note">
+        <span class="callout-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
+        <div class="callout-body"><strong>First run after upgrading will be slightly slower.</strong> Because <code>--no-compile</code> defers bytecode compilation, the very first invocation of <code>platform-atlas</code> after an upgrade takes a second or two longer while Python builds the cache. This is a one-time cost — every run after that is normal speed.</div>
+      </div>
+
+      <div class="callout success">
+        <span class="callout-icon">✓</span>
+        <div class="callout-body"><strong>Your data is safe.</strong> Upgrading never touches <code>~/.atlas/</code> — your environments, sessions, captured data, and configuration are all preserved.</div>
+      </div>
     </section>
 
     <!-- ── First-Time Setup ───────────────────────────── -->

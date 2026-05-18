@@ -8,6 +8,7 @@ Session edit allows changing bindings before capture begins.
 """
 
 import os
+import re
 import logging
 from pathlib import Path
 from argparse import Namespace
@@ -20,7 +21,7 @@ from rich.prompt import Confirm
 from platform_atlas.core.registry import registry
 from platform_atlas.core.context import ctx
 from platform_atlas.core.log_config import attach_session_log, detach_handler
-from platform_atlas.core.exceptions import AtlasError
+from platform_atlas.core.exceptions import AtlasError, CaptureAborted
 
 from platform_atlas.core import ui
 
@@ -299,6 +300,43 @@ def _show_session_status(session, *, show_bindings: bool = True) -> None:
     console.print()
 
 
+_RESERVED_NAMES = frozenset({"latest", "current", "active", "temp", "tmp"})
+_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,62}[a-z0-9]$|^[a-z]{1}[a-z0-9]{1,63}$")
+
+
+def _validate_session_name(raw: str) -> tuple[bool, str, str]:
+    """Validate a session name. Returns (is_valid, cleaned_suggestion, reason)."""
+    if len(raw) < 3:
+        return False, _derive_name_suggestion(raw, ""), "name must be at least 3 characters"
+    if len(raw) > 64:
+        return False, _derive_name_suggestion(raw, ""), "name must be at most 64 characters"
+    if raw in _RESERVED_NAMES:
+        return False, _derive_name_suggestion(raw, ""), f"'{raw}' is a reserved name"
+    if not re.match(r"^[a-z][a-z0-9-]*[a-z0-9]$", raw) and not re.match(r"^[a-z][a-z0-9]?$", raw):
+        return False, _derive_name_suggestion(raw, ""), (
+            "name must start with a letter, end with a letter or digit, "
+            "contain only lowercase letters, digits, and hyphens"
+        )
+    return True, raw, ""
+
+
+def _derive_name_suggestion(raw: str, env_name: str) -> str:
+    """Derive a cleaned session name suggestion from an invalid raw name."""
+    import re as _re
+    from datetime import date
+    s = raw.lower()
+    s = _re.sub(r"[^a-z0-9]+", "-", s)
+    s = s.strip("-")
+    if len(s) < 3:
+        date_str = date.today().strftime("%Y-%m-%d")
+        env_part = env_name.lower()[:20].strip("-") if env_name else "session"
+        s = f"audit-{env_part}-{date_str}" if env_part else f"audit-{date_str}"
+        s = _re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    if len(s) > 64:
+        s = s[:64].rstrip("-")
+    return s
+
+
 # =================================================
 # Session Command Handlers - FULLY INTEGRATED
 # =================================================
@@ -315,6 +353,82 @@ def handle_session_create(args: Namespace) -> int:
         manager = get_session_manager()
 
         session_name = args.session_name
+
+        # ── Session name validation ──────────────────────────────────
+        import sys as _sys
+        import os as _os
+        _is_tty = _os.isatty(_sys.stdin.fileno()) if hasattr(_sys.stdin, "fileno") else False
+
+        _name_valid, _name_suggestion, _name_reason = _validate_session_name(session_name)
+        if not _name_valid:
+            if not _is_tty:
+                # Non-interactive (piped/scripted): fail immediately
+                console.print(
+                    f"  [{theme.error}]✘ Invalid session name '{session_name}': "
+                    f"{_name_reason}[/{theme.error}]"
+                )
+                console.print(f"  [{theme.text_dim}]Suggestion: {_name_suggestion}[/{theme.text_dim}]")
+                return 1
+            # Interactive: offer suggestion
+            _name_choices = [
+                questionary.Choice(f"Use suggestion: {_name_suggestion}", value="suggest"),
+                questionary.Choice("Enter a different name", value="rename"),
+                questionary.Choice("Cancel", value="cancel"),
+            ]
+            console.print(
+                f"\n  [{theme.warning}]⚠ Invalid name '{session_name}': {_name_reason}[/{theme.warning}]"
+            )
+            _name_action = questionary.select(
+                "How would you like to proceed?",
+                choices=_name_choices,
+                style=QSTYLE,
+            ).ask()
+            if _name_action is None or _name_action == "cancel":
+                console.print(f"  [{theme.text_dim}]Cancelled[/{theme.text_dim}]")
+                return 1
+            if _name_action == "rename":
+                _new_raw = questionary.text(
+                    "Enter session name:",
+                    validate=lambda v: _validate_session_name(v)[0] or _validate_session_name(v)[2],
+                    style=QSTYLE,
+                ).ask()
+                if _new_raw is None:
+                    console.print(f"  [{theme.text_dim}]Cancelled[/{theme.text_dim}]")
+                    return 1
+                session_name = _new_raw.strip()
+            else:
+                session_name = _name_suggestion
+
+        # ── Collision detection ──────────────────────────────────────
+        from platform_atlas.core.session_manager import ATLAS_HOME_SESSIONS as _SESSIONS_DIR
+        if (_SESSIONS_DIR / session_name).exists():
+            from datetime import datetime as _dt
+            _ts = _dt.now().strftime("%H%M")
+            _collision_choices = [
+                questionary.Choice(f"Append timestamp: {session_name}-{_ts}", value="timestamp"),
+                questionary.Choice("Replace existing (moves old to .bak)", value="replace"),
+                questionary.Choice("Cancel", value="cancel"),
+            ]
+            _coll_action = questionary.select(
+                f"Session '{session_name}' already exists — what should we do?",
+                choices=_collision_choices,
+                style=QSTYLE,
+            ).ask()
+            if _coll_action is None or _coll_action == "cancel":
+                console.print(f"  [{theme.text_dim}]Cancelled[/{theme.text_dim}]")
+                return 1
+            if _coll_action == "timestamp":
+                session_name = f"{session_name}-{_ts}"
+            elif _coll_action == "replace":
+                _bak_name = f"{session_name}.bak-{_ts}"
+                import shutil as _shutil
+                _old_dir = _SESSIONS_DIR / session_name
+                _bak_dir = _SESSIONS_DIR / _bak_name
+                if _old_dir.exists():
+                    _shutil.move(str(_old_dir), str(_bak_dir))
+                    console.print(
+                        f"  [{theme.text_dim}]Moved existing session to: {_bak_name}[/{theme.text_dim}]"
+                    )
 
         # ── Resolve environment ──────────────────────────────────
         env_name = getattr(args, "env", None)
@@ -907,6 +1021,22 @@ def handle_session_run_capture(args: Namespace) -> int:
             console.print()
             ui.next_step("platform-atlas session run validate")
             return 0
+        except CaptureAborted:
+            from platform_atlas.core.shutdown import run_cleanups as _run_cleanups
+            _run_cleanups()
+            try:
+                manager.set_status(session.name, "aborted")
+            except Exception:
+                pass
+            # Save whatever was captured (the capture engine writes JSON before raising)
+            console.print(f"\n  [{theme.warning}]⚠ Capture aborted.[/{theme.warning}]")
+            console.print(
+                f"  [{theme.text_dim}]Session '{session.name}' saved (partial).[/{theme.text_dim}]"
+            )
+            console.print(
+                f"  [{theme.text_dim}]resume: atlas capture --resume {session.name}[/{theme.text_dim}]"
+            )
+            return 130
         finally:
             try:
                 _capture_lock.__exit__(None, None, None)
@@ -1009,9 +1139,41 @@ def handle_session_run_validate(args: Namespace) -> int:
             session.metadata.skip_count = len(df[df['status'].str.upper() == 'SKIP'])
             session.mark_stage_complete(SessionStage.VALIDATE)
 
-            console.print(f"\n[{theme.success}]✓[/{theme.success}] Validation complete")
-            console.print(f"  Results: {session.metadata.pass_count} passed, {session.metadata.fail_count} failed")
-            console.print(f"  Saved to: {session.validation_file}")
+            passed  = session.metadata.pass_count
+            failed  = session.metadata.fail_count
+            skipped = session.metadata.skip_count
+            evaluated = passed + failed
+            pct = round(passed / evaluated * 100, 1) if evaluated else 0.0
+
+            if pct >= 90:
+                score_color = theme.success
+            elif pct >= 70:
+                score_color = theme.warning
+            else:
+                score_color = theme.error
+
+            from rich.table import Table as _Table
+            from rich import box as _box
+            from rich.panel import Panel as _Panel
+
+            score_table = _Table(box=_box.SIMPLE, show_header=False, pad_edge=False)
+            score_table.add_column(style=theme.text_dim, min_width=10)
+            score_table.add_column(justify="right", min_width=6)
+            score_table.add_row("Pass",  f"[{theme.success}]{passed}[/{theme.success}]")
+            score_table.add_row("Fail",  f"[{theme.error}]{failed}[/{theme.error}]")
+            if skipped:
+                score_table.add_row("Skip", f"[{theme.text_dim}]{skipped}[/{theme.text_dim}]")
+            score_table.add_row("Score", f"[bold {score_color}]{pct:.1f}%[/bold {score_color}]")
+
+            console.print()
+            console.print(_Panel(
+                score_table,
+                title=f"[bold {theme.primary_glow}]Validation Results[/bold {theme.primary_glow}]",
+                border_style=score_color,
+                box=_box.ROUNDED,
+                expand=False,
+            ))
+            console.print(f"  [{theme.text_dim}]Saved to: {session.validation_file}[/{theme.text_dim}]")
             console.print()
             ui.next_step("platform-atlas session run report")
             return 0
@@ -1286,6 +1448,8 @@ def handle_session_run_report(args: Namespace) -> int:
                 import webbrowser
                 webbrowser.open(f"file://{output_path.absolute()}")
                 console.print(f"\n  [{theme.text_dim}]Opened compliance report in browser[/{theme.text_dim}]")
+            console.print()
+            ui.next_step("platform-atlas", label="Audit Complete — View Dashboard")
             return 0
 
         finally:
@@ -1346,7 +1510,7 @@ def handle_session_list(args: Namespace) -> int:
         table.add_column("Organization", style=theme.text_dim)
         table.add_column("Ruleset", style=theme.secondary)
         table.add_column("Profile", style=theme.text_dim)
-        table.add_column("Status", style="yellow")
+        table.add_column("Status")
         table.add_column("Created", style="dim")
         table.add_column("Progress", justify="center")
         table.add_column("Results", justify="right")
@@ -1357,15 +1521,16 @@ def handle_session_list(args: Namespace) -> int:
 
             # Status with color
             status_colors = {
-                "created": theme.text_dim,
-                "capturing": theme.primary,
-                "captured": theme.info,
+                "created":    theme.text_dim,
+                "capturing":  theme.primary,
+                "captured":   theme.info,
                 "validating": theme.warning,
-                "validated": theme.success,
-                "reported": theme.success_glow,
-                "failed": theme.error,
+                "validated":  theme.success,
+                "reported":   theme.success_glow,
+                "failed":     theme.error,
+                "aborted":    theme.warning,
             }
-            status_style = status_colors.get(session.metadata.status.value, "white")
+            status_style = status_colors.get(session.metadata.status.value, theme.text_dim)
             status_text = f"[{status_style}]{session.metadata.status.value}[/{status_style}]"
 
             # Created date
@@ -1911,108 +2076,234 @@ def handle_session_repair(args: Namespace) -> int:
         return 1
 
 
-@registry.register("session", "prune", description="Delete uncaptured sessions older than N days")
+@registry.register("session", "prune", description="Prune old sessions matching filter criteria")
 def handle_session_prune(args: Namespace) -> int:
     """
-    Bulk-delete sessions that were created but never captured,
-    older than --older-than DAYS days.
+    Bulk-delete sessions matching the filter criteria.
 
-    The active session is always skipped even if it qualifies.
-    Use --dry-run to preview without deleting. Use --force to skip confirmation.
+    Filters AND together. Dry-run is the default — pass --no-dry-run to delete.
+    The active session is always skipped even if it matches.
     """
     from datetime import datetime, timezone, timedelta
     from rich.table import Table
     from rich import box
+    import questionary
 
     try:
         manager = get_session_manager()
-        older_than: int = args.older_than
-        dry_run: bool = getattr(args, "dry_run", False)
-        force: bool = getattr(args, "force", False)
+        older_than_secs: int = args.older_than      # duration in seconds from argparse
+        keep_last: int | None = getattr(args, "keep_last", None)
+        prune_status: str | None = getattr(args, "prune_status", None)
+        prune_env: str | None = getattr(args, "prune_env", None)
+        dry_run: bool = getattr(args, "dry_run", True)
+        yes: bool = getattr(args, "yes", False)
 
-        cutoff = datetime.now(tz=timezone.utc) - timedelta(days=older_than)
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(seconds=older_than_secs)
         active_name = manager.get_active_session_name()
 
         all_sessions = manager.list()
+
+        # Apply --keep-last: sort by updated_at descending, mark the first N as keepers
+        keep_names: set[str] = set()
+        if keep_last is not None and keep_last > 0:
+            sorted_sessions = sorted(
+                all_sessions,
+                key=lambda s: (s.metadata.updated_at or s.metadata.created_at),
+                reverse=True,
+            )
+            keep_names = {s.name for s in sorted_sessions[:keep_last]}
+
+        _STATUS_MAP = {
+            "ok": "reported",
+            "warn": "reported",
+            "fail": "failed",
+            "aborted": "aborted",
+            "empty": "created",
+        }
+
         candidates = []
         skipped_active = False
 
         for session in all_sessions:
-            # Only sessions that were never captured
-            if session.metadata.capture_completed:
-                continue
-            # Age check against created_at
-            created = session.metadata.created_at
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            if created >= cutoff:
-                continue
-            # Never touch the active session
             if session.name == active_name:
                 skipped_active = True
                 continue
+            if session.name in keep_names:
+                continue
+
+            # Age filter
+            ts = session.metadata.updated_at or session.metadata.created_at
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts >= cutoff:
+                continue
+
+            # Env filter
+            if prune_env and session.metadata.environment != prune_env:
+                continue
+
+            # Status filter
+            if prune_status:
+                sess_status = str(session.metadata.status)
+                if prune_status == "ok":
+                    # "ok" = reported with no failures (we can't tell from status alone, map to reported)
+                    if sess_status != "reported":
+                        continue
+                elif prune_status == "empty":
+                    if sess_status not in ("created",):
+                        continue
+                else:
+                    if sess_status != _STATUS_MAP.get(prune_status, prune_status):
+                        continue
+
             candidates.append(session)
 
         if not candidates:
-            console.print(f"\n  [{theme.text_dim}]No uncaptured sessions older than {older_than} days.[/{theme.text_dim}]\n")
+            console.print(f"\n  [{theme.text_dim}]No sessions matched the filter.[/{theme.text_dim}]\n")
             if skipped_active:
                 console.print(
-                    f"  [{theme.warning}]Note: active session '{active_name}' was skipped "
-                    f"(deactivate it first to include it).[/{theme.warning}]\n"
+                    f"  [{theme.warning}]Note: active session '{active_name}' "
+                    f"was excluded from the filter.[/{theme.warning}]\n"
                 )
             return 0
 
-        # Build preview table
+        # Compute total size
+        total_bytes = sum(s.get_size() for s in candidates)
+        total_mb = total_bytes / (1024 * 1024)
+
+        # Build preview table (cap at 10, show "N more")
+        cap = 10
         table = Table(
-            title=f"{'[dim]Dry run — [/dim]' if dry_run else ''}Uncaptured sessions to prune ({len(candidates)})",
+            title=f"{'[dim]Dry run — [/dim]' if dry_run else ''}Sessions to prune ({len(candidates)})",
             box=box.ROUNDED,
         )
         table.add_column("Name", style="cyan")
         table.add_column("Environment", style=theme.accent)
-        table.add_column("Created", style="dim")
-        table.add_column("Age (days)", justify="right", style=theme.warning)
+        table.add_column("Last Activity", style="dim")
+        table.add_column("Status", style=theme.warning)
+        table.add_column("Size", justify="right", style="dim")
 
         today = datetime.now(tz=timezone.utc)
-        for session in candidates:
-            created = session.metadata.created_at
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            age_days = (today - created).days
+        for session in candidates[:cap]:
+            ts = session.metadata.updated_at or session.metadata.created_at
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_days = (today - ts).days
             env_display = session.metadata.environment or f"[{theme.text_ghost}]—[/{theme.text_ghost}]"
+            size_kb = session.get_size() / 1024
+            size_display = f"{size_kb:.0f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
             table.add_row(
                 session.name,
                 env_display,
-                created.strftime("%Y-%m-%d"),
-                str(age_days),
+                f"{ts.strftime('%Y-%m-%d')} ({age_days}d ago)",
+                str(session.metadata.status),
+                size_display,
             )
 
         console.print()
         console.print(table)
 
+        if len(candidates) > cap:
+            console.print(
+                f"  [{theme.text_dim}]… {len(candidates) - cap} more not shown[/{theme.text_dim}]"
+            )
+
+        console.print(
+            f"\n  {len(candidates)} session(s) matched · "
+            f"{total_mb:.1f} MB total"
+        )
+
         if skipped_active:
             console.print(
-                f"\n  [{theme.warning}]Note: active session '{active_name}' was skipped.[/{theme.warning}]"
+                f"  [{theme.warning}]Note: active session '{active_name}' was excluded.[/{theme.warning}]"
             )
 
         if dry_run:
+            if len(candidates) > cap:
+                _show_all = questionary.confirm(
+                    f"Show all {len(candidates)} sessions?",
+                    default=False,
+                    style=QSTYLE,
+                ).ask()
+                if _show_all is None:
+                    raise KeyboardInterrupt
+                if _show_all:
+                    all_table = Table(
+                        title=f"All {len(candidates)} sessions to prune",
+                        box=box.ROUNDED,
+                    )
+                    all_table.add_column("Name", style="cyan")
+                    all_table.add_column("Environment", style=theme.accent)
+                    all_table.add_column("Last Activity", style="dim")
+                    all_table.add_column("Status", style=theme.warning)
+                    all_table.add_column("Size", justify="right", style="dim")
+                    for session in candidates:
+                        ts2 = session.metadata.updated_at or session.metadata.created_at
+                        if ts2.tzinfo is None:
+                            ts2 = ts2.replace(tzinfo=timezone.utc)
+                        age_days2 = (today - ts2).days
+                        size_kb2 = session.get_size() / 1024
+                        size_display2 = f"{size_kb2:.0f} KB" if size_kb2 < 1024 else f"{size_kb2 / 1024:.1f} MB"
+                        all_table.add_row(
+                            session.name,
+                            session.metadata.environment or "—",
+                            f"{ts2.strftime('%Y-%m-%d')} ({age_days2}d ago)",
+                            str(session.metadata.status),
+                            size_display2,
+                        )
+                    console.print()
+                    console.print(all_table)
             console.print(
                 f"\n  [{theme.text_dim}]Dry run — nothing deleted. "
-                f"Remove --dry-run to prune these {len(candidates)} session(s).[/{theme.text_dim}]\n"
+                f"Pass --no-dry-run to delete.[/{theme.text_dim}]\n"
             )
             return 0
 
-        # Confirm unless --force
-        if not force:
+        # Confirm unless --yes
+        if not yes:
             console.print()
-            if not Confirm.ask(
-                f"Permanently delete {len(candidates)} session(s)?", default=False
-            ):
+            _confirm_choices = [
+                questionary.Choice("Yes, delete these sessions", value="yes"),
+                questionary.Choice("Show all sessions first", value="show_all"),
+                questionary.Choice("Cancel", value="cancel"),
+            ]
+            _confirm = questionary.select(
+                f"Run for real? Delete {len(candidates)} session(s)?",
+                choices=_confirm_choices,
+                style=QSTYLE,
+            ).ask()
+            if _confirm is None or _confirm == "cancel":
                 console.print(f"  [{theme.text_dim}]Cancelled[/{theme.text_dim}]")
                 return 0
+            if _confirm == "show_all":
+                # Show full table without cap
+                all_table = Table(title=f"All {len(candidates)} sessions to prune", box=box.ROUNDED)
+                all_table.add_column("Name", style="cyan")
+                all_table.add_column("Environment", style=theme.accent)
+                all_table.add_column("Last Activity", style="dim")
+                all_table.add_column("Status", style=theme.warning)
+                for session in candidates:
+                    ts2 = session.metadata.updated_at or session.metadata.created_at
+                    if ts2.tzinfo is None:
+                        ts2 = ts2.replace(tzinfo=timezone.utc)
+                    age_days2 = (today - ts2).days
+                    all_table.add_row(
+                        session.name,
+                        session.metadata.environment or "—",
+                        f"{ts2.strftime('%Y-%m-%d')} ({age_days2}d ago)",
+                        str(session.metadata.status),
+                    )
+                console.print()
+                console.print(all_table)
+                if not questionary.confirm(
+                    f"Delete all {len(candidates)} session(s)?", default=False, style=QSTYLE
+                ).ask():
+                    console.print(f"  [{theme.text_dim}]Cancelled[/{theme.text_dim}]")
+                    return 0
 
         # Delete
         deleted = 0
-        failed = 0
+        failed_count = 0
         for session in candidates:
             try:
                 manager.delete(session.name, force=True)
@@ -2020,17 +2311,17 @@ def handle_session_prune(args: Namespace) -> int:
                 deleted += 1
             except SessionError as e:
                 console.print(f"  [red]✗[/red] {session.name}: {e.message}")
-                failed += 1
+                failed_count += 1
 
         console.print()
         console.print(
             f"  [{theme.success}]✓[/{theme.success}] {deleted} session(s) deleted"
-            + (f", {failed} failed" if failed else "")
+            + (f", {failed_count} failed" if failed_count else "")
         )
         console.print()
-        return 0 if not failed else 1
+        return 0 if not failed_count else 1
 
-    except SessionError as e:
+    except (SessionError, NoActiveSessionError) as e:
         console.print(f"[red]✗[/red] {e.message}")
         return 1
 

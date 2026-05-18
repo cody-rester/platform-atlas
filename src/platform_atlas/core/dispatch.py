@@ -13,7 +13,6 @@ from rich.console import Console
 # ATLAS Core
 from platform_atlas.core.cli import get_command_path
 from platform_atlas.core.registry import registry
-import platform_atlas.core.handlers # pylint: disable=unused-import # REQUIRED
 from platform_atlas.core.exceptions import AtlasError, CredentialError
 from platform_atlas.core import ui
 from platform_atlas.core._version import __version__
@@ -39,6 +38,12 @@ def dispatch(args: Namespace) -> int:
             console.print("\n  Run [bold]platform-atlas config init[/bold] to set up")
             console.print("  Run [bold]platform-atlas --help[/bold] for all commands\n")
         return 0
+
+    # Handlers are imported here rather than at module level so the dashboard
+    # path (no command_path) never pays the cost of loading all handler modules.
+    # This import must stay above registry.resolve() — it triggers the
+    # @registry.register decorators that populate the registry.
+    import platform_atlas.core.handlers  # pylint: disable=unused-import,import-outside-toplevel
 
     cmd = registry.resolve(command_path)
 

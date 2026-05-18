@@ -121,3 +121,7 @@ class TierViolationError(AtlasError):
         super().__init__(msg)
         self.component = component
         self.hint = hint
+
+
+class CaptureAborted(AtlasError):
+    """Raised when capture is stopped by a user-requested cooperative shutdown."""
