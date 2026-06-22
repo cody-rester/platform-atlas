@@ -52,6 +52,25 @@ def dispatch(args: Namespace) -> int:
         console.print(f"[red]✗[/red] Unknown command: {' '.join(command_path)}")
         return 1
 
+    # SaaS tier: Continuous Audit and Support Bundle are platform-anchored
+    # features with no role in a single-gateway SaaS audit. Refuse the whole
+    # command group with a clear message before the handler runs. Standard
+    # and Extended are unaffected.
+    if command_path[0] in ("continuous-audit", "support-bundle"):
+        try:
+            from platform_atlas.core.context import ctx
+            if ctx().is_saas:
+                feature = ("Continuous Audit" if command_path[0] == "continuous-audit"
+                           else "Support Bundle")
+                console.print(
+                    f"  [{theme.warning}]{feature} is not available in SaaS mode.[/{theme.warning}]\n"
+                    f"  [{theme.text_dim}]SaaS audits are scoped to a single gateway — "
+                    f"this feature applies to Standard or Extended environments.[/{theme.text_dim}]"
+                )
+                return 1
+        except Exception:
+            logger.debug("SaaS dispatch gate skipped (context unavailable)", exc_info=True)
+
     logger.debug("Resolved handler: %s", cmd.handler.__name__)
 
     # Execute handler with error handling

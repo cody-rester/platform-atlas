@@ -254,6 +254,95 @@ def sync_bundled_files() -> None:
             logger.debug("  [%s] updated: %s", category, name)
 
 
+# ── Force Re-Sync (destructive, user-invoked) ────────────────
+
+def _list_json_names(directory: Path) -> list[str]:
+    """Return sorted names of the ``*.json`` files directly inside ``directory``.
+
+    Non-recursive on purpose: the rulesets dir contains a ``profiles`` subdir
+    that must be treated as its own bucket, not folded into the ruleset list.
+    """
+    if not directory.is_dir():
+        return []
+    return sorted(p.name for p in directory.glob("*.json") if p.is_file())
+
+
+@dataclass
+class ForceSyncPlan:
+    """Preview of a force re-sync (full wipe + recopy from the bundled source).
+
+    ``lost_*`` are the local files with no bundled counterpart — user-created
+    rulesets/profiles, or newer copies downloaded via ``ruleset update``. A full
+    wipe deletes these permanently, so the handler surfaces them before asking
+    the user to confirm.
+    """
+    source_rulesets: list[str] = field(default_factory=list)
+    source_profiles: list[str] = field(default_factory=list)
+    local_rulesets: list[str] = field(default_factory=list)
+    local_profiles: list[str] = field(default_factory=list)
+
+    @property
+    def lost_rulesets(self) -> list[str]:
+        bundled = set(self.source_rulesets)
+        return [n for n in self.local_rulesets if n not in bundled]
+
+    @property
+    def lost_profiles(self) -> list[str]:
+        bundled = set(self.source_profiles)
+        return [n for n in self.local_profiles if n not in bundled]
+
+
+def plan_force_resync() -> ForceSyncPlan:
+    """Compute what a force re-sync would copy and which local-only files it would destroy."""
+    return ForceSyncPlan(
+        source_rulesets=_list_json_names(PROJECT_RULESETS),
+        source_profiles=_list_json_names(PROJECT_PROFILES),
+        local_rulesets=_list_json_names(ATLAS_RULESETS_DIR),
+        local_profiles=_list_json_names(ATLAS_PROFILES_DIR),
+    )
+
+
+def force_resync_from_source() -> SyncResult:
+    """Full-wipe the local rulesets + profiles and copy the bundled set fresh.
+
+    DESTRUCTIVE. Every ``*.json`` in ``ATLAS_RULESETS_DIR`` and
+    ``ATLAS_PROFILES_DIR`` is deleted first — including user-created files and
+    rulesets downloaded via ``ruleset update`` — then the bundled source is
+    copied over. No backup is taken, so callers MUST confirm with the user
+    before invoking. Unlike the automatic startup sync, the ruleset version
+    gate is ignored here: the bundled files always win.
+    """
+    result = SyncResult()
+
+    ATLAS_RULESETS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    ATLAS_PROFILES_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    # 1. Wipe local JSON. The rulesets glob is non-recursive, so the nested
+    #    profiles subdir is left alone here and cleared on its own below.
+    removed = 0
+    stale_files = list(ATLAS_RULESETS_DIR.glob("*.json")) + list(ATLAS_PROFILES_DIR.glob("*.json"))
+    for stale in stale_files:
+        if stale.is_file():
+            stale.unlink()
+            removed += 1
+    logger.info("Force re-sync: removed %d local ruleset/profile file(s)", removed)
+
+    # 2. Copy the bundled source over the now-empty dirs.
+    for src_dir, dest_dir in (
+        (PROJECT_RULESETS, ATLAS_RULESETS_DIR),
+        (PROJECT_PROFILES, ATLAS_PROFILES_DIR),
+    ):
+        if not src_dir.is_dir():
+            continue
+        for src_file in sorted(src_dir.glob("*.json")):
+            if src_file.is_file():
+                shutil.copy2(src_file, dest_dir / src_file.name)
+                result.added.append(src_file.name)
+
+    logger.info("Force re-sync: copied %d file(s) from source", len(result.added))
+    return result
+
+
 # ── Environment Initialization ───────────────────────────────
 
 def init_env() -> None:

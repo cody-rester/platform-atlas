@@ -30,12 +30,11 @@ from rich.console import Console, Group
 from rich.align import Align
 
 from platform_atlas.core.paths import ATLAS_HOME, ATLAS_CONFIG_FILE, ATLAS_ENVIRONMENTS_DIR
-from platform_atlas.core.utils import atomic_write_json
+from platform_atlas.core.utils import atomic_write_json, redact_uri_credentials
 from platform_atlas.core.topology import (
     DeploymentMode, NodeRole, TargetNode, DeploymentTopology,
 )
 from platform_atlas.core.credentials import (
-    credential_store,
     scoped_service_name,
     CredentialKey,
     CredentialStore,
@@ -44,6 +43,8 @@ from platform_atlas.core.credentials import (
     VaultBackend,
     VaultConfig,
     verify_keyring_backend,
+    active_secret_store,
+    _probe_keyring,
 )
 from platform_atlas.core.environment import (
     Environment,
@@ -92,21 +93,17 @@ def mask(s: str, keep: int = 4) -> str:
 
 
 def _redact_uri_credentials(uri: str) -> str:
-    """Replace username and password in a URI with bullets, leaving host/port/path readable.
+    """Mask a URI's username/password with bullets for on-screen display.
+
+    Thin wrapper over the shared :func:`redact_uri_credentials` (the same
+    redactor used to scrub capture artifacts) with a display-friendly bullet
+    mask instead of the asterisks written to disk.
 
     ``mongodb://user:pass@host:27017/db``  →  ``mongodb://•••:•••@host:27017/db``
     ``redis://:pass@host:6379``            →  ``redis://:•••@host:6379``
     ``redis://host:6379``                  →  ``redis://host:6379``  (no credentials)
     """
-    def _replace(m: re.Match) -> str:
-        scheme_sep = m.group(1)       # "://"
-        user = m.group(2)             # username, possibly ""
-        password_part = m.group(3)    # ":password" or None
-        redacted_user = "•••" if user else ""
-        redacted_pass = ":•••" if password_part is not None else ""
-        return f"{scheme_sep}{redacted_user}{redacted_pass}@"
-
-    return re.sub(r"(://)([^:@/]*)(:[^@/]*)?@", _replace, uri)
+    return redact_uri_credentials(uri, mask="•••")
 
 
 # Strict HTTP/HTTPS URL guard used for Platform / Gateway4 / Vault URLs.
@@ -1332,11 +1329,123 @@ def _ask_gateway_version() -> str | None:
     ).ask()
     return version
 
+def _validate_remote_conf_path(path: str) -> bool | str:
+    """Validator for the remote gateway.conf path prompt.
+
+    The path is read over SSH with ``cat <path>`` (unquoted, so a leading ``~``
+    expands on the remote host), so it must be absolute or ``~``-rooted and use a
+    safe charset. Existence and server-mode are checked later by preflight/capture
+    over SSH — we can't read the remote file from inside a local prompt.
+    """
+    p = (path or "").strip()
+    if not p:
+        return "Enter the path to the server's gateway.conf"
+    if not re.match(r"^[A-Za-z0-9._/~-]+$", p):
+        return "Path may only contain letters, digits, and the characters . _ - / ~"
+    if not (p.startswith("/") or p.startswith("~")):
+        return "Enter an absolute path (e.g. /etc/gateway/gateway.conf) or a ~ path"
+    return True
+
+
+def _ask_gateway5_source() -> tuple[str, str]:
+    """Ask how Atlas should read this Gateway 5's configuration.
+
+    Returns ``(source_kind, path)``:
+      * ``("ssh", "")``       — read ``GATEWAY_*`` via ``printenv`` over SSH; the
+                                caller builds normal SSH gateway node(s).
+      * ``("conf", path)``    — read the IAG5 SERVER config file (gateway.conf,
+                                INI) over SSH. ``path`` is the REMOTE path on the
+                                gateway host; the caller builds normal SSH gateway
+                                node(s) and sets ``gateway5_conf_path`` on them.
+      * ``("compose", path)`` — parse a local Docker Compose file.
+      * ``("helm", path)``    — parse a local Helm values.yaml.
+
+    ``compose``/``helm`` paths are local files validated as YAML; the ``conf`` path
+    is a remote path (only charset-validated here — preflight reads it over SSH and
+    confirms it is a server-mode config). ``compose``/``helm`` share one
+    auto-detecting parser, so the distinction is only the prompt wording.
+    """
+    choice = questionary.select(
+        "How should Atlas read this Gateway 5's configuration?",
+        choices=[
+            questionary.Choice(
+                "SSH · printenv       — read GATEWAY_* env vars from the running server",
+                value="ssh",
+            ),
+            questionary.Choice(
+                "SSH · server config  — read the server's gateway.conf file over SSH",
+                value="conf",
+            ),
+            questionary.Choice(
+                "Docker Compose file  — parse a compose file's environment block",
+                value="compose",
+            ),
+            questionary.Choice(
+                "Helm values file     — parse an IAG5 chart values.yaml",
+                value="helm",
+            ),
+        ],
+        style=QSTYLE,
+    ).ask()
+    if choice is None:
+        _bail()
+    if choice == "ssh":
+        return "ssh", ""
+    if choice == "conf":
+        path = questionary.text(
+            "Path to the Gateway 5 SERVER config file on the host",
+            default="/etc/gateway/gateway.conf",
+            validate=_validate_remote_conf_path,
+            style=QSTYLE,
+        ).ask()
+        if path is None:
+            _bail()
+        return "conf", path.strip()
+
+    file_label = "Docker Compose file" if choice == "compose" else "Helm values.yaml"
+    path = questionary.path(
+        f"Path to your Gateway 5 {file_label}",
+        only_directories=False,
+        validate=_validate_yaml_file,
+        style=QSTYLE,
+    ).ask()
+    if path is None:
+        _bail()
+    return choice, str(Path(path).expanduser())
+
+
+def _build_gateway5_file_node(source_path: str, label: str = "iag5-file") -> TargetNode:
+    """Build a virtual, SSH-less Gateway5 node backed by a local Compose/Helm file.
+
+    The node carries only the ``gateway5`` module; its env vars are parsed from
+    ``source_path`` at capture time (transport ``"gateway5_file"``), so no host
+    or SSH credentials are needed.
+    """
+    return TargetNode(
+        role=NodeRole.IAG,
+        host="gateway5-file",
+        label=label,
+        transport="gateway5_file",
+        modules=["gateway5"],
+        gateway5_source_path=source_path,
+    )
+
+
 def _ask_gateway_nodes(common_ssh: dict) -> list[TargetNode]:
     """Ask about gateway servers and return configured TargetNodes"""
     gw_version = _ask_gateway_version()
     if gw_version is None:
         return []
+
+    # Gateway5 can be sourced from a local Compose/Helm file, or read from the
+    # server's gateway.conf over SSH, instead of printenv.
+    gw5_conf_path = ""
+    if gw_version == "gateway5":
+        source_kind, source_path = _ask_gateway5_source()
+        if source_kind in ("compose", "helm"):
+            return [_build_gateway5_file_node(source_path)]
+        if source_kind == "conf":
+            gw5_conf_path = source_path
 
     count = _ask_node_count("How many gateway servers", minimum=1, default=1)
     hosts = _ask_hosts_for_role("Gateway", count)
@@ -1349,6 +1458,7 @@ def _ask_gateway_nodes(common_ssh: dict) -> list[TargetNode]:
             host=host,
             label=f"iag-{i:02d}",
             modules=gw_modules,
+            gateway5_conf_path=gw5_conf_path,
             **common_ssh,
         ))
 
@@ -1457,12 +1567,21 @@ def _display_topology_review(
         elif transport_label == "control_master":
             transport_badge = f"[{theme.info}]CM[/{theme.info}]"
             has_cm_node = True
+        elif transport_label == "gateway5_file":
+            transport_badge = f"[{theme.accent}]FILE[/{theme.accent}]"
         else:
             transport_badge = f"[{theme.text_dim}]SSH[/{theme.text_dim}]"
+        # File-source gateways have no real host — show the source file instead.
+        host_cell = node.host
+        if transport_label == "gateway5_file" and node.gateway5_source_path:
+            host_cell = Path(node.gateway5_source_path).name
+        elif node.gateway5_conf_path:
+            # SSH gateway node that reads gateway.conf — surface the file source.
+            host_cell = f"{node.host} · {Path(node.gateway5_conf_path).name}"
         table.add_row(
             node.label,
             node.role.value.upper(),
-            node.host,
+            host_cell,
             transport_badge,
             primary_badge,
             modules_str,
@@ -1532,6 +1651,18 @@ def _wizard_standalone_all() -> DeploymentTopology:
     iap_transport = _ask_node_transport()
 
     gw_version = _ask_gateway_version()
+    gw5_file_node = None
+    gw5_conf_path = ""
+    if gw_version == "gateway5":
+        source_kind, source_path = _ask_gateway5_source()
+        if source_kind in ("compose", "helm"):
+            # Gateway5 env vars come from the file node, not the all-in-one node.
+            gw5_file_node = _build_gateway5_file_node(source_path)
+            gw_version = None
+        elif source_kind == "conf":
+            # The server's gateway.conf lives on this same all-in-one host; keep
+            # gateway5 in the node's modules and read it over the node's transport.
+            gw5_conf_path = source_path
     base_modules = ["system", "filesystem", "mongo", "redis", "platform"]
     if gw_version:
         base_modules.append(gw_version)
@@ -1540,6 +1671,7 @@ def _wizard_standalone_all() -> DeploymentTopology:
         nodes = [TargetNode(
             role=NodeRole.ALL, host=host,
             transport="local", modules=base_modules,
+            gateway5_conf_path=gw5_conf_path,
         )]
     elif iap_transport == "control_master":
         cm_socket, cm_target, cm_port = _ask_control_master_settings(host)
@@ -1550,6 +1682,7 @@ def _wizard_standalone_all() -> DeploymentTopology:
             ssh_control_socket=cm_socket,
             ssh_control_target=cm_target,
             modules=base_modules,
+            gateway5_conf_path=gw5_conf_path,
         )]
     else:
         ssh_user = _ask_ssh_user()
@@ -1567,7 +1700,11 @@ def _wizard_standalone_all() -> DeploymentTopology:
         nodes = [TargetNode(
             role=NodeRole.ALL, host=host,
             modules=base_modules, **common,
+            gateway5_conf_path=gw5_conf_path,
         )]
+
+    if gw5_file_node is not None:
+        nodes.append(gw5_file_node)
 
     return DeploymentTopology(mode=DeploymentMode.STANDALONE, nodes=nodes)
 
@@ -1623,6 +1760,14 @@ def _wizard_standalone_split() -> DeploymentTopology:
         ]
 
         gw_version = _ask_gateway_version()
+        gw5_conf_path = ""
+        if gw_version == "gateway5":
+            source_kind, source_path = _ask_gateway5_source()
+            if source_kind in ("compose", "helm"):
+                nodes.append(_build_gateway5_file_node(source_path))
+                gw_version = None
+            elif source_kind == "conf":
+                gw5_conf_path = source_path
         if gw_version:
             gw_count = _ask_node_count("How many gateway servers", minimum=1, default=1)
             gw_hosts = _ask_hosts_for_role("Gateway", gw_count)
@@ -1637,6 +1782,7 @@ def _wizard_standalone_split() -> DeploymentTopology:
                     transport="control_master", modules=gw_modules,
                     ssh_port=gw_cm_port,
                     ssh_control_socket=gw_sock, ssh_control_target=gw_tgt,
+                    gateway5_conf_path=gw5_conf_path,
                 ))
 
         return DeploymentTopology(mode=DeploymentMode.STANDALONE, nodes=nodes)
@@ -1766,6 +1912,14 @@ def _wizard_ha2() -> DeploymentTopology:
             ))
 
         gw_version = _ask_gateway_version()
+        gw5_conf_path = ""
+        if gw_version == "gateway5":
+            source_kind, source_path = _ask_gateway5_source()
+            if source_kind in ("compose", "helm"):
+                ha2_cm_nodes.append(_build_gateway5_file_node(source_path))
+                gw_version = None
+            elif source_kind == "conf":
+                gw5_conf_path = source_path
         if gw_version:
             gw_count = _ask_node_count("How many gateway servers", minimum=1, default=1)
             gw_hosts = _ask_hosts_for_role("Gateway", gw_count)
@@ -1780,6 +1934,7 @@ def _wizard_ha2() -> DeploymentTopology:
                     transport="control_master", modules=gw_modules,
                     ssh_port=cm_port,
                     ssh_control_socket=sock, ssh_control_target=tgt,
+                    gateway5_conf_path=gw5_conf_path,
                 ))
 
         return DeploymentTopology(mode=DeploymentMode.HA2, nodes=ha2_cm_nodes)
@@ -1924,40 +2079,61 @@ def _wizard_custom() -> DeploymentTopology:
 
         role = NodeRole(role_val)
 
-        node_transport = _ask_node_transport(target_label=f"this {role.value.upper()} server")
+        # Gateway 5 can be sourced from a local Compose/Helm file instead of SSH.
+        # Offered as soon as the role is IAG; a file source builds an SSH-less node
+        # (the hostname asked above is not used for a file-backed gateway).
+        gw5_file_node = None
+        gw5_conf_path = ""
+        if role == NodeRole.IAG:
+            source_kind, source_path = _ask_gateway5_source()
+            if source_kind in ("compose", "helm"):
+                gw5_label = ask_text_optional(
+                    "  Label", instruction="(default: iag5-file) "
+                ) or "iag5-file"
+                gw5_file_node = _build_gateway5_file_node(source_path, label=gw5_label)
+            elif source_kind == "conf":
+                gw5_conf_path = source_path
 
-        # For custom role, let them pick modules
-        modules = None
-        if role == NodeRole.CUSTOM:
-            selected = questionary.checkbox(
-                "  Select modules to run on this node",
-                choices=_ALL_MODULES,
-                style=QSTYLE,
-            ).ask()
-            if selected is None:
-                _bail()
-            modules = selected
-
-        label = ask_text_optional(f"  Label", instruction=f"(default: {role.value}-{host}) ")
-
-        if node_transport == "local":
-            nodes.append(TargetNode(
-                role=role, host=host, label=label,
-                transport="local", modules=modules,
-            ))
-        elif node_transport == "control_master":
-            cm_sock, cm_tgt, cm_port = _ask_control_master_settings(host)
-            nodes.append(TargetNode(
-                role=role, host=host, label=label,
-                transport="control_master", modules=modules,
-                ssh_port=cm_port,
-                ssh_control_socket=cm_sock, ssh_control_target=cm_tgt,
-            ))
+        if gw5_file_node is not None:
+            nodes.append(gw5_file_node)
         else:
-            nodes.append(TargetNode(
-                role=role, host=host, label=label,
-                modules=modules, **common,
-            ))
+            node_transport = _ask_node_transport(target_label=f"this {role.value.upper()} server")
+
+            # For custom role, let them pick modules
+            modules = None
+            if role == NodeRole.CUSTOM:
+                selected = questionary.checkbox(
+                    "  Select modules to run on this node",
+                    choices=_ALL_MODULES,
+                    style=QSTYLE,
+                ).ask()
+                if selected is None:
+                    _bail()
+                modules = selected
+
+            label = ask_text_optional(f"  Label", instruction=f"(default: {role.value}-{host}) ")
+
+            if node_transport == "local":
+                nodes.append(TargetNode(
+                    role=role, host=host, label=label,
+                    transport="local", modules=modules,
+                    gateway5_conf_path=gw5_conf_path,
+                ))
+            elif node_transport == "control_master":
+                cm_sock, cm_tgt, cm_port = _ask_control_master_settings(host)
+                nodes.append(TargetNode(
+                    role=role, host=host, label=label,
+                    transport="control_master", modules=modules,
+                    ssh_port=cm_port,
+                    ssh_control_socket=cm_sock, ssh_control_target=cm_tgt,
+                    gateway5_conf_path=gw5_conf_path,
+                ))
+            else:
+                nodes.append(TargetNode(
+                    role=role, host=host, label=label,
+                    modules=modules, **common,
+                    gateway5_conf_path=gw5_conf_path,
+                ))
 
         console.print()
         add_more = questionary.confirm(
@@ -2428,8 +2604,8 @@ def _ask_tier_choice(default: str = "standard") -> str:
     """
     Prompt the user to pick a tier for a new environment.
 
-    Returns "standard" or "extended". Cancelling raises KeyboardInterrupt
-    so the caller can roll back cleanly.
+    Returns "standard", "extended", or "saas". Cancelling raises
+    KeyboardInterrupt so the caller can roll back cleanly.
     """
     standard_label = (
         "Standard — Platform OAuth (+ optional IAG4 API). "
@@ -2439,16 +2615,28 @@ def _ask_tier_choice(default: str = "standard") -> str:
         "Extended — Full audit with SSH, MongoDB, Redis, Kubernetes. "
         "Requires infrastructure-team coordination."
     )
+    saas_label = (
+        "SaaS     — Single Gateway audit (Gateway 4 or Gateway 5). "
+        "No Platform, MongoDB, or Redis."
+    )
 
+    default_label = {
+        "standard": standard_label,
+        "saas": saas_label,
+    }.get(default, extended_label)
     choice = questionary.select(
         "What kind of environment is this?",
-        choices=[standard_label, extended_label],
-        default=standard_label if default == "standard" else extended_label,
+        choices=[standard_label, extended_label, saas_label],
+        default=default_label,
         style=QSTYLE,
     ).ask()
     if choice is None:
         raise KeyboardInterrupt
-    return "standard" if choice.startswith("Standard") else "extended"
+    if choice.startswith("Standard"):
+        return "standard"
+    if choice.startswith("SaaS"):
+        return "saas"
+    return "extended"
 
 
 def _ask_env_tint(topology: str) -> str | None:
@@ -2469,6 +2657,76 @@ def _ask_env_tint(topology: str) -> str | None:
     if result is None:
         raise KeyboardInterrupt
     return None if result == "none" else result
+
+
+def _explicit_substrate(backend_choice: str, vault_secret_store: str | None = None):
+    """The local secret store for an in-progress setup, chosen explicitly from
+    the wizard answer. The new environment is not the active config yet, so we
+    must NOT go through active_secret_store() (which reads the *current* config).
+    """
+    from platform_atlas.core.credentials import FileSecretStore, KeyringSecretStore
+    if backend_choice == "file":
+        return FileSecretStore()
+    if backend_choice == "vault":
+        return FileSecretStore() if (vault_secret_store or "keyring") == "file" else KeyringSecretStore()
+    return KeyringSecretStore()
+
+
+def _credential_backend_choice() -> tuple[str | None, str | None]:
+    """Prompt for the credential backend (OS Keyring / Encrypted File / Vault),
+    and — for Vault — where its own connection settings live locally. The OS
+    keyring is probed so a host where it doesn't work says so at the choice
+    point. Returns ``(backend_choice, vault_secret_store)``; ``backend_choice``
+    is ``None`` if cancelled. No auto-anything: it's a deliberate choice.
+    """
+    import questionary
+    kr_ok = _probe_keyring()
+
+    def _keyring_choice():
+        # Always show the OS keyring so the user knows the option exists, but when
+        # it isn't functional on this host render it DISABLED rather than just
+        # relabelled: questionary skips disabled rows with the cursor and refuses
+        # to submit them, so a broken keyring can be SEEN but never SELECTED. The
+        # default falls to "file" below, keeping the initial pointer on a
+        # selectable row (questionary raises if the default is a disabled choice).
+        return questionary.Choice(
+            "OS Keyring      — encrypted by your operating system"
+            + (" (recommended)" if kr_ok else ""),
+            value="keyring",
+            disabled=None if kr_ok else "not available on this host — use Encrypted File",
+        )
+
+    backend_choice = questionary.select(
+        "Where should Atlas keep this environment's credentials?",
+        choices=[
+            _keyring_choice(),
+            questionary.Choice(
+                "Encrypted File  — machine-bound ~/.atlas/credentials.enc (works anywhere)",
+                value="file"),
+            questionary.Choice(
+                "HashiCorp Vault — read secrets from your Vault server", value="vault"),
+        ],
+        default="keyring" if kr_ok else "file",
+        style=QSTYLE,
+    ).ask()
+    if backend_choice is None:
+        return None, None
+    vault_secret_store: str | None = None
+    if backend_choice == "vault":
+        vault_secret_store = questionary.select(
+            "Where should Vault's own connection settings (URL, token) be kept on this host?",
+            choices=[
+                _keyring_choice(),
+                questionary.Choice(
+                    "Encrypted File  — ~/.atlas/credentials.enc (works anywhere)",
+                    value="file"),
+            ],
+            default="keyring" if kr_ok else "file",
+            style=QSTYLE,
+        ).ask()
+        if vault_secret_store is None:
+            return None, None
+    return backend_choice, vault_secret_store
 
 
 def _create_standard_environment_wizard(
@@ -2522,32 +2780,8 @@ def _create_standard_environment_wizard(
         )
         return new_env
 
-    # -- Verify keyring backend (skipped when start_setup_process already checked) --
-    if not _keyring_verified:
-        is_secure, is_functional, backend = verify_keyring_backend()
-        if not is_functional:
-            console.print(Panel(
-                f"[bold {theme.error}]No usable keyring backend found: {backend}[/bold {theme.error}]\n\n"
-                f"[{theme.text_primary}]Platform Atlas cannot store credentials on this system.\n"
-                f"  • macOS: Keychain (built-in)\n"
-                f"  • Windows: Credential Locker (built-in)\n"
-                f"  • Linux: install gnome-keyring, or use Vault as the credential backend[/{theme.text_primary}]",
-                border_style=theme.error,
-                box=box.ROUNDED,
-                expand=False,
-            ))
-            return None
-        if not is_secure:
-            console.print(Panel(
-                f"[bold {theme.warning}]Unencrypted keyring backend active: {backend}[/bold {theme.warning}]\n\n"
-                f"[{theme.text_primary}]Credentials will be stored without encryption. Atlas will continue,\n"
-                f"but consider switching to a secure backend for production use:\n"
-                f"  • Linux: install gnome-keyring for encrypted Secret Service storage\n"
-                f"  • Any platform: configure HashiCorp Vault as the credential backend[/{theme.text_primary}]",
-                border_style=theme.warning,
-                box=box.ROUNDED,
-                expand=False,
-            ))
+    # Credential backend (incl. keyring health) is chosen inline below — no
+    # pre-check that could block a headless host from picking the file store.
 
     if env_name is None:
         env_name = _ask_env_name()
@@ -2588,14 +2822,9 @@ def _create_standard_environment_wizard(
     platform_client_id = ask_text("Platform OAuth Client ID")
 
     # -- Credential Backend Selection -----------------------------------------
-    use_vault = questionary.confirm(
-        "Use HashiCorp Vault instead of OS Keyring?",
-        default=False,
-        style=QSTYLE,
-    ).ask()
-    if use_vault is None:
+    backend_choice, vault_secret_store = _credential_backend_choice()
+    if backend_choice is None:
         _bail()
-    backend_choice = "vault" if use_vault else "keyring"
 
     # Platform Client Secret — skip prompt when using Vault (read at runtime).
     # When we have a local secret we run a quick OAuth probe (UX1) so the
@@ -2721,7 +2950,7 @@ def _create_standard_environment_wizard(
             "Gateway4 Username",
             default="admin@itential",
         )
-        if backend_choice == "keyring":
+        if backend_choice in ("keyring", "file"):
             gateway4_password = ask_secret("Gateway4 Password")
         else:
             # M2: verify gateway4_password is actually in Vault. Previously
@@ -2748,24 +2977,19 @@ def _create_standard_environment_wizard(
                         f"gateway4_password=\"...\""
                     )
 
-    # -- Persist credentials in keyring scoped to this env -------------------
-    if backend_choice == "keyring":
-        # Sanity-check: if Ctrl+C ever made it past ask_secret historically,
-        # this caught a None platform secret. With the helper fix it's a
-        # belt-and-suspenders guard.
+    # -- Persist credentials into the chosen local store, scoped to this env --
+    if backend_choice in ("keyring", "file"):
         if not platform_client_secret:
             console.print(
-                f"\n  [{theme.error}]Platform Client Secret is required for keyring backend. "
+                f"\n  [{theme.error}]Platform Client Secret is required for the "
+                f"{'encrypted file' if backend_choice == 'file' else 'OS keyring'} backend. "
                 f"Re-run setup.[/{theme.error}]"
             )
             return None
-        scoped_store = CredentialStore(
-            backend_type=CredentialBackendType.KEYRING,
-            env_name=env_name,
-        )
-        scoped_store.set(CredentialKey.PLATFORM_SECRET, platform_client_secret)
+        substrate = _explicit_substrate(backend_choice)
+        substrate.set(scoped, CredentialKey.PLATFORM_SECRET.value, platform_client_secret)
         if gateway4_password:
-            scoped_store.set(CredentialKey.GATEWAY4_PASSWORD, gateway4_password)
+            substrate.set(scoped, CredentialKey.GATEWAY4_PASSWORD.value, gateway4_password)
 
     # -- Danger level (banner border tint) -----------------------------------
     env_tint = _ask_env_tint(topology="standalone")
@@ -2778,6 +3002,7 @@ def _create_standard_environment_wizard(
         platform_uri=platform_uri,
         platform_client_id=platform_client_id,
         credential_backend=backend_choice,
+        vault_secret_store=vault_secret_store,
         deployment=None,
         legacy_profile="",
         gateway4_uri=gateway4_uri,
@@ -2792,9 +3017,13 @@ def _create_standard_environment_wizard(
     # the last point of no return — env file is written, credentials below.
     if backend_choice == "vault" and vault_config is not None:
         try:
-            VaultBackend.save_config_to_keyring(vault_config, service=scoped)
+            VaultBackend.save_config_to_keyring(
+                vault_config, service=scoped,
+                store=_explicit_substrate("vault", vault_secret_store),
+            )
+            _vault_store_label = "encrypted local file" if vault_secret_store == "file" else "OS keyring"
             console.print(
-                f"  [{theme.success}]✓ Vault connection settings saved to OS keyring[/{theme.success}]"
+                f"  [{theme.success}]✓ Vault connection settings saved to the {_vault_store_label}[/{theme.success}]"
             )
         except CredentialError as exc:
             console.print(
@@ -2824,18 +3053,23 @@ def _create_standard_environment_wizard(
             logger.debug("Could not persist tier default: %s", exc)
 
     # ── Post-init checklist (UX4) ─────────────────────────────────
-    _is_secure, _is_functional, _kr_name = verify_keyring_backend()
-    backend_summary = (
-        f"OS Keyring ({_kr_name})" if backend_choice == "keyring"
-        else f"HashiCorp Vault ({vault_config.url if vault_config else 'connection cached'})"
-    )
+    if backend_choice == "file":
+        _cred_status: bool | None = None  # neutral/amber, not a green "secure"
+        backend_summary = "Encrypted local file (~/.atlas/credentials.enc)"
+    elif backend_choice == "keyring":
+        _is_secure, _is_functional, _kr_name = verify_keyring_backend()
+        _cred_status = _is_functional
+        backend_summary = f"OS Keyring ({_kr_name})" + ("" if _is_secure else " — unencrypted!")
+    else:
+        _cred_status = True
+        backend_summary = f"HashiCorp Vault ({vault_config.url if vault_config else 'connection cached'})"
     checks: list[tuple[str, bool | None, str, str]] = [
         ("Global config", True, str(ATLAS_CONFIG_FILE), ""),
         (f"Environment '{env_name}'", True, str(env.file_path), ""),
         (
             "Credential backend",
-            _is_functional,
-            backend_summary + ("" if _is_secure else " — unencrypted!"),
+            _cred_status,
+            backend_summary,
             "Switch to a secure backend or HashiCorp Vault for production use.",
         ),
         (
@@ -2862,6 +3096,385 @@ def _create_standard_environment_wizard(
     return env
 
 
+def _ask_saas_gateway_ssh_node(modules: list[str]) -> TargetNode:
+    """One plain-SSH gateway node for a SaaS environment.
+
+    Mirrors the Extended wizard's per-node SSH prompts but stays
+    deliberately simple — a SaaS audit talks to exactly one gateway host.
+    The passphrase rides on the node temporarily; the save path moves it
+    into the credential store and strips it from the env file.
+    """
+    host = _ask_host("Gateway SSH host", "(the gateway server to SSH into) ")
+    ssh_user = _ask_ssh_user()
+    ssh_key = _ask_ssh_key()
+    ssh_key_passphrase = _ask_ssh_key_passphrase(ssh_key)
+    ssh_port = _ask_ssh_port()
+    ssh_discover_keys = _ask_ssh_discover_keys(ssh_key)
+    ssh_host_key_policy = _ask_ssh_host_key_policy()
+    return TargetNode(
+        role=NodeRole.IAG,
+        host=host,
+        label="iag-01",
+        modules=modules,
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        ssh_key_passphrase=ssh_key_passphrase,
+        ssh_port=ssh_port,
+        ssh_discover_keys=ssh_discover_keys,
+        ssh_host_key_policy=ssh_host_key_policy,
+    )
+
+
+def _create_saas_environment_wizard(
+    env_name: str | None = None,
+    from_env: str | None = None,
+    default_organization_name: str | None = None,
+    _keyring_verified: bool = False,
+) -> Environment | None:
+    """
+    SaaS-tier environment wizard — a single-gateway audit (GW4 or GW5).
+
+    Collects only what the chosen gateway needs. Never prompts for
+    Platform OAuth, Mongo, Redis, deployment topology beyond the gateway,
+    or Kubernetes — a SaaS audit has no Platform anchor at all.
+
+    Sequence:
+        1. Environment name
+        2. Organization name
+        3. Gateway kind — Gateway 4 or Gateway 5 (fixed for this env)
+        4. GW4: API URL + username + password, then optional SSH block
+           GW5: env-var source — SSH printenv / Compose file / Helm values
+        5. Save environment + scoped credentials, set active.
+    """
+    _section(
+        "Create SaaS Environment",
+        "Single Gateway audit (GW4 or GW5) — no Platform, MongoDB, or Redis",
+    )
+
+    mgr = get_environment_manager()
+
+    # Copying only makes sense from another SaaS env — any other tier has a
+    # fundamentally different shape (Platform anchor, multi-role topology).
+    if from_env:
+        if not mgr.exists(from_env):
+            console.print(f"  [{theme.error}]Source environment '{from_env}' not found[/{theme.error}]")
+            return None
+        source = mgr.load(from_env)
+        if (getattr(source, "tier", None) or "extended") != "saas":
+            console.print(
+                f"  [{theme.error}]'{from_env}' is not a SaaS environment — a SaaS env "
+                f"can only be copied from another SaaS env. Create a fresh one instead.[/{theme.error}]"
+            )
+            return None
+        new_env = Environment.from_dict(source.to_dict())
+        new_env.name = env_name or _ask_env_name()
+        new_env.tier = "saas"
+        mgr.save(new_env)
+        mgr.set_active(new_env.name)
+        console.print(
+            f"\n  [{theme.success}]✓ SaaS environment '{new_env.name}' "
+            f"created (copied from {from_env})[/{theme.success}]"
+        )
+        return new_env
+
+    if env_name is None:
+        env_name = _ask_env_name()
+    elif mgr.exists(env_name):
+        console.print(f"  [{theme.error}]Environment '{env_name}' already exists[/{theme.error}]")
+        return None
+
+    # Silently inherit the org name (same pattern as the Standard wizard).
+    default_org = default_organization_name or ""
+    if not default_org:
+        try:
+            if ATLAS_CONFIG_FILE.is_file():
+                import json as _json
+                with open(ATLAS_CONFIG_FILE, "r", encoding="utf-8") as _f:
+                    _cfg = _json.load(_f)
+                default_org = _cfg.get("organization_name", "")
+        except Exception:
+            pass
+    org_name = default_org or ask_text("Organization Name", "(e.g. 'Acme Corp') ")
+
+    # -- Gateway kind (fixed for the life of this environment) ----------------
+    kind = questionary.select(
+        "Which gateway are you auditing?",
+        choices=[
+            questionary.Choice(
+                "Gateway 4 (IAG4) — Python/venv-based; audited via its API + optional SSH",
+                value="gateway4",
+            ),
+            questionary.Choice(
+                "Gateway 5 (IAG5) — container/env-var-based; audited via SSH or a local file",
+                value="gateway5",
+            ),
+        ],
+        style=QSTYLE,
+    ).ask()
+    if kind is None:
+        raise KeyboardInterrupt
+
+    gateway4_uri = ""
+    gateway4_username = ""
+    gateway4_password = ""
+    backend_choice: str | None = "keyring"
+    vault_secret_store: str | None = None
+    vault_config: VaultConfig | None = None
+    test_backend: VaultBackend | None = None
+    deployment: dict | None = None
+    gw5_source_summary = ""
+    has_gateway_ssh = False
+    scoped = scoped_service_name(env_name)
+
+    if kind == "gateway4":
+        gateway4_uri = ask_text(
+            "Gateway 4 API URL",
+            "(e.g. https://iag4.acme.cloud) ",
+            uri=True,
+        )
+        gateway4_username = ask_text_with_default(
+            "Gateway 4 Username",
+            default="admin@itential",
+        )
+        backend_choice, vault_secret_store = _credential_backend_choice()
+        if backend_choice is None:
+            _bail()
+        if backend_choice in ("keyring", "file"):
+            gateway4_password = ask_secret("Gateway 4 Password")
+        ssh_too = questionary.confirm(
+            "Collect deeper config over SSH? (properties.yml, venv Python, host facts)",
+            default=True,
+            style=QSTYLE,
+        ).ask()
+        if ssh_too is None:
+            raise KeyboardInterrupt
+        if ssh_too:
+            has_gateway_ssh = True
+            node = _ask_saas_gateway_ssh_node(["system", "gateway4", "filesystem"])
+            topo = DeploymentTopology(mode=DeploymentMode.GATEWAY_ONLY, nodes=[node])
+            deployment = topo.to_dict()
+            deployment["capture_scope"] = "primary_only"
+            deployment["ssh_defaults"] = _build_ssh_defaults(topo)
+
+    else:  # gateway5
+        source_kind, source_path = _ask_gateway5_source()
+        if source_kind in ("ssh", "conf"):
+            has_gateway_ssh = True
+            backend_choice, vault_secret_store = _credential_backend_choice()
+            if backend_choice is None:
+                _bail()
+            node = _ask_saas_gateway_ssh_node(["system", "gateway5", "filesystem"])
+            if source_kind == "conf":
+                node.gateway5_conf_path = source_path
+            topo = DeploymentTopology(mode=DeploymentMode.GATEWAY_ONLY, nodes=[node])
+            deployment = topo.to_dict()
+            deployment["capture_scope"] = "primary_only"
+            deployment["ssh_defaults"] = _build_ssh_defaults(topo)
+            gw5_source_summary = (
+                f"server config file {source_path} on {node.host}"
+                if source_kind == "conf"
+                else f"SSH printenv on {node.host}"
+            )
+        else:
+            # File-backed: no host, no SSH, no credentials to store. The
+            # credential backend stays at its default — there is nothing
+            # to put in it yet.
+            file_node = _build_gateway5_file_node(source_path)
+            topo = DeploymentTopology(mode=DeploymentMode.GATEWAY_ONLY, nodes=[file_node])
+            deployment = topo.to_dict()
+            deployment["capture_scope"] = "primary_only"
+            _label = "Docker Compose" if source_kind == "compose" else "Helm values"
+            gw5_source_summary = f"{_label} file: {source_path}"
+
+    # -- Vault-specific setup (GW4 password / SSH passphrase live in Vault) ---
+    if backend_choice == "vault":
+        vault_config = ask_vault_settings()
+        while True:
+            console.print(f"  [{theme.text_dim}]Testing Vault connection...[/{theme.text_dim}]")
+            try:
+                test_backend = VaultBackend(vault_config, service=scoped)
+                console.print(f"  [{theme.success}]✓ Connected to Vault at {vault_config.url}[/{theme.success}]")
+                break
+            except CredentialError as e:
+                console.print(f"  [{theme.error}]✘ Vault connection failed: {e}[/{theme.error}]")
+                _vault_choice = questionary.select(
+                    "How would you like to proceed?",
+                    choices=[
+                        questionary.Choice("Change Vault URL and retry", value="url"),
+                        questionary.Choice("Re-enter all Vault settings", value="all"),
+                        questionary.Choice("Save anyway — skip the test (advanced)", value="skip"),
+                        questionary.Choice("Cancel setup", value="cancel"),
+                    ],
+                    style=QSTYLE,
+                ).ask()
+                if _vault_choice is None or _vault_choice == "cancel":
+                    _bail("Cannot continue without a working Vault connection.")
+                if _vault_choice == "skip":
+                    break
+                if _vault_choice == "url":
+                    new_url = ask_text("Vault URL", instruction="(e.g. https://vault.company.com:8200) ", uri=True)
+                    vault_config = dataclasses.replace(vault_config, url=new_url)
+                elif _vault_choice == "all":
+                    vault_config = ask_vault_settings()
+
+        _vault_keys_doc = (
+            f"  [{theme.accent}]gateway4_password[/{theme.accent}]"
+            f"       [{theme.text_dim}]— Gateway4 API password[/{theme.text_dim}]\n"
+            if kind == "gateway4" else ""
+        )
+        console.print()
+        console.print(Panel(
+            f"[bold {theme.primary_glow}]Expected Vault Secret Layout[/bold {theme.primary_glow}]\n\n"
+            f"[{theme.text_primary}]Atlas expects the following keys at "
+            f"[bold]{vault_config.mount_point}/{vault_config.secret_path}[/bold]:[/{theme.text_primary}]\n\n"
+            f"{_vault_keys_doc}"
+            f"  [{theme.accent}]ssh_key_passphrase[/{theme.accent}]"
+            f"      [{theme.text_dim}]— SSH key passphrase (only if your key has one)[/{theme.text_dim}]",
+            box=box.ROUNDED,
+            border_style=theme.border_primary,
+            expand=False,
+        ))
+        if kind == "gateway4" and test_backend is not None:
+            console.print(f"\n  [{theme.text_dim}]Checking Vault for gateway4_password...[/{theme.text_dim}]")
+            if test_backend.exists(CredentialKey.GATEWAY4_PASSWORD.value):
+                console.print(
+                    f"  [{theme.success}]✓ {CredentialKey.GATEWAY4_PASSWORD.display_name} found in Vault[/{theme.success}]"
+                )
+            else:
+                console.print(
+                    f"  [{theme.warning}]⚠ {CredentialKey.GATEWAY4_PASSWORD.display_name} not found in "
+                    f"Vault — capture will fail until you add it.[/{theme.warning}]"
+                )
+                _hint(
+                    f"vault kv put {vault_config.mount_point}/{vault_config.secret_path} "
+                    f"gateway4_password=\"...\""
+                )
+
+    # -- Danger level (banner border tint) -----------------------------------
+    env_tint = _ask_env_tint(topology="standalone")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Persist order: env file → credentials → vault config → set active
+    # (same recovery story as the Standard/Extended wizards).
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Move SSH passphrases out of the env file and into the credential store.
+    ssh_passphrase = ""
+    if deployment:
+        for node_dict in deployment.get("nodes", []):
+            node_dict.pop("ssh_key_passphrase", None)
+        ssh_passphrase = (deployment.get("ssh_defaults") or {}).pop("key_passphrase", "")
+
+    env = Environment(
+        name=env_name,
+        description="",
+        organization_name=org_name,
+        platform_uri="",
+        platform_client_id="",
+        credential_backend=backend_choice,
+        vault_secret_store=vault_secret_store,
+        deployment=deployment,
+        legacy_profile="",
+        gateway4_uri=gateway4_uri,
+        gateway4_username=gateway4_username,
+        tier="saas",
+        saas_gateway_kind=kind,
+        env_tint=env_tint,
+    )
+    mgr.save(env)
+
+    # -- Store credentials (scoped to this environment) -----------------------
+    if backend_choice in ("keyring", "file"):
+        substrate = _explicit_substrate(backend_choice)
+        if gateway4_password:
+            substrate.set(scoped, CredentialKey.GATEWAY4_PASSWORD.value, gateway4_password)
+        if ssh_passphrase:
+            substrate.set(scoped, CredentialKey.SSH_PASSPHRASE.value, ssh_passphrase)
+    elif backend_choice == "vault" and vault_config is not None:
+        try:
+            VaultBackend.save_config_to_keyring(
+                vault_config, service=scoped,
+                store=_explicit_substrate("vault", vault_secret_store),
+            )
+            _vault_store_label = "encrypted local file" if vault_secret_store == "file" else "OS keyring"
+            console.print(
+                f"  [{theme.success}]✓ Vault connection settings saved to the {_vault_store_label}[/{theme.success}]"
+            )
+        except CredentialError as exc:
+            console.print(
+                f"\n  [{theme.warning}]⚠ Env saved but keyring write for Vault settings failed: "
+                f"{exc}[/{theme.warning}]"
+            )
+            console.print(
+                f"  [{theme.text_dim}]Re-run 'platform-atlas config credentials' to retry.[/{theme.text_dim}]"
+            )
+        if ssh_passphrase:
+            console.print(
+                f"\n  [{theme.warning}]⚠ SSH key passphrase was provided but cannot be stored — "
+                f"Vault backend is read-only.[/{theme.warning}]"
+            )
+            console.print(
+                f"  [{theme.text_dim}]Add '{CredentialKey.SSH_PASSPHRASE.value}' to your "
+                f"Vault secret manually.[/{theme.text_dim}]"
+            )
+
+    mgr.set_active(env_name)
+
+    # ── Post-init checklist ───────────────────────────────────────
+    if backend_choice == "file":
+        _cred_status: bool | None = None
+        backend_summary = "Encrypted local file (~/.atlas/credentials.enc)"
+    elif backend_choice == "keyring":
+        _is_secure, _is_functional, _kr_name = verify_keyring_backend()
+        _cred_status = _is_functional
+        backend_summary = f"OS Keyring ({_kr_name})" + ("" if _is_secure else " — unencrypted!")
+    else:
+        _cred_status = True
+        backend_summary = f"HashiCorp Vault ({vault_config.url if vault_config else 'connection cached'})"
+
+    kind_label = "Gateway 4" if kind == "gateway4" else "Gateway 5"
+    checks: list[tuple[str, bool | None, str, str]] = [
+        ("Global config", True, str(ATLAS_CONFIG_FILE), ""),
+        (f"Environment '{env_name}'", True, str(env.file_path), ""),
+        (
+            "Credential backend",
+            _cred_status,
+            backend_summary,
+            "Switch to a secure backend or HashiCorp Vault for production use.",
+        ),
+        ("Tier", True, f"SaaS ({kind_label} audit)", ""),
+    ]
+    if kind == "gateway4":
+        checks.append((
+            "Gateway4 API",
+            None,
+            f"{gateway4_uri} (not auto-tested in wizard)",
+            "",
+        ))
+        checks.append((
+            "Gateway SSH",
+            True if has_gateway_ssh else None,
+            "configured" if has_gateway_ssh else
+            "declined — API-only audit (SSH-dependent checks will SKIP)",
+            "",
+        ))
+    else:
+        checks.append(("Gateway5 source", True, gw5_source_summary, ""))
+    checks.append((
+        "Architecture form",
+        None,
+        "fill out later via `platform-atlas env architecture` (gateway-scoped)",
+        "",
+    ))
+    _render_post_init_checklist(
+        env=env,
+        backend_label=backend_summary,
+        checks=checks,
+    )
+
+    return env
+
+
 def create_environment_wizard(
     env_name: str | None = None,
     from_env: str | None = None,
@@ -2874,6 +3487,7 @@ def create_environment_wizard(
 
     Branches on tier:
         - Standard: short 5-question flow (Platform OAuth + optional IAG4)
+        - SaaS: single-gateway flow (GW4 API + optional SSH, or GW5 source)
         - Extended: full topology + SSH + Mongo/Redis + Kubernetes flow
 
     If ``tier`` is not specified, prompts the user. ``--from`` (copy)
@@ -2896,6 +3510,14 @@ def create_environment_wizard(
 
     if tier == "standard":
         return _create_standard_environment_wizard(
+            env_name=env_name,
+            from_env=from_env,
+            default_organization_name=default_organization_name,
+            _keyring_verified=_keyring_verified,
+        )
+
+    if tier == "saas":
+        return _create_saas_environment_wizard(
             env_name=env_name,
             from_env=from_env,
             default_organization_name=default_organization_name,
@@ -2961,6 +3583,8 @@ def create_environment_wizard(
         return new_env
 
     # -- Legacy profile (IAP 2023.x) ------------------------------------------
+    # Extended-only flow by this point — Standard and SaaS branched into
+    # their own wizards above, so neither is ever asked about 2023.x.
     is_legacy = questionary.confirm(
         "Is this a 2023.x environment?",
         default=False,
@@ -2980,52 +3604,12 @@ def create_environment_wizard(
             raise KeyboardInterrupt
         legacy_profile = legacy_profile.strip()
 
-    # -- Verify keyring backend -----------------------------------------------
-    is_secure, is_functional, backend = verify_keyring_backend()
-    if not is_functional:
-        console.print(Panel(
-            f"[bold {theme.error}]No usable keyring backend found: {backend}[/bold {theme.error}]\n\n"
-            f"[{theme.text_primary}]Platform Atlas cannot store credentials on this system.\n"
-            f"  • macOS: Keychain (built-in)\n"
-            f"  • Windows: Credential Locker (built-in)\n"
-            f"  • Linux: install gnome-keyring, or use Vault as the credential backend[/{theme.text_primary}]",
-            border_style=theme.error,
-            box=box.ROUNDED,
-            expand=False,
-        ))
-        raise SystemExit(1)
-    if not is_secure:
-        console.print(Panel(
-            f"[bold {theme.warning}]Unencrypted keyring backend active: {backend}[/bold {theme.warning}]\n\n"
-            f"[{theme.text_primary}]Credentials will be stored without encryption. Atlas will continue,\n"
-            f"but consider switching to a secure backend for production use:\n"
-            f"  • Linux: install gnome-keyring for encrypted Secret Service storage\n"
-            f"  • Any platform: configure HashiCorp Vault as the credential backend[/{theme.text_primary}]",
-            border_style=theme.warning,
-            box=box.ROUNDED,
-            expand=False,
-        ))
-
-    console.print(f"  [{theme.success}]✓ Credential store: {backend}[/{theme.success}]")
-    console.print()
+    # Credential backend (incl. keyring health) is chosen inline below.
 
     # -- Credential Backend Selection -----------------------------------------
-    _section("Credential Backend", "Where should Atlas retrieve secrets for this environment?")
+    _section("Credential Backend", "Where should Atlas keep this environment's secrets?")
 
-    backend_choice = questionary.select(
-        "Select credential backend",
-        choices=[
-            questionary.Choice(
-                "OS Keyring  — Store credentials locally (macOS/Windows/Linux)",
-                value="keyring",
-            ),
-            questionary.Choice(
-                "Vault       — Read credentials from HashiCorp Vault (read-only)",
-                value="vault",
-            ),
-        ],
-        style=QSTYLE,
-    ).ask()
+    backend_choice, vault_secret_store = _credential_backend_choice()
     if backend_choice is None:
         _bail()
 
@@ -3255,7 +3839,7 @@ def create_environment_wizard(
                 default="admin@itential",
             )
 
-            if backend_choice == "keyring":
+            if backend_choice in ("keyring", "file"):
                 gateway4_password = ask_secret("Gateway4 Password (hidden)")
             else:
                 _hint("Gateway4 password must be stored in Vault as 'gateway4_password'")
@@ -3335,10 +3919,11 @@ def create_environment_wizard(
         ssh_defaults = deployment.get("ssh_defaults", {})
         ssh_passphrase = ssh_defaults.pop("key_passphrase", "")
 
-    # Sanity check for keyring backend — must have a Platform secret
-    if backend_choice == "keyring" and not platform_client_secret:
+    # Sanity check for the local backends — must have a Platform secret
+    if backend_choice in ("keyring", "file") and not platform_client_secret:
         console.print(
-            f"\n  [{theme.error}]Platform Client Secret is required for keyring backend. "
+            f"\n  [{theme.error}]Platform Client Secret is required for the "
+            f"{'encrypted file' if backend_choice == 'file' else 'OS keyring'} backend. "
             f"Re-run setup.[/{theme.error}]"
         )
         return None
@@ -3351,6 +3936,7 @@ def create_environment_wizard(
         platform_uri=platform_uri,
         platform_client_id=platform_client_id,
         credential_backend=backend_choice,
+        vault_secret_store=vault_secret_store,
         deployment=deployment,
         legacy_profile=legacy_profile,
         gateway4_uri=gateway4_uri,
@@ -3367,23 +3953,18 @@ def create_environment_wizard(
     mgr.save(env)
 
     # -- Store credentials (scoped to this environment) -----------------------
-    if backend_choice == "keyring":
+    if backend_choice in ("keyring", "file"):
         service = scoped_service_name(env_name)
-        scoped_store = CredentialStore(
-            service=service,
-            backend_type=CredentialBackendType.KEYRING,
-            env_name=env_name,
-        )
-
-        scoped_store.set(CredentialKey.PLATFORM_SECRET, platform_client_secret)
+        substrate = _explicit_substrate(backend_choice)
+        substrate.set(service, CredentialKey.PLATFORM_SECRET.value, platform_client_secret)
         if mongo_uri:
-            scoped_store.set(CredentialKey.MONGO_URI, mongo_uri)
+            substrate.set(service, CredentialKey.MONGO_URI.value, mongo_uri)
         if redis_uri:
-            scoped_store.set(CredentialKey.REDIS_URI, redis_uri)
+            substrate.set(service, CredentialKey.REDIS_URI.value, redis_uri)
         if gateway4_password:
-            scoped_store.set(CredentialKey.GATEWAY4_PASSWORD, gateway4_password)
+            substrate.set(service, CredentialKey.GATEWAY4_PASSWORD.value, gateway4_password)
         if ssh_passphrase:
-            scoped_store.set(CredentialKey.SSH_PASSPHRASE, ssh_passphrase)
+            substrate.set(service, CredentialKey.SSH_PASSPHRASE.value, ssh_passphrase)
 
     else:
         # Vault mode: persist the staged connection settings now that the env
@@ -3391,9 +3972,13 @@ def create_environment_wizard(
         # wizard was cancelled before the env file got written.
         if vault_config is not None:
             try:
-                VaultBackend.save_config_to_keyring(vault_config, service=scoped)
+                VaultBackend.save_config_to_keyring(
+                    vault_config, service=scoped,
+                    store=_explicit_substrate("vault", vault_secret_store),
+                )
+                _vault_store_label = "encrypted local file" if vault_secret_store == "file" else "OS keyring"
                 console.print(
-                    f"  [{theme.success}]✓ Vault connection settings saved to OS keyring[/{theme.success}]"
+                    f"  [{theme.success}]✓ Vault connection settings saved to the {_vault_store_label}[/{theme.success}]"
                 )
             except CredentialError as exc:
                 console.print(
@@ -3431,11 +4016,13 @@ def create_environment_wizard(
     mgr.set_active(env_name)
 
     # -- Post-init checklist (UX4) ---------------------------------------------
-    backend_label = (
-        f"HashiCorp Vault ({vault_config.url})"
-        if backend_choice == "vault"
-        else f"OS keyring ({backend})"
-    )
+    if backend_choice == "vault":
+        backend_label = f"HashiCorp Vault ({vault_config.url})"
+    elif backend_choice == "file":
+        backend_label = "Encrypted local file (~/.atlas/credentials.enc)"
+    else:
+        _bk_secure, _bk_func, _bk_name = verify_keyring_backend()
+        backend_label = f"OS keyring ({_bk_name})" + ("" if _bk_secure else " — unencrypted!")
     checks: list[tuple[str, bool | None, str, str]] = [
         ("Global config", True, str(ATLAS_CONFIG_FILE), ""),
         (f"Environment '{env_name}'", True, str(env_path), ""),
@@ -3483,34 +4070,10 @@ def start_setup_process() -> None:
         expand=False
     ))
 
-    # -- Verify keyring backend before collecting any secrets ----------------
-    is_secure, is_functional, backend = verify_keyring_backend()
-    if not is_functional:
-        console.print(Panel(
-            f"[bold {theme.error}]No usable keyring backend found: {backend}[/bold {theme.error}]\n\n"
-            f"[{theme.text_primary}]Platform Atlas cannot store credentials on this system.\n"
-            f"  • macOS: Keychain (built-in)\n"
-            f"  • Windows: Credential Locker (built-in)\n"
-            f"  • Linux: install gnome-keyring, or use Vault as the credential backend[/{theme.text_primary}]",
-            border_style=theme.error,
-            box=box.ROUNDED,
-            expand=False,
-        ))
-        raise SystemExit(1)
-    if not is_secure:
-        console.print(Panel(
-            f"[bold {theme.warning}]Unencrypted keyring backend active: {backend}[/bold {theme.warning}]\n\n"
-            f"[{theme.text_primary}]Credentials will be stored without encryption. Atlas will continue,\n"
-            f"but consider switching to a secure backend for production use:\n"
-            f"  • Linux: install gnome-keyring for encrypted Secret Service storage\n"
-            f"  • Any platform: configure HashiCorp Vault as the credential backend[/{theme.text_primary}]",
-            border_style=theme.warning,
-            box=box.ROUNDED,
-            expand=False,
-        ))
-
-    console.print(f"  [{theme.success}]✓ Credential store: {backend}[/{theme.success}]")
-    console.print()
+    # The credential backend (OS Keyring / Encrypted File / Vault) is chosen
+    # explicitly in the environment wizard below, which shows keyring health at
+    # the choice point — so we no longer pre-check here, and never block a
+    # headless host from reaching the encrypted-file option.
 
     if ATLAS_CONFIG_FILE.exists():
         ok = questionary.confirm(f"{ATLAS_CONFIG_FILE} already exists. Overwrite?", default=False, style=QSTYLE).ask()
@@ -3537,6 +4100,9 @@ def start_setup_process() -> None:
     tier_default = _ask_tier_choice(default="standard")
 
     # -- Write global config --------------------------------------------------
+    # SaaS is never the GLOBAL default tier — it binds per-environment at
+    # create time. A first-run SaaS pick still creates a SaaS env below; the
+    # global fallback stays "standard" for any future non-SaaS environments.
     global_data: dict[str, Any] = {
         "organization_name": org_name,
         "verify_ssl": bool(verify_ssl),
@@ -3544,7 +4110,7 @@ def start_setup_process() -> None:
         "theme": "horizon-dark",
         "extended_validation_checks": True,
         "debug": False,
-        "tier": tier_default,
+        "tier": tier_default if tier_default != "saas" else "standard",
         "compatibility_mode": "--plain" in sys.argv,
     }
 
@@ -3605,14 +4171,20 @@ def _probe_system_quick() -> list[tuple[str, str, str, str | None]]:
                  "ok" if py_ok else "fail"))
 
     try:
-        is_secure, is_functional, name = verify_keyring_backend()
-        kr_label = (name or "—").replace("Backend", "").replace("Keyring", "") or (name or "—")
-        if is_secure:
-            rows.append(("OS keyring", kr_label, "encrypted", "ok"))
-        elif is_functional:
-            rows.append(("OS keyring", kr_label, "fallback", "warn"))
+        if active_secret_store().is_file:
+            # The encrypted local file is the chosen backend. Honest amber
+            # status, never a green "encrypted" (machine-bound, not a keyring).
+            rows.append(("OS keyring", "file", "encrypted local file", "warn"))
         else:
-            rows.append(("OS keyring", kr_label, "use Vault", "fail"))
+            is_secure, is_functional, name = verify_keyring_backend()
+            kr_label = (name or "—").replace("Backend", "").replace("Keyring", "") or (name or "—")
+            if is_secure:
+                rows.append(("OS keyring", kr_label, "encrypted", "ok"))
+            elif is_functional:
+                rows.append(("OS keyring", kr_label, "unencrypted", "warn"))
+            else:
+                # Keyring can't store here — not a blocker: pick File or Vault.
+                rows.append(("OS keyring", kr_label, "use File or Vault", "warn"))
     except Exception:
         rows.append(("OS keyring", "—", "unavailable", "warn"))
 

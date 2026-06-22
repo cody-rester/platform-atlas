@@ -150,19 +150,47 @@ class RedisCollector(BaseCollector[RedisSettings]):
     def is_connected(self) -> bool:
         return self._client is not None
 
+    def _endpoint_label(self) -> str:
+        """``host:port`` for the configured URI, with credentials stripped.
+
+        Used only in connection-error messages so a skipped rule can report
+        *where* Redis was unreachable without ever echoing the password.
+        """
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(self.redis_uri or "")
+            host = parsed.hostname or "unknown-host"
+            port = parsed.port or 6379
+            return f"{host}:{port}"
+        except Exception:  # best-effort label, never fatal
+            return "the configured Redis endpoint"
+
     def connect(self) -> None:
-        """Create the client and verify connectivity with a ping"""
+        """Create the client and verify connectivity with a ping.
+
+        A connection or auth failure is re-raised as
+        ``RedisConnectionNotEstablishedError`` carrying the host:port (no
+        credentials), so the capture engine records a clear reason in
+        ``_atlas.metadata.failed_modules`` — which the report turns into a
+        "skipped: couldn't reach Redis at host:port" callout.
+        """
         if not self.redis_uri:
             return
-        self._client = redis.from_url(
-            self.redis_uri,
-            socket_connect_timeout=self._settings.socket_connect_timeout,
-            socket_timeout=self._settings.socket_timeout,
-            health_check_interval=self._settings.health_check_interval,
-            decode_responses=self._settings.decode_responses,
-        )
-        # Verify we can actually reach Redis quickly
-        self._client.ping()
+        try:
+            self._client = redis.from_url(
+                self.redis_uri,
+                socket_connect_timeout=self._settings.socket_connect_timeout,
+                socket_timeout=self._settings.socket_timeout,
+                health_check_interval=self._settings.health_check_interval,
+                decode_responses=self._settings.decode_responses,
+            )
+            # Verify we can actually reach Redis quickly
+            self._client.ping()
+        except (RedisError, RedisConnectionError, OSError) as exc:
+            self._client = None
+            raise RedisConnectionNotEstablishedError(
+                f"Could not connect to Redis at {self._endpoint_label()} — {exc}"
+            ) from exc
 
     def close(self) -> None:
         """Close the connection pool, if any"""
@@ -417,7 +445,9 @@ class RedisCollector(BaseCollector[RedisSettings]):
             ping_ms = (time.perf_counter() - t0) * 1000.0
 
             if not ok:
-                return empty
+                raise RedisConnectionNotEstablishedError(
+                    f"Redis at {self._endpoint_label()} did not respond to PING"
+                )
 
             # INFO is common to both modes and used for detection
             step = "info"
@@ -437,12 +467,13 @@ class RedisCollector(BaseCollector[RedisSettings]):
                 "ping_ms": ping_ms,
                 **payload,
             }
+        except RedisConnectionNotEstablishedError:
+            raise
         except (RedisError, RedisConnectionError) as exc:
             logger.debug("Redis collect failed at step '%s': %s", step, exc)
-            return empty
-        except Exception as exc:
-            logger.debug("Unexpected Redis collect failure at step '%s': %s", step, exc)
-            return empty
+            raise RedisConnectionNotEstablishedError(
+                f"Redis became unreachable at {self._endpoint_label()} during '{step}' — {exc}"
+            ) from exc
 
     @staticmethod
     def preflight() -> CheckResult:

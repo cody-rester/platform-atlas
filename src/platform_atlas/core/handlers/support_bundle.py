@@ -210,7 +210,7 @@ def _collect_logs_and_system(log_days: int, progress_cb=None) -> tuple[dict, dic
                 break
 
     if target_dict is None:
-        return {}, {}
+        return {}, {}, {}
 
     from platform_atlas.core.transport import transport_from_config
 
@@ -1813,11 +1813,16 @@ def _build_zip(
     config_redacted: dict,
     manifest: dict,
     folder: str = "atlas-support-bundle",
+    exports: dict[str, bytes] | None = None,
 ) -> bytes:
     """Assemble and return the support bundle as raw ZIP bytes.
 
     All entries are placed under a top-level ``folder/`` directory so that
     ``unzip <bundle>.zip`` extracts into a single self-contained folder.
+
+    ``exports`` is an optional mapping of ZIP-relative path -> raw bytes for
+    Platform artifacts (workflows/JSTs/forms/projects exported via the WebUI).
+    The CLI never passes it, so the basic support bundle is unchanged.
     """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -1841,6 +1846,10 @@ def _build_zip(
             for subpath, content in raw_logs.items():
                 zf.writestr(f"{folder}/raw_logs/{subpath}", content)
 
+        if exports:
+            for subpath, content in exports.items():
+                zf.writestr(f"{folder}/{subpath}", content)
+
         viewer_files = _build_html_viewer(platform_health, logs, system, config_redacted, manifest)
         for sub_path, content in viewer_files.items():
             zf.writestr(f"{folder}/{sub_path}", content)
@@ -1855,13 +1864,19 @@ def handle_support_bundle(args: Namespace) -> int:
     from platform_atlas.core.init_setup import QSTYLE
 
     config = ctx().config
-    is_extended = not ctx().is_standard
+    # Strict: only Extended collects infrastructure logs over SSH. SaaS has
+    # no Platform/Mongo log sources, so it takes the config-snapshot path
+    # like Standard.
+    is_extended = ctx().is_extended
     log_days_arg = getattr(args, "log_days", None)
     output_path = getattr(args, "output", None)
     yes = getattr(args, "yes", False)
 
     env_name = getattr(config, "active_environment", None) or "—"
-    mode_label = "Extended — Platform health · logs · system info" if is_extended else "Standard — Platform health · Atlas config"
+    mode_label = {
+        "standard": "Standard — Platform health · Atlas config",
+        "saas": "SaaS — Gateway audit · Atlas config snapshot",
+    }.get(ctx().tier, "Extended — Platform health · logs · system info")
 
     # ── Intro panel ───────────────────────────────────────────────
     console.print()
@@ -1887,8 +1902,16 @@ def handle_support_bundle(args: Namespace) -> int:
     # — Vault unreachable / auth failed / secret missing, or a locked or empty
     # keyring — abort now instead of writing an empty ZIP. (Each collector
     # otherwise swallows the failure silently and the bundle still gets made.)
+    # NOTE: the support bundle is curated — it writes a redacted config snapshot,
+    # logs, and system info, and NEVER reads ~/.atlas files. The encrypted local
+    # credential store (~/.atlas/credentials.enc) and its salt (~/.atlas/.keysalt)
+    # are therefore never collected; keep it that way (no directory globbing here).
     cred_backend = (getattr(config, "credential_backend", "keyring") or "keyring").lower()
-    backend_label = "HashiCorp Vault" if cred_backend == "vault" else "OS keyring"
+    if cred_backend == "vault":
+        backend_label = "HashiCorp Vault"
+    else:
+        from platform_atlas.core.credentials import active_secret_store
+        backend_label = "encrypted local file" if active_secret_store().is_file else "OS keyring"
     console.print(f"  [{theme.primary}]›[/{theme.primary}] Verifying {backend_label} credentials…")
     try:
         _assert_credentials_available()
@@ -2112,7 +2135,7 @@ def handle_support_bundle(args: Namespace) -> int:
         "organization":    getattr(config, "organization_name", None),
         "environment":     env_name,
         "log_window_days": log_days if is_extended else None,
-        "mode":            "extended" if is_extended else "standard",
+        "mode":            ctx().tier,
         "atlas_version":   _get_atlas_version(),
         "platform_url":    _get_platform_url(config),
         "ruleset_id":      getattr(config, "ruleset_id", None),

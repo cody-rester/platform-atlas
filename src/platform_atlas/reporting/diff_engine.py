@@ -421,6 +421,10 @@ def render_diff_report(
         tier_label = "STANDARD"
         tier_color = "#1B93D2"
         cover_kind = "Application Audit"
+    elif latest_tier == "saas":
+        tier_label = "SAAS"
+        tier_color = "#C5258F"
+        cover_kind = "Gateway Audit"
     else:
         tier_label = "EXTENDED"
         tier_color = "#FF6633"

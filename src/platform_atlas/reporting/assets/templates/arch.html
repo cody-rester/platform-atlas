@@ -9,7 +9,7 @@
   <title>Platform Atlas // {{TITLE}}</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23101625'/><path d='M16 6L6 26h20L16 6z' fill='none' stroke='%231B93D2' stroke-width='2.5' stroke-linejoin='round'/><circle cx='16' cy='19' r='2' fill='%231B93D2'/></svg>">
   <style>
-@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&family=Open+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@300;400;500;600;700;800&family=Sora:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root {
   --itl-navy: #101625;
   --itl-blue: #1B93D2;
@@ -17,13 +17,17 @@
   --itl-green: #99CA3C;
   --itl-pink: #C5258F;
   --ease: cubic-bezier(.16,1,.3,1);
-  --fd: "Montserrat",system-ui,sans-serif;
-  --fb: "Open Sans",system-ui,sans-serif;
+  --fd: "Sora",system-ui,sans-serif;
+  --fb: "Hanken Grotesk",system-ui,sans-serif;
   --fm: "JetBrains Mono","SF Mono",monospace;
+  --font-display: "Sora",system-ui,sans-serif;
+  --band: linear-gradient(135deg, #0c1220 0%, #14223d 46%, #1b4d76 122%);
+  --band-glow: radial-gradient(circle, rgba(197,37,143,0.42), transparent 62%);
   --r-xs: 4px;
-  --r-sm: 6px;
-  --r-md: 10px;
-  --r-lg: 14px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 18px;
+  --r-xl: 24px;
   --r-pill: 100px
 }
 
@@ -59,16 +63,16 @@
    header gets a navy band via [data-theme="light"] .header below. Dark mode
    is unchanged. */
 [data-theme="light"] {
-  --bg-base: #fff;
+  --bg-base: #f3f1ec;
   --bg-surface: #fff;
-  --bg-elevated: #f5f7fa;
-  --bg-overlay: #eef2f6;
-  --bg-input: rgba(16,22,37,.04);
+  --bg-elevated: #f4f1ea;
+  --bg-overlay: #ece8e0;
+  --bg-input: rgba(22,20,31,.04);
   --bg-glass: rgba(255,255,255,.88);
-  --text-primary: #101625;
-  --text-secondary: #3a4254;
-  --text-muted: #6b7280;
-  --text-ghost: rgba(107,114,128,.5);
+  --text-primary: #16141f;
+  --text-secondary: #4b4758;
+  --text-muted: #87828f;
+  --text-ghost: rgba(135,130,143,.55);
   --accent: #1b93d2;
   --accent-hover: #1782bc;
   --accent-ghost: rgba(27,147,210,.12);
@@ -79,12 +83,12 @@
   --status-fail-bg: rgba(192,57,43,.08);
   --status-warn: #e55a2a;
   --status-warn-bg: rgba(229,90,42,.08);
-  --border-subtle: rgba(16,22,37,.06);
-  --border-default: rgba(16,22,37,.10);
-  --border-strong: rgba(16,22,37,.20);
-  --border-sep: rgba(16,22,37,.20);
-  --shadow-sm: 0 1px 3px rgba(16,22,37,.06);
-  --shadow-md: 0 4px 16px rgba(16,22,37,.08);
+  --border-subtle: rgba(22,20,31,.07);
+  --border-default: rgba(22,20,31,.11);
+  --border-strong: rgba(22,20,31,.20);
+  --border-sep: rgba(22,20,31,.20);
+  --shadow-sm: 0 1px 3px rgba(22,20,31,.05);
+  --shadow-md: 0 6px 24px -8px rgba(22,20,31,.12);
   --gradient-brand: linear-gradient(135deg,#1b93d2,#c5258f);
   --gradient-surface: linear-gradient(180deg,var(--bg-surface),var(--bg-base))
 }
@@ -118,7 +122,8 @@
 
 html {
   font-size: 17px;
-  scroll-behavior: smooth
+  scroll-behavior: smooth;
+  overflow-x: hidden
 }
 
 body {
@@ -149,13 +154,13 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 52px;
-  padding: 0 24px;
+  height: 58px;
+  padding: 0 32px;
   background: var(--bg-glass);
   backdrop-filter: blur(20px) saturate(140%);
   -webkit-backdrop-filter: blur(20px) saturate(140%);
-  border-bottom: 1px solid var(--border-default);
-  box-shadow: var(--shadow-sm);
+  border-bottom: 1px solid transparent;
+  box-shadow: none;
   transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease
 }
 .header.scrolled {
@@ -179,13 +184,13 @@ body {
 
 .brand {
   font-family: var(--fd);
-  font-size: 1.15rem;
+  font-size: 1.18rem;
   font-weight: 600;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.035em;
   color: var(--text-primary);
   display: flex;
   align-items: center;
-  gap: 6px
+  gap: 1px
 }
 
 .brand span {
@@ -194,13 +199,13 @@ body {
 }
 
 .brand-link {
-  font-size: .7rem;
-  font-weight: 600;
-  letter-spacing: .06em;
+  font-size: .66rem;
+  font-weight: 700;
+  letter-spacing: .2em;
   text-transform: uppercase;
   color: var(--text-muted);
   text-decoration: none;
-  opacity: .7;
+  opacity: .85;
   transition: opacity .2s
 }
 
@@ -346,88 +351,85 @@ body {
 }
 
 .hero {
-  text-align: center;
-  padding: 56px 32px 44px;
   position: relative;
-  border-bottom: 1px solid var(--border-subtle);
-  overflow: hidden
+  margin: 0 calc(50% - 50vw);
+  padding: 60px 0 62px;
+  background: var(--band);
+  color: #fff;
+  overflow: hidden;
+  border-bottom: none
 }
 
 .hero::before {
   content: "";
   position: absolute;
-  inset: 0;
-  background: url("data: image/svg+xml,%3Csvg width='60' height='60' xmlns='http: //www.w3.org/2000/svg'%3E%3Cpath d='M30 0L60 30L30 60L0 30z' fill='none' stroke='%231B93D2' stroke-width='0.3' opacity='0.05'/%3E%3C/svg%3E") repeat;
+  right: -120px; top: -200px;
+  width: 580px; height: 580px;
+  background: var(--band-glow);
   pointer-events: none
+}
+
+.hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: url("data:image/svg+xml,%3Csvg width='64' height='64' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M32 0L64 32L32 64L0 32z' fill='none' stroke='%23ffffff' stroke-width='0.5' opacity='0.04'/%3E%3C/svg%3E") repeat;
+  pointer-events: none
+}
+
+.hero-inner {
+  position: relative;
+  z-index: 1;
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 0 24px
 }
 
 .hero-org {
-  font-family: var(--fd);
-  font-size: 0.82rem;
-  font-weight: 700;
-  letter-spacing: 0.14em;
+  font-family: var(--fm);
+  font-size: 0.74rem;
+  font-weight: 500;
+  letter-spacing: 0.22em;
   text-transform: uppercase;
-  background: var(--accent);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  margin-bottom: 10px
+  background: none;
+  color: #6dc5f0;
+  -webkit-text-fill-color: currentColor;
+  margin-bottom: 18px
 }
 
 .hero-title {
-  font-family: var(--font-display);
-  font-size: clamp(2rem, 5vw, 3rem);
+  font-family: var(--fd);
+  font-size: clamp(2.4rem, 5vw, 3.8rem);
   font-weight: 700;
-  letter-spacing: -0.04em;
-  line-height: 1.1;
-  margin-bottom: 8px;
+  letter-spacing: -0.045em;
+  line-height: 1.0;
+  color: #fff;
+  max-width: 20ch;
+  margin: 0;
 }
 
-.hero-pills {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 24px;
-  padding: 14px 32px;
-  background: var(--bg-base);
-  border: 2px solid transparent;
-  border-radius: var(--r-pill);
-  background-clip: padding-box;
-  position: relative;
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  letter-spacing: 0.01em
+.hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 44px;
+  margin-top: 30px
 }
-.hero-pills::before {
-  content: "";
-  position: absolute;
-  inset: -2px;
-  border-radius: var(--r-pill);
-  padding: 2px;
-  background: linear-gradient(135deg, var(--itl-blue) 0%, var(--itl-pink) 100%);
-  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none
-}
-.hero-pills .sep { color: var(--border-sep); font-weight: 300; opacity: 0.8 }
-.hero-pills .hero-label {
+.hero-meta .hm-item { display: flex; flex-direction: column; gap: 7px }
+.hero-meta .hm-label {
   font-family: var(--fd);
-  font-size: 0.78rem;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.5)
+}
+.hero-meta .hm-value {
+  font-family: var(--fm);
+  font-size: 0.85rem;
   font-weight: 500;
-  color: var(--text-muted);
-  letter-spacing: 0.02em
+  color: #fff
 }
-.hero-pills .hero-value {
-  color: var(--accent);
-  font-weight: 700;
-  font-family: var(--fd)
-}
-[data-theme="dark"] .hero-pills .hero-value {
-  text-shadow: 0 0 20px rgba(27,147,210,0.3)
-}
+.hero-meta .hm-value.mode { align-self: flex-start }
 
 .card {
   background: var(--bg-surface);
@@ -1155,30 +1157,18 @@ body {
   }
 
   .hero {
-    padding: 20px 0;
-    background: #fff!important
+    padding: 30px 0 34px;
+    break-after: avoid;
   }
 
-  .hero::before {
+  .hero::before, .hero::after {
     display: none
   }
 
-  .hero-org {
-    -webkit-text-fill-color: #0e7bb5;
-    color: #0e7bb5
-  }
-
-  .hero-title {
-    color: #111!important
-  }
-
-  .hero-pills {
-    border-color: #ccc!important;
-    color: #333!important
-  }
-  .hero-pills::before { display: none!important }
-  .hero-pills .hero-label { color: #666!important }
-  .hero-pills .hero-value { color: #0e7bb5!important; text-shadow: none!important }
+  .hero-org { color: #6dc5f0!important; -webkit-text-fill-color: #6dc5f0!important; }
+  .hero-title { color: #fff!important }
+  .hero-meta .hm-label { color: rgba(255,255,255,0.7)!important }
+  .hero-meta .hm-value { color: #fff!important }
 
   .card,.pipeline-card {
     box-shadow: none!important;
@@ -1471,10 +1461,6 @@ body {
         <a href="04_operational.html" class="nav-operational">Operational</a>
         <a href="05_arch.html" class="nav-arch" style="opacity:1;">Architecture</a>
       </nav>
-      <button class="icon-btn" id="themeToggle" title="Toggle theme">
-        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-      </button>
       <button class="icon-btn" onclick="window.print()" title="Print report">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
       </button>
@@ -1482,17 +1468,14 @@ body {
   </header>
   <main class="content">
     <div class="hero">
-      <div class="hero-org">{{ORGANIZATION_NAME}}</div>
-      <h1 class="hero-title">{{TITLE}}</h1>
-      <div class="hero-pills">
-        <span class="hero-label">Mode:</span>
-        <span class="hero-value" style="background:{{TIER_COLOR}};color:#fff;padding:2px 10px;border-radius:4px;font-weight:700;letter-spacing:0.5px;">{{TIER_LABEL}}</span>
-        <span class="sep">|</span>
-        <span class="hero-label">Session:</span>
-        <span class="hero-value">{{SUBTITLE}}</span>
-        <span class="sep">|</span>
-        <span class="hero-label">Generated:</span>
-        <span class="hero-value">{{TIMESTAMP}}</span>
+      <div class="hero-inner">
+        <div class="hero-org">{{ORGANIZATION_NAME}}</div>
+        <h1 class="hero-title">{{TITLE}}</h1>
+        <div class="hero-meta">
+          <div class="hm-item"><span class="hm-label">Mode</span><span class="hm-value mode" style="background:{{TIER_COLOR}};color:#fff;padding:3px 11px;border-radius:6px;font-family:var(--fd);font-weight:700;letter-spacing:0.04em;font-size:0.72rem;">{{TIER_LABEL}}</span></div>
+          <div class="hm-item"><span class="hm-label">Session</span><span class="hm-value">{{SUBTITLE}}</span></div>
+          <div class="hm-item"><span class="hm-label">Generated</span><span class="hm-value">{{TIMESTAMP}}</span></div>
+        </div>
       </div>
     </div>
     {{EXTENDED_SECTION}}

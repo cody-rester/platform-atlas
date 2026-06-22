@@ -23,7 +23,9 @@ from rich.console import Console
 
 from platform_atlas.core.credentials import (
     credential_store,
+    active_secret_store,
     CredentialBackendType,
+    FileStoreHealth,
     verify_keyring_backend,
 )
 from platform_atlas.core.exceptions import CredentialError
@@ -126,24 +128,43 @@ def _check_credential_backend() -> CheckResult:
             f"Could not initialize credential store: {type(e).__name__}: {e}",
         )
 
+    file_store_active = False
     if store.backend_type == CredentialBackendType.VAULT:
         service_name = "HashiCorp Vault"
         # VaultBackend validated the connection during __init__.
         # If we got here, the connection is good — just check for secrets.
+    elif active_secret_store().is_file:
+        # The encrypted local file is the chosen backend. Functional, but
+        # reported honestly as a warning (never a green pass, and never
+        # described as an "encrypted keyring").
+        service_name = "Credential Store"
+        file_store_active = True
+        if active_secret_store().health() == FileStoreHealth.UNREADABLE:
+            return CheckResult.fail(
+                service_name,
+                "Encrypted local credential file is unreadable",
+                "The file (~/.atlas/credentials.enc) or its key (~/.atlas/.keysalt) was changed, "
+                "removed, or moved from another machine. Run 'platform-atlas config credentials' "
+                "to create a fresh one and re-enter your credentials.",
+            )
     else:
         service_name = "OS Keyring"
         is_secure, is_functional, backend = verify_keyring_backend()
         if not is_functional:
+            # You explicitly chose the OS keyring but it can't store a secret on
+            # this host. Point at the two stores that work everywhere.
             return CheckResult.fail(
                 service_name,
                 f"No usable keyring backend: {backend}",
-                "Install gnome-keyring (Linux), or configure Vault as the credential backend",
+                "Run 'platform-atlas config credentials --use-file-store' for an encrypted "
+                "local file, or configure Vault as the credential backend",
             )
         if not is_secure:
             return CheckResult.warn(
                 service_name,
                 f"Unencrypted keyring backend: {backend}",
-                "Credentials stored without encryption — consider gnome-keyring or Vault for production",
+                "Credentials stored without encryption — consider gnome-keyring, "
+                "'config credentials --use-file-store', or Vault for production",
             )
 
     # Check that required credentials exist (works for either backend)
@@ -174,6 +195,15 @@ def _check_credential_backend() -> CheckResult:
             service_name,
             f"Missing credentials: {', '.join(missing)}",
             fix_msg,
+        )
+
+    if file_store_active:
+        return CheckResult.warn(
+            service_name,
+            f"All credentials available ({store.backend_name})",
+            "Encrypted local file is the chosen backend — credentials are encrypted and "
+            "machine-bound at ~/.atlas/credentials.enc. Run 'platform-atlas config credentials "
+            "--use-keyring' to switch to the OS keyring.",
         )
 
     return CheckResult.ok(
@@ -403,6 +433,11 @@ def run_preflight(
       3. Connectors       — can URI-based collectors reach their services?
          (pymongo, redis-py, OAuth/HTTP)
 
+    Tier-aware: Standard runs Phase 0 + connectors only (no SSH at all).
+    SaaS runs the SSH phases against its gateway node(s), the gateway5
+    file-source check, and the Gateway4 API connector — never Platform/
+    Mongo/Redis/Kubernetes checks. Extended runs everything.
+
     Args:
         targets:  List of target dicts from the deployment topology.
         quiet:    Suppress console output.
@@ -434,10 +469,12 @@ def run_preflight(
     if not quiet:
         console.print(f"\n[bold {theme.primary}]Running preflight checks...[/bold {theme.primary}]\n")
 
-    # Tier-aware phase gating: Standard mode runs only connector preflights.
+    # Tier-aware phase gating: Standard mode runs only connector preflights —
     # SSH (Phases 1, 2) and Kubernetes (Phase 2b) are skipped entirely.
+    # SaaS runs the SSH phases (its gateway nodes) but never Kubernetes.
     from platform_atlas.core.context import ctx as _ctx
     is_standard = _ctx().is_standard
+    is_saas = _ctx().is_saas
 
     # -- Phase 1: SSH node connectivity ------------------------------------
     ssh_healthy_targets: list[dict] = []
@@ -505,6 +542,28 @@ def run_preflight(
                     ))
                 continue
 
+            # IAG5 server-config-file nodes: read+parse gateway.conf over SSH and
+            # surface the server-mode block here, in place of the printenv probe.
+            gw5_conf_path = target.get("gateway5_conf_path", "")
+            if gw5_conf_path:
+                relevant.discard("gateway5")
+                from platform_atlas.capture.collectors.gateway5 import Gateway5Collector
+                try:
+                    res = Gateway5Collector(
+                        transport=transport, conf_path=gw5_conf_path,
+                    ).preflight()
+                    report.results.append(CheckResult(
+                        name=f"gateway5 → {target_name}",
+                        status=res.status, message=res.message,
+                        details=res.details, group="node_services",
+                    ))
+                except Exception as e:
+                    report.results.append(CheckResult.fail(
+                        name=f"gateway5 → {target_name}",
+                        message=f"{type(e).__name__}: {e}",
+                        group="node_services",
+                    ))
+
             for module_key in relevant:
                 check_fn = all_checks.get(module_key)
                 if check_fn is None:
@@ -533,7 +592,7 @@ def run_preflight(
             except Exception:
                 pass
 
-    # Also run SSH-based checks locally if any local targets exist (Extended only)
+    # Also run SSH-based checks locally if any local targets exist (non-Standard)
     if targets and not is_standard:
         local_targets = [t for t in targets if t.get("transport", "ssh") == "local"]
         for target in local_targets:
@@ -571,8 +630,8 @@ def run_preflight(
                         group="node_services",
                     ))
 
-    # -- Phase 2b: Kubernetes preflight checks (Extended only) ----------------
-    if targets and not is_standard:
+    # -- Phase 2b: Kubernetes preflight checks (Extended only — never SaaS) ---
+    if targets and not is_standard and not is_saas:
         k8s_targets = [t for t in targets if t.get("transport") == "kubernetes"]
         if k8s_targets:
             if not quiet:
@@ -603,14 +662,52 @@ def run_preflight(
                     group="kubernetes",
                 ))
 
+    # -- Phase 2c: Gateway5 file-source preflight (Extended + SaaS) --------
+    if targets and not is_standard:
+        gw5_file_targets = [t for t in targets if t.get("transport") == "gateway5_file"]
+        if gw5_file_targets:
+            if not quiet:
+                console.print(f"\n  [{theme.text_dim}]Phase 2c: Gateway5 file source...[/{theme.text_dim}]\n")
+            from platform_atlas.capture.collectors.gateway5 import Gateway5Collector
+            for target in gw5_file_targets:
+                target_name = target.get("name", "gateway5")
+                try:
+                    gw5 = Gateway5Collector(
+                        source_path=target.get("gateway5_source_path", ""),
+                    )
+                    result = gw5.preflight()
+                    report.results.append(CheckResult(
+                        name=f"gateway5 → {target_name}",
+                        status=result.status,
+                        message=result.message,
+                        details=result.details,
+                        group="node_services",
+                    ))
+                except Exception as e:
+                    report.results.append(CheckResult.fail(
+                        name=f"gateway5 → {target_name}",
+                        message=f"{type(e).__name__}: {e}",
+                        group="node_services",
+                    ))
+
     # -- Phase 3: Connector-based checks (run once) ------------------------
     if not quiet:
-        console.print(f"\n  [{theme.text_dim}]Phase 3: Service connectors (pymongo, redis-py, OAuth)...[/{theme.text_dim}]\n")
+        connector_label = (
+            "Service connectors (ipsdk)" if is_saas
+            else "Service connectors (pymongo, redis-py, OAuth)"
+        )
+        console.print(f"\n  [{theme.text_dim}]Phase 3: {connector_label}...[/{theme.text_dim}]\n")
 
     # Build active module set from all targets
     all_active: set[str] = set()
     for t in (targets or []):
         all_active.update(t.get("modules", []))
+
+    # A SaaS GW4 node lists the SSH module name ("gateway4"); the ipsdk API
+    # reachability check rides along whenever the gateway is in scope —
+    # the check itself reports SKIP when no gateway4_uri is configured.
+    if is_saas and "gateway4" in all_active:
+        all_active.add("gateway4_api")
 
     active_connectors = _CONNECTOR_COLLECTORS & all_active
 

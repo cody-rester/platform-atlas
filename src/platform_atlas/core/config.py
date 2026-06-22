@@ -24,6 +24,7 @@ from platform_atlas.core.topology import (
     DeploymentMode,
     CaptureScope,
     synthesize_standard_targets,
+    synthesize_saas_targets,
 )
 from platform_atlas.core.exceptions import SecurityError, ConfigError
 from platform_atlas.core.paths import ATLAS_CONFIG_FILE
@@ -38,8 +39,12 @@ __all__ = [
     "Tier",
 ]
 
-Tier = Literal["standard", "extended"]
-_VALID_TIERS: frozenset[str] = frozenset({"standard", "extended"})
+Tier = Literal["standard", "extended", "saas"]
+_VALID_TIERS: frozenset[str] = frozenset({"standard", "extended", "saas"})
+
+# SaaS tier: the one gateway kind an environment audits. Strictly one per
+# environment — auditing both a GW4 and a GW5 means two environments.
+_VALID_SAAS_GATEWAY_KINDS: frozenset[str] = frozenset({"gateway4", "gateway5"})
 
 _VALID_WEBUI_THEMES: frozenset[str] = frozenset({"light", "dark"})
 _VALID_WEBUI_ACCENTS: frozenset[str] = frozenset({
@@ -82,7 +87,19 @@ class Config:
     webui_accent: str = "cyan"
     deployment: dict | None = None
     skip_rules: list[dict] | None = None
+    # Where credentials are stored: "keyring" (OS keyring), "file" (encrypted,
+    # machine-bound ~/.atlas/credentials.enc), or "vault" (read from HashiCorp
+    # Vault). An explicit, saved choice — Atlas never auto-switches between them.
     credential_backend: str = "keyring"
+    # Vault backend only: where Vault's own connection settings (URL, token,
+    # AppRole) are kept locally — "keyring" or "file". None means unset, which
+    # resolves to the keyring (where pre-2.0 Vault installs already keep them);
+    # new Vault setups write this explicitly (default "file").
+    vault_secret_store: str | None = None
+    # DEPRECATED (pre-release back-compat only): the old auto-fallback flag. If
+    # True it is honored as credential_backend="file". Nothing writes it anymore;
+    # new code sets credential_backend directly.
+    use_file_store: bool = False
     active_environment: str | None = None
     gateway4_uri: str = ""
     gateway4_username: str = ""
@@ -92,6 +109,12 @@ class Config:
     # tier field) so behavior is preserved on upgrade. Fresh installs go
     # through init_setup.py which writes "standard" explicitly.
     tier: Tier = "standard"
+    # SaaS tier only: which gateway this environment audits — "gateway4" or
+    # "gateway5". Strictly one per environment, chosen at create time by the
+    # setup wizard and validated in load_config(). None outside SaaS. Drives
+    # collector registration, rule-category scoping, the architecture-form
+    # sections, and the report identity.
+    saas_gateway_kind: str | None = None
     # Kubernetes-specific
     values_yaml_path: str = ""
     iag5_values_yaml_path: str = ""
@@ -135,6 +158,15 @@ class Config:
 
     @property
     def platform_client_secret(self) -> str:
+        """The Platform OAuth client secret from the credential store.
+
+        SaaS audits have no Platform anchor, so this resolves to "" there
+        instead of raising — code paths that never use the Platform must be
+        able to touch the config without demanding a secret that was never
+        stored (and that the tier-aware store would refuse anyway).
+        """
+        if self.tier == "saas":
+            return ""
         from platform_atlas.core.credentials import credential_store, CredentialKey
         return credential_store().get_required(CredentialKey.PLATFORM_SECRET)
 
@@ -175,9 +207,14 @@ class Config:
 
         In Standard mode the topology is not consulted — targets are
         synthesized from ``platform_uri`` (and optional ``gateway4_uri``).
+        In SaaS mode the topology (gateway_only) is used when present; an
+        API-only Gateway 4 environment has no deployment, so its single
+        ipsdk target is synthesized instead.
         """
         if self.tier == "standard":
             return tuple(synthesize_standard_targets(self))
+        if self.tier == "saas" and not self.deployment:
+            return tuple(synthesize_saas_targets(self))
 
         topo = self.topology
         scope_str = (self.deployment or {}).get("capture_scope", "primary_only")
@@ -198,6 +235,8 @@ class Config:
         """Full target list ignoring scope — used by preflight to check all nodes."""
         if self.tier == "standard":
             return tuple(synthesize_standard_targets(self))
+        if self.tier == "saas" and not self.deployment:
+            return tuple(synthesize_saas_targets(self))
         return tuple(self.topology.capture_targets(CaptureScope.ALL_NODES))
 
     @property
@@ -210,6 +249,19 @@ class Config:
         """True if the deployment mode is Kubernetes."""
         try:
             return self.topology.mode == DeploymentMode.KUBERNETES
+        except ConfigError:
+            return False
+
+    @property
+    def is_ha2(self) -> bool:
+        """True if the deployment mode is HA2 (replica-set / high availability).
+
+        Fails safe to False when no topology is defined, mirroring
+        ``is_kubernetes`` — so callers that gate behavior on HA2 never crash on a
+        partially-configured environment.
+        """
+        try:
+            return self.topology.mode == DeploymentMode.HA2
         except ConfigError:
             return False
 
@@ -387,6 +439,20 @@ def load_config(
                     details={"valid": sorted(_VALID_TIERS)},
                 )
             data["tier"] = normalized
+
+    # ── Validate SaaS gateway kind ────────────────────────────────
+    # Tolerate absence (enforced where it's actually needed — wizard,
+    # target synthesis, registry) but reject an explicitly-invalid value
+    # so a corrupt or hand-edited env file fails loudly, not weirdly.
+    kind = data.get("saas_gateway_kind")
+    if kind is not None:
+        normalized_kind = str(kind).strip().lower()
+        if normalized_kind not in _VALID_SAAS_GATEWAY_KINDS:
+            raise ConfigError(
+                f"Invalid saas_gateway_kind '{kind}'",
+                details={"valid": sorted(_VALID_SAAS_GATEWAY_KINDS)},
+            )
+        data["saas_gateway_kind"] = normalized_kind
 
     # ── Sanitize WebUI appearance prefs ──────────────────────────
     # Stored values may be stale or hand-edited. Snap to defaults

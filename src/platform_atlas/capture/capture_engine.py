@@ -27,7 +27,7 @@ from platform_atlas.capture.models import (
 from platform_atlas.capture.ui import CaptureUI, WarningCapture
 from platform_atlas.core import ui
 from platform_atlas.core.topology import COLLECTOR_TRANSPORT
-from platform_atlas.core.utils import show_premium_header
+from platform_atlas.core.utils import show_premium_header, redact_capture_credentials
 from platform_atlas.core.shutdown import shutdown_requested, run_cleanups, register_cleanup
 from platform_atlas.core.exceptions import CaptureAborted
 from platform_atlas.capture.extended_captures import (
@@ -268,6 +268,10 @@ def finalize_capture(
         "redis.sentinel_runtime",
         "gateway4.runtime_config",
         "gateway4.api_status",
+        # IAG5 server config-file source: keep the whole config_file subtree
+        # (incl. the application_mode record) — only rule-referenced leaves would
+        # otherwise survive, dropping the mode provenance.
+        "gateway5.config_file",
         "platform.log_analysis",
         "platform.webserver_logs",
         "mongo.log_analysis",
@@ -392,6 +396,11 @@ def finalize_capture(
             limited["checks"] = existing
     except Exception as e:
         logger.debug("Checks passthrough failed: %s", e)
+
+    # Universal chokepoint for the written 01_capture.json (run_capture, manual
+    # capture, continuous engine all funnel through here). Masks scheme://user:
+    # pass@ only — host/port/path/query and the PLAT-027 '?' check are preserved.
+    limited = redact_capture_credentials(limited)
 
     return limited
 
@@ -960,6 +969,10 @@ def run_capture(
 
         # ========= RESHAPE INTO NESTED HIERARCHY =========
         structured = reshape_capture(full_capture_json)
+
+        # Mask scheme://user:pass@ creds before the raw debug export writes
+        # 01_raw_capture.json (01_capture.json/checkpoint scrubbed elsewhere).
+        structured = redact_capture_credentials(structured)
 
         # ========= DEBUG RAW EXPORT =========
         # Fire after reshape, before filter — callers use this to drop

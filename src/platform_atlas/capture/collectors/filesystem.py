@@ -18,7 +18,7 @@ import re
 import json
 import yaml
 
-from platform_atlas.core.context import require_extended
+from platform_atlas.core.context import require_infra
 
 logger = logging.getLogger(__name__)
 
@@ -134,9 +134,9 @@ class FileSystemInfoCollector:
     """Simple local filesystem system collector"""
 
     def __init__(self, transport: Transport | None = None) -> None:
-        require_extended(
+        require_infra(
             "FileSystemInfoCollector",
-            hint="Filesystem-based collection requires Extended Mode.",
+            hint="Filesystem-based collection is unavailable in Standard Mode.",
         )
         self._transport = transport or LocalTransport()
         logger.debug(

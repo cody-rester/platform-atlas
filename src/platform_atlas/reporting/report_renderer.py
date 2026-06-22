@@ -1085,8 +1085,12 @@ def render_html_report(
     """Render a validation DataFrame to a styled HTML report.
 
     The ``tier`` argument stamps the Mode badge and chooses tier-aware
-    cover headlines: Standard reports lead with "Application Audit"
-    while Extended reports lead with "Infrastructure Audit".
+    cover headlines: Standard reports lead with "Application Audit",
+    SaaS with "Gateway Audit", and Extended with "Infrastructure Audit".
+
+    SaaS additionally merges the Architecture Overview (from
+    ``architecture_data``) into this single report — no separate
+    05_arch.html is generated for that tier.
     """
 
     # Load Template
@@ -1151,7 +1155,9 @@ def render_html_report(
     # Separate user-suppressed rows before the status rename so we can
     # give them a distinct label and count in the report header.
     import json as _json
-    suppressed_mask = df.get("user_suppressed", pd.Series(False, index=df.index)).astype(bool)
+    # fillna(False): the column is sparse (only suppressed rows set it), and a
+    # bare .astype(bool) turns the NaN of every non-suppressed row into True.
+    suppressed_mask = df.get("user_suppressed", pd.Series(False, index=df.index)).fillna(False).astype(bool)
     suppress_count = int(suppressed_mask.sum())
     # Build {rule_number: reason} so the report JS can show inline reasons
     if suppress_count:
@@ -1162,6 +1168,21 @@ def render_html_report(
     else:
         suppressed_dict = {}
     suppressed_rules_json = _json.dumps(suppressed_dict, ensure_ascii=False)
+
+    # Build {rule_number: skip_kind} for non-suppressed SKIP rows so the report
+    # JS can color-code *why* each rule was skipped (unreachable / no_data /
+    # conditional). Suppressed rows are excluded — they get the suppression
+    # callout instead. Guarded so reports from sessions captured before this
+    # column existed still render.
+    if "skip_kind" in df.columns:
+        skip_mask = (df["status"] == "SKIP") & (~suppressed_mask) & df["skip_kind"].notna()
+        skip_info_dict = {
+            str(row["rule_number"]): str(row["skip_kind"])
+            for _, row in df[skip_mask].iterrows()
+        }
+    else:
+        skip_info_dict = {}
+    skip_info_json = _json.dumps(skip_info_dict, ensure_ascii=False)
 
     df["status"] = df["status"].replace({
         "PASS": "Compliant", # nosec B105
@@ -1175,6 +1196,10 @@ def render_html_report(
     # Drop the user_suppressed column — it's a processing flag, not a display column
     if "user_suppressed" in df.columns:
         df = df.drop(columns=["user_suppressed"])
+
+    # skip_kind is consumed via SKIP_INFO_JSON above, not shown as a table column
+    if "skip_kind" in df.columns:
+        df = df.drop(columns=["skip_kind"])
 
     # Sort DataFrame by Rule Name
     df = df.sort_values(by='rule_number')
@@ -1195,11 +1220,11 @@ def render_html_report(
     # Generate modules footer text
     modules_text, is_partial = generate_modules_footer(modules_ran)
 
-    # Standard tier: limited modules are the full expected capture, not partial.
-    # Suppress the obelisk and footnote — they only apply to Extended captures
-    # where specific infrastructure modules failed or were skipped.
+    # Standard/SaaS tiers: limited modules are the full expected capture, not
+    # partial. Suppress the obelisk and footnote — they only apply to Extended
+    # captures where specific infrastructure modules failed or were skipped.
     _tier_check = (tier or "extended").strip().lower()
-    if _tier_check == "standard":
+    if _tier_check in ("standard", "saas"):
         is_partial = False
 
     # Add obelisk to score if partial
@@ -1242,6 +1267,12 @@ def render_html_report(
             "<code>platform-atlas tier upgrade</code>."
             "</p>"
         )
+    elif tier_normalized == "saas":
+        tier_label = "SAAS"
+        # Itential Pink — the single-gateway audit tier.
+        tier_color = "#C5258F"
+        cover_kind = "Gateway Audit"
+        tier_footer_html = ""
     else:
         tier_label = "EXTENDED"
         # Itential Orange — the upsell color for the upgrade tier.
@@ -1252,16 +1283,43 @@ def render_html_report(
     safe_tier_color = html_mod.escape(tier_color)
     safe_cover_kind = html_mod.escape(cover_kind)
 
-    # Operational report nav link — disabled in Standard (logs and MongoDB pipelines
-    # are Extended-only); Architecture link is available in all tiers.
+    # Operational report nav link — disabled in Standard (logs and MongoDB
+    # pipelines are Extended-only) and in SaaS (no Platform/Mongo/Redis at all).
     if tier_normalized == "standard":
         operational_nav_link = (
             '<span class="op-link op-link--disabled" '
             'title="You can only see this in Extended Mode">'
             'Operational</span>'
         )
+    elif tier_normalized == "saas":
+        operational_nav_link = (
+            '<span class="op-link op-link--disabled" '
+            'title="Not part of a SaaS gateway audit">'
+            'Operational</span>'
+        )
     else:
         operational_nav_link = '<a href="04_operational.html" class="op-link">Operational</a>'
+
+    # Architecture link: a separate 05_arch.html in Standard/Extended; merged
+    # into this very report (in-page anchor) for SaaS.
+    if tier_normalized == "saas":
+        architecture_nav_link = (
+            '<a href="#architecture-overview" class="op-link arch-link">Architecture</a>'
+        )
+    else:
+        architecture_nav_link = '<a href="05_arch.html" class="op-link arch-link">Architecture</a>'
+
+    # SaaS merges the Architecture Overview into the single report. The
+    # Additional Validation checks and Architecture Warnings of 05_arch.html
+    # are intentionally NOT carried over — they don't apply to a gateway-only
+    # audit. Empty (and the placeholder vanishes) in Standard/Extended.
+    architecture_section_html = ""
+    if tier_normalized == "saas" and architecture_data:
+        architecture_section_html = (
+            '<div id="architecture-overview">'
+            + _render_architecture_section(architecture_data)
+            + '</div>'
+        )
 
     # Replace placeholders
     replacements = {
@@ -1300,8 +1358,11 @@ def render_html_report(
         "{{TIER_COVER_KIND}}": safe_cover_kind,
         "{{TIER_FOOTER}}": tier_footer_html,
         "{{OPERATIONAL_NAV_LINK}}": operational_nav_link,
+        "{{ARCHITECTURE_NAV_LINK}}": architecture_nav_link,
+        "{{ARCHITECTURE_SECTION}}": architecture_section_html,
         "{{SUPPRESS_COUNT}}": str(suppress_count),
         "{{SUPPRESSED_RULES_JSON}}": suppressed_rules_json,
+        "{{SKIP_INFO_JSON}}": skip_info_json,
     }
 
     pattern = re.compile("|".join(re.escape(k) for k in replacements))
@@ -1313,5 +1374,58 @@ def render_html_report(
         output_path.write_text(html, encoding="utf-8")
         if os.name == "posix":
             os.chmod(output_path, 0o600)
+
+    return html
+
+
+def render_splash_page(
+        template_path: str | Path,
+        output_path: str | Path,
+        *,
+        organization_name: str = "Unknown Organization",
+        session_name: str = "",
+        tier: str = "extended",
+        report_link: str = "session_files/03_report.html",
+        atlas_version: str = __version__,
+        timestamp: str | None = None,
+) -> str:
+    """Render the export splash / cover page (``REPORT.html``).
+
+    This is the landing page placed at the top level of an exported session
+    archive. The actual reports live in a ``session_files/`` subdirectory; the
+    splash's single call-to-action links into ``report_link`` (defaults to
+    ``session_files/03_report.html``).
+
+    Substitution mirrors :func:`render_html_report`'s ``{{PLACEHOLDER}}``
+    convention (a regex replace, not real Jinja2). The organization and
+    session names are HTML-escaped because they originate from user input.
+    """
+    template = Path(template_path).read_text(encoding="utf-8")
+
+    if timestamp is None:
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    # Human Mode label. The .meta block is text-transform:uppercase in CSS, so
+    # casing here is cosmetic — these match the report cover's tier semantics.
+    tier_normalized = (tier or "extended").strip().lower()
+    tier_label = {"standard": "Standard", "saas": "SaaS"}.get(tier_normalized, "Extended")
+
+    replacements = {
+        "{{ORGANIZATION_NAME}}": html_mod.escape(str(organization_name or "Unknown Organization")),
+        "{{SESSION_NAME}}": html_mod.escape(str(session_name or "—")),
+        "{{TIER_LABEL}}": html_mod.escape(tier_label),
+        # quote=True: the link lands in an href="" attribute.
+        "{{REPORT_LINK}}": html_mod.escape(str(report_link), quote=True),
+        "{{ATLAS_VERSION}}": html_mod.escape(str(atlas_version)),
+        "{{TIMESTAMP}}": html_mod.escape(str(timestamp)),
+    }
+
+    pattern = re.compile("|".join(re.escape(k) for k in replacements))
+    html = pattern.sub(lambda m: replacements[m.group(0)], template)
+
+    output_path = Path(output_path)
+    output_path.write_text(html, encoding="utf-8")
+    if os.name == "posix":
+        os.chmod(output_path, 0o600)
 
     return html

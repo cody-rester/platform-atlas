@@ -28,11 +28,13 @@ from platform_atlas.core.theme import THEME_REGISTRY, get_theme_by_id, list_them
 from platform_atlas.core.credentials import (
     credential_store,
     scoped_service_name,
+    active_secret_store,
+    FileStoreHealth,
     CredentialKey,
-    CredentialBackendType,
     CredentialError,
     reset_credential_store,
     verify_keyring_backend,
+    applicable_keys,
 )
 from platform_atlas.core import ui
 
@@ -282,11 +284,99 @@ def handle_theme_switcher(args: Namespace) -> int:
     ui.console.print(f"[{new_theme.text_dim}]Takes effect on next run[/{new_theme.text_dim}]")
     return 0
 
+def _switch_credential_backend(target: str) -> int:
+    """`config credentials --use-file-store|--use-keyring` — explicitly switch
+    this environment's credential backend between the OS keyring and the
+    encrypted local file.
+
+    No auto-anything: it saves the choice and re-resolves the store. Secrets are
+    NOT copied between stores — re-run `config credentials` to enter them into
+    the new backend.
+
+    Switching INTO the OS keyring is guarded: an unusable keyring is refused
+    outright (the switch would record fine and then fail on the next credential
+    read/write — exactly the broken state to avoid), and a functional-but-
+    unencrypted keyring is allowed with a warning. The encrypted file store
+    works on any host, so `--use-file-store` needs no such guard.
+    """
+    if target == "keyring":
+        is_secure, is_functional, backend_name = verify_keyring_backend()
+        if not is_functional:
+            console.print()
+            console.print(Panel(
+                f"[bold {theme.error}]Can't switch to the OS keyring — it isn't usable on "
+                f"this host.[/bold {theme.error}]\n\n"
+                f"[{theme.text_primary}]Detected backend: {backend_name} (not functional)\n\n"
+                f"Switching would record the choice and then fail on the next credential\n"
+                f"read or write, so the backend was left unchanged.\n\n"
+                f"Use the encrypted local file instead — it works on any host:\n"
+                f"  platform-atlas config credentials --use-file-store[/{theme.text_primary}]",
+                border_style=theme.error,
+                box=box.ROUNDED,
+                expand=False,
+            ))
+            console.print()
+            return 1
+        if not is_secure:
+            console.print()
+            console.print(
+                f"  [{theme.warning}]⚠ {backend_name} works but stores secrets "
+                f"UNENCRYPTED.[/{theme.warning}]")
+            console.print(f"  [{theme.text_dim}]For encrypted storage instead, run:[/{theme.text_dim}]")
+            console.print(
+                f"  [{theme.text_dim}]  platform-atlas config credentials "
+                f"--use-file-store[/{theme.text_dim}]")
+    _persist_config_value("credential_backend", target)
+    _persist_config_value("use_file_store", False)  # retire the deprecated flag
+    reset_credential_store()
+    store = credential_store()
+    if target == "file":
+        label = "encrypted local file"
+        where = ("Credentials are stored encrypted and machine-bound at\n"
+                 "  ~/.atlas/credentials.enc   (key salt: ~/.atlas/.keysalt)\n\n")
+    else:
+        label = "OS keyring"
+        where = "Credentials are stored in this host's OS keyring.\n\n"
+    console.print()
+    console.print(Panel(
+        f"[bold {theme.success}]Credential backend set to the {label}.[/bold {theme.success}]\n\n"
+        f"[{theme.text_primary}]{where}"
+        f"Atlas will use this store from now on — nothing auto-switches. Secrets are\n"
+        f"not copied between stores; re-run\n"
+        f"  platform-atlas config credentials\n"
+        f"to (re)enter your credentials into the {label}.[/{theme.text_primary}]",
+        border_style=theme.success,
+        box=box.ROUNDED,
+        expand=False,
+    ))
+    console.print(f"  [{theme.text_dim}]Backend: {store.backend_name}[/{theme.text_dim}]")
+    console.print()
+    return 0
+
+
+def _tier_credential_keys() -> list[CredentialKey]:
+    """Credential keys relevant to the active tier.
+
+    Keys outside the active tier's applicable set are hidden — MongoDB/Redis/
+    SSH in Standard, Platform/MongoDB/Redis in SaaS. They are not used there,
+    and the tier-aware store refuses to write them anyway, so offering them
+    in the credentials UI would only confuse the user and then error out.
+    """
+    usable = applicable_keys()
+    return [k for k in CredentialKey if k in usable]
+
+
 @registry.register("config", "credentials", description="View and update credentials")
 def handle_config_credentials(args: Namespace) -> int:
     """View and update credentials in the active backend."""
     import questionary
     from platform_atlas.core.credentials import CredentialError
+
+    # Explicit backend switch (non-interactive — applies and exits).
+    if getattr(args, "cred_use_file_store", False):
+        return _switch_credential_backend("file")
+    if getattr(args, "cred_use_keyring", False):
+        return _switch_credential_backend("keyring")
 
     # --- Attempt to initialize the credential store ---
     # Vault backend connects eagerly, so stale/invalid AppRole credentials
@@ -346,30 +436,87 @@ def handle_config_credentials(args: Namespace) -> int:
             f"  [{theme.text_dim}]Backend: {store.backend_name}[/{theme.text_dim}]{env_label}"
         )
     else:
-        # Keyring mode: verify the backend is secure
-        is_secure, is_functional, backend = verify_keyring_backend()
-        if not is_functional:
-            console.print(Panel(
-                f"[bold {theme.error}]No usable keyring backend found: {backend}[/bold {theme.error}]\n\n"
-                f"[{theme.text_primary}]Platform Atlas cannot store credentials on this system.\n"
-                f"  • macOS: Keychain (built-in)\n"
-                f"  • Windows: Credential Locker (built-in)\n"
-                f"  • Linux: install gnome-keyring, or configure Vault as the credential backend[/{theme.text_primary}]",
-                border_style=theme.error,
-                box=box.ROUNDED,
-                expand=False,
-            ))
-            return 1
-        if not is_secure:
-            console.print(Panel(
-                f"[bold {theme.warning}]Unencrypted keyring backend active: {backend}[/bold {theme.warning}]\n\n"
-                f"[{theme.text_primary}]Credentials will be stored without encryption.\n"
-                f"  • Linux: install gnome-keyring for encrypted Secret Service storage\n"
-                f"  • Any platform: configure HashiCorp Vault as the credential backend[/{theme.text_primary}]",
-                border_style=theme.warning,
-                box=box.ROUNDED,
-                expand=False,
-            ))
+        # Local-store mode. The substrate is the chosen one — the OS keyring or
+        # the encrypted local file. The file store is a valid, non-fatal state.
+        if active_secret_store().is_file:
+            file_store = active_secret_store()
+            file_health = file_store.health()
+            if file_health == FileStoreHealth.UNREADABLE:
+                console.print(Panel(
+                    f"[bold {theme.error}]Your encrypted local credential file can't be opened.[/bold {theme.error}]\n\n"
+                    f"[{theme.text_primary}]The file (~/.atlas/credentials.enc) or its key (~/.atlas/.keysalt) was\n"
+                    f"changed, removed, or moved from another machine, so it can't be decrypted on\n"
+                    f"this host. Nothing here can't be re-entered — Atlas can start fresh: it will\n"
+                    f"create a brand-new encrypted file and you simply re-enter your credentials.[/{theme.text_primary}]",
+                    border_style=theme.error,
+                    box=box.ROUNDED,
+                    expand=False,
+                ))
+                recreate = questionary.confirm(
+                    "Create a fresh encrypted credential file and re-enter credentials now?",
+                    default=True,
+                    style=QSTYLE,
+                ).ask()
+                if recreate is None:
+                    raise KeyboardInterrupt
+                if not recreate:
+                    console.print(
+                        f"  [{theme.text_dim}]No changes made — re-run "
+                        f"'platform-atlas config credentials' when ready.[/{theme.text_dim}]"
+                    )
+                    return 0
+                file_store.reset()
+                console.print(
+                    f"  [{theme.success}]✓ Cleared the old file — a new encrypted file will be created "
+                    f"as you enter credentials below.[/{theme.success}]"
+                )
+            elif file_health == FileStoreHealth.EMPTY:
+                console.print(Panel(
+                    f"[bold {theme.warning}]Encrypted local file credential store — no credentials saved yet.[/bold {theme.warning}]\n\n"
+                    f"[{theme.text_primary}]You chose the encrypted local file backend, so credentials are stored\n"
+                    f"encrypted and machine-bound at ~/.atlas/credentials.enc. Add them below and\n"
+                    f"the encrypted file is created automatically.[/{theme.text_primary}]",
+                    border_style=theme.warning,
+                    box=box.ROUNDED,
+                    expand=False,
+                ))
+            else:
+                console.print(Panel(
+                    f"[bold {theme.warning}]Using the encrypted local file credential store.[/bold {theme.warning}]\n\n"
+                    f"[{theme.text_primary}]You chose the encrypted local file backend, so credentials are stored\n"
+                    f"encrypted and machine-bound at ~/.atlas/credentials.enc.\n"
+                    f"  • Protects against stolen disks/backups and casual inspection\n"
+                    f"  • Run 'platform-atlas config credentials --use-keyring' to switch to the OS keyring[/{theme.text_primary}]",
+                    border_style=theme.warning,
+                    box=box.ROUNDED,
+                    expand=False,
+                ))
+        else:
+            # Keyring substrate: verify it is secure
+            is_secure, is_functional, backend = verify_keyring_backend()
+            if not is_functional:
+                # You chose the OS keyring but it can't store a secret here.
+                # Point at the encrypted file instead.
+                console.print(Panel(
+                    f"[bold {theme.error}]No usable credential store on this system: {backend}[/bold {theme.error}]\n\n"
+                    f"[{theme.text_primary}]Run 'platform-atlas config credentials --use-file-store' to store\n"
+                    f"credentials in an encrypted local file instead.[/{theme.text_primary}]",
+                    border_style=theme.error,
+                    box=box.ROUNDED,
+                    expand=False,
+                ))
+                return 1
+            if not is_secure:
+                console.print(Panel(
+                    f"[bold {theme.warning}]Unencrypted keyring backend active: {backend}[/bold {theme.warning}]\n\n"
+                    f"[{theme.text_primary}]Credentials will be stored without encryption.\n"
+                    f"  • Linux: install gnome-keyring for encrypted Secret Service storage\n"
+                    f"  • Or run 'platform-atlas config credentials --use-file-store' for an encrypted local file\n"
+                    f"  • Any platform: configure HashiCorp Vault as the credential backend[/{theme.text_primary}]",
+                    border_style=theme.warning,
+                    box=box.ROUNDED,
+                    expand=False,
+                ))
 
         console.print()
         console.print(
@@ -385,7 +532,7 @@ def handle_config_credentials(args: Namespace) -> int:
     status_table.add_column("Status", justify="center", min_width=12)
     status_table.add_column("Preview", style=theme.text_dim, min_width=20)
 
-    for key in CredentialKey:
+    for key in _tier_credential_keys():
         value = store.get(key)
         if value:
             badge = f"[{theme.success}]✓ Stored[/{theme.success}]"
@@ -419,7 +566,7 @@ def handle_config_credentials(args: Namespace) -> int:
             )
 
             # Show missing keys with the full Vault path for easy copy-paste
-            missing_keys = [key for key in CredentialKey if not store.get(key)]
+            missing_keys = [key for key in _tier_credential_keys() if not store.get(key)]
             if missing_keys:
                 console.print(
                     f"\n  [{theme.warning}]Missing Vault keys "
@@ -479,7 +626,7 @@ def handle_config_credentials(args: Namespace) -> int:
         # Pick which credential
         cred_choices = [
             questionary.Choice(key.display_name, value=key)
-            for key in CredentialKey
+            for key in _tier_credential_keys()
         ]
         selected = questionary.select(
             "Which credential?",
@@ -770,50 +917,91 @@ def collect_doctor_rows(
     tier = config.tier
     rows.append(DoctorRow.from_tuple(("Tier", "ok", tier, "")))
 
+    # Does this tier talk to the Platform at all? SaaS audits a single gateway
+    # with no Platform/Mongo/Redis, so the Platform credential + URL checks below
+    # don't apply and would otherwise false-flag a perfectly healthy SaaS setup.
+    # Resolve through the credential store's own per-tier key sets so the doctor,
+    # the store, and capture all agree on what "uses Platform" means.
+    platform_used = CredentialKey.PLATFORM_SECRET in applicable_keys(tier)
+
     # ── Credential backend ────────────────────────────────────────
     try:
-        is_secure, is_functional, backend_name = verify_keyring_backend()
         _store = credential_store()
         _using_vault = _store.is_vault
+        _store_is_file = active_secret_store().is_file
+        _file_unreadable = _store_is_file and active_secret_store().health() == FileStoreHealth.UNREADABLE
 
         if _using_vault:
-            # Vault mode: show two rows — one for OS keyring (Vault token storage),
-            # one for the Vault credential backend itself.
-            if not is_functional:
+            # Vault mode: the connection settings (URL/token) live in the local
+            # secret store chosen for this env — OS keyring or the encrypted file.
+            if _file_unreadable:
                 rows.append(DoctorRow.from_tuple((
-                    "OS Keyring backend", "fail",
-                    f"{backend_name} is not functional",
-                    "OS keyring stores Vault URL and token — must be functional.",
+                    "Vault settings store", "fail",
+                    "Encrypted local file — UNREADABLE (~/.atlas/credentials.enc)",
+                    "File or key (~/.atlas/.keysalt) missing/changed — run 'config credentials' to recreate.",
                 )))
-            elif not is_secure:
+            elif _store_is_file:
+                # Deliberate choice (vault_secret_store = file). The OS keyring is
+                # NOT implicated — don't warn about a setting the user picked.
                 rows.append(DoctorRow.from_tuple((
-                    "OS Keyring backend", "warn",
-                    f"{backend_name} (unencrypted, stores Vault token)",
-                    "Switch to Secret Service / Keychain for encrypted token storage.",
-                )))
-            else:
-                rows.append(DoctorRow.from_tuple((
-                    "OS Keyring backend", "ok",
-                    f"{backend_name} (stores Vault URL and token)",
+                    "Vault settings store", "ok",
+                    "Encrypted local file (~/.atlas/credentials.enc)",
                     "",
                 )))
+            else:
+                is_secure, is_functional, backend_name = verify_keyring_backend()
+                if not is_functional:
+                    rows.append(DoctorRow.from_tuple((
+                        "OS Keyring backend", "fail",
+                        f"{backend_name} is not functional",
+                        "OS keyring stores Vault URL and token — must be functional.",
+                    )))
+                elif not is_secure:
+                    rows.append(DoctorRow.from_tuple((
+                        "OS Keyring backend", "warn",
+                        f"{backend_name} (unencrypted, stores Vault token)",
+                        "Switch to Secret Service / Keychain for encrypted token storage.",
+                    )))
+                else:
+                    rows.append(DoctorRow.from_tuple((
+                        "OS Keyring backend", "ok",
+                        f"{backend_name} (stores Vault URL and token)",
+                        "",
+                    )))
             rows.append(DoctorRow.from_tuple((
                 "Credential backend", "ok",
                 "HashiCorp Vault (secrets stored in Vault KV)",
                 "",
             )))
+        elif _file_unreadable:
+            rows.append(DoctorRow.from_tuple((
+                "Credential backend", "fail",
+                "Encrypted local file — UNREADABLE (~/.atlas/credentials.enc)",
+                "File or key (~/.atlas/.keysalt) missing/changed — run 'config credentials' to recreate.",
+            )))
+        elif _store_is_file:
+            # Deliberately chosen encrypted file backend. The OS keyring is NOT
+            # implicated — this is the user's pick. Amber (never green) only
+            # because the actual secrets at rest are less isolated than the
+            # keyring; the hint is honest, not a false "keyring unavailable."
+            rows.append(DoctorRow.from_tuple((
+                "Credential backend", "warn",
+                "Encrypted local file (~/.atlas/credentials.enc, machine-bound)",
+                "Your selected backend — machine-bound & encrypted at rest. Use 'config credentials --use-keyring' for the OS keyring.",
+            )))
         else:
+            is_secure, is_functional, backend_name = verify_keyring_backend()
             if not is_functional:
                 rows.append(DoctorRow.from_tuple((
                     "Credential backend", "fail",
                     f"{backend_name} is not functional",
-                    "Install gnome-keyring (Linux), or configure HashiCorp Vault.",
+                    "Run 'config credentials --use-file-store' for an encrypted local file, or configure Vault.",
                 )))
             elif not is_secure:
                 rows.append(DoctorRow.from_tuple((
                     "Credential backend", "warn",
                     f"{backend_name} (unencrypted)",
-                    "Switch to Secret Service / Keychain / Vault for production use.",
+                    "Switch to Secret Service / Keychain / Vault, or use --use-file-store.",
                 )))
             else:
                 rows.append(DoctorRow.from_tuple(("Credential backend", "ok", backend_name, "")))
@@ -825,22 +1013,26 @@ def collect_doctor_rows(
         )))
 
     # ── Platform secret ───────────────────────────────────────────
-    try:
-        store = credential_store()
-        if store.exists(CredentialKey.PLATFORM_SECRET):
-            rows.append(DoctorRow.from_tuple(("Platform Client Secret", "ok", "stored", "")))
-        else:
+    # Only checked for platform-anchored tiers (standard/extended). SaaS never
+    # uses a Platform Client Secret, so the row is omitted entirely rather than
+    # reported as a missing credential.
+    if platform_used:
+        try:
+            store = credential_store()
+            if store.exists(CredentialKey.PLATFORM_SECRET):
+                rows.append(DoctorRow.from_tuple(("Platform Client Secret", "ok", "stored", "")))
+            else:
+                rows.append(DoctorRow.from_tuple((
+                    "Platform Client Secret", "fail",
+                    "missing from credential store",
+                    "Run `platform-atlas config credentials` to set it.",
+                )))
+        except CredentialError as exc:
             rows.append(DoctorRow.from_tuple((
-                "Platform Client Secret", "fail",
-                "missing from credential store",
-                "Run `platform-atlas config credentials` to set it.",
+                "Credential store", "fail",
+                f"unavailable: {exc}",
+                "Run `platform-atlas config credentials` to reconfigure.",
             )))
-    except CredentialError as exc:
-        rows.append(DoctorRow.from_tuple((
-            "Credential store", "fail",
-            f"unavailable: {exc}",
-            "Run `platform-atlas config credentials` to reconfigure.",
-        )))
 
     # ── URL reachability (Platform + optional Gateway4) ───────────
     # Slow checks (~3s TCP timeout each) — the WebUI passes
@@ -854,14 +1046,16 @@ def collect_doctor_rows(
         if show_spinner and not _compat:
             from rich.status import Status
             with console.status("[blue]Probing reachability…[/blue]", spinner="dots") as _s:
-                _s.update("[blue]Probing Platform OAuth URL…[/blue]")
-                rows.append(DoctorRow.from_tuple(probe_platform_url(config)))
+                if platform_used:
+                    _s.update("[blue]Probing Platform OAuth URL…[/blue]")
+                    rows.append(DoctorRow.from_tuple(probe_platform_url(config)))
                 _s.update("[blue]Probing Gateway4 health endpoint…[/blue]")
                 _gw4 = probe_gateway4_url(config)
                 if _gw4 is not None:
                     rows.append(DoctorRow.from_tuple(_gw4))
         else:
-            rows.append(DoctorRow.from_tuple(probe_platform_url(config)))
+            if platform_used:
+                rows.append(DoctorRow.from_tuple(probe_platform_url(config)))
             _gw4 = probe_gateway4_url(config)
             if _gw4 is not None:
                 rows.append(DoctorRow.from_tuple(_gw4))
@@ -984,43 +1178,189 @@ def handle_config_doctor(args: Namespace) -> int:
     return 0
 
 
+# ── Config-doctor tree grouping ───────────────────────────────────
+# collect_doctor_rows() feeds the CLI, the --json output, and the WebUI
+# /config/doctor route, so it stays flat. Grouping for the CLI tree view
+# lives here in the renderer. Rows are classified by id; ids are slugified
+# labels (see DoctorRow.from_tuple) and a few are dynamic — e.g. the active
+# environment row is "environment_<name>" — so we match those by prefix.
+_DOCTOR_GROUP_ORDER: tuple[str, ...] = (
+    "Runtime",
+    "Environment & Tier",
+    "Credentials",
+    "Connectivity & Rules",
+    "Other",
+)
+
+_DOCTOR_GROUP_BY_ID: dict[str, str] = {
+    "python_version":         "Runtime",
+    "python_binary":          "Runtime",
+    "available_disk_space":   "Runtime",
+    "config_file":            "Environment & Tier",
+    "active_environment":     "Environment & Tier",
+    "tier":                   "Environment & Tier",
+    "os_keyring_backend":     "Credentials",
+    "vault_settings_store":   "Credentials",
+    "credential_backend":     "Credentials",
+    "credential_store":       "Credentials",
+    "platform_client_secret": "Credentials",
+    "ssh_key_path":           "Credentials",
+    "ssh_key":                "Credentials",
+    "platform_url":           "Connectivity & Rules",
+    "gateway4_url":           "Connectivity & Rules",
+    "active_ruleset":         "Connectivity & Rules",
+}
+
+_DOCTOR_GLYPH: dict[str, str] = {"ok": "✓", "warn": "⚠", "fail": "✘"}
+_DOCTOR_TAG:   dict[str, str] = {"ok": "[ ok ]", "warn": "[warn]", "fail": "[fail]"}
+_DOCTOR_LABEL_COL = 26
+
+
+def _doctor_group_for(row: DoctorRow) -> str:
+    """Map a doctor row to its display group, robust to dynamic ids."""
+    if row.id.startswith("environment_"):
+        return "Environment & Tier"
+    return _DOCTOR_GROUP_BY_ID.get(row.id, "Other")
+
+
+def _group_doctor_rows(rows: list[DoctorRow]) -> list[tuple[str, list[DoctorRow]]]:
+    """Bucket rows into ordered (group, rows) pairs; drop empty groups and
+    preserve the original row order within each group."""
+    buckets: dict[str, list[DoctorRow]] = {name: [] for name in _DOCTOR_GROUP_ORDER}
+    for row in rows:
+        buckets[_doctor_group_for(row)].append(row)
+    return [(name, buckets[name]) for name in _DOCTOR_GROUP_ORDER if buckets[name]]
+
+
+def _doctor_status_color(status: str) -> str:
+    return {"ok": theme.success, "warn": theme.warning}.get(status, theme.error)
+
+
+def _doctor_counts(rows: list[DoctorRow]) -> dict[str, int]:
+    counts = {"ok": 0, "warn": 0, "fail": 0}
+    for row in rows:
+        counts[row.status] = counts.get(row.status, 0) + 1
+    return counts
+
+
+def _doctor_summary_line(counts: dict[str, int]) -> str:
+    return (
+        f"Summary: {counts.get('ok', 0)} OK · "
+        f"{counts.get('warn', 0)} warning(s) · "
+        f"{counts.get('fail', 0)} error(s)"
+    )
+
+
+def _doctor_subtitle(
+    counts: dict[str, int], *, env_name: str | None, tier: str | None,
+) -> tuple[list[str], str, str]:
+    """Return ``(chips, health_text, health_state)`` for the line under the title.
+
+    ``chips`` are the env / tier labels; ``health_text`` is e.g. "12/12 healthy"
+    or "10 OK · 1 warn · 1 fail"; ``health_state`` is "ok" | "warn" | "fail".
+    """
+    chips: list[str] = []
+    if env_name:
+        chips.append(env_name)
+    if tier:
+        chips.append(f"{tier} tier")
+    total = sum(counts.values())
+    ok, warn, fail = counts.get("ok", 0), counts.get("warn", 0), counts.get("fail", 0)
+    if fail == 0 and warn == 0:
+        return chips, f"{ok}/{total} healthy", "ok"
+    bits = [f"{ok} OK"]
+    if warn:
+        bits.append(f"{warn} warn")
+    if fail:
+        bits.append(f"{fail} fail")
+    return chips, " · ".join(bits), ("fail" if fail else "warn")
+
+
 def _render_doctor_rows(
     rows: list[DoctorRow],
     *,
     env_name: str | None,
     tier: str | None,
 ) -> None:
-    """Print the doctor results — one row per check + final summary."""
-    header = f"[bold {theme.primary_glow}]Atlas Configuration Health Check[/]"
-    if env_name:
-        header += f"  [dim]— env: {env_name}"
-        if tier:
-            header += f" ({tier})"
-        header += "[/dim]"
+    """Print the doctor results as a grouped tree (ASCII list in plain mode)."""
+    counts = _doctor_counts(rows)
+    groups = _group_doctor_rows(rows)
+    if ui.is_plain_mode():
+        _render_doctor_plain(groups, counts, env_name=env_name, tier=tier)
+    else:
+        _render_doctor_tree(groups, counts, env_name=env_name, tier=tier)
     console.print()
-    console.print(header)
+    console.print(f"[{theme.text_secondary}]{_doctor_summary_line(counts)}[/{theme.text_secondary}]")
+
+
+def _render_doctor_tree(
+    groups: list[tuple[str, list[DoctorRow]]],
+    counts: dict[str, int],
+    *,
+    env_name: str | None,
+    tier: str | None,
+) -> None:
+    """Rich Tree: title → env/health → groups → checks (suggestion hangs below)."""
+    from rich.tree import Tree
+    from rich.text import Text
+
     console.print()
-
-    counts = {"ok": 0, "warn": 0, "fail": 0}
-    for row in rows:
-        counts[row.status] = counts.get(row.status, 0) + 1
-        if row.status == "ok":
-            badge = f"[{theme.success}]✓[/{theme.success}]"
-        elif row.status == "warn":
-            badge = f"[{theme.warning}]⚠[/{theme.warning}]"
-        else:
-            badge = f"[{theme.error}]✘[/{theme.error}]"
-        console.print(f"{badge} [bold]{row.label:<28}[/bold] [dim]{row.detail}[/dim]")
-        if row.status != "ok" and row.suggest:
-            console.print(f"   [dim]→ {row.suggest}[/dim]")
-
-    summary = (
-        f"Summary: {counts.get('ok', 0)} OK · "
-        f"{counts.get('warn', 0)} warning(s) · "
-        f"{counts.get('fail', 0)} error(s)"
+    root = Tree(
+        Text("Atlas Configuration Health Check", style=f"bold {theme.primary_glow}"),
+        guide_style=theme.text_dim,
     )
+
+    chips, health, state = _doctor_subtitle(counts, env_name=env_name, tier=tier)
+    subtitle = Text()
+    for chip in chips:
+        subtitle.append(chip, style=theme.text_secondary)
+        subtitle.append("  ·  ", style=theme.text_dim)
+    subtitle.append(health, style=f"bold {_doctor_status_color(state)}")
+    branch = root.add(subtitle)
+
+    for gname, grp_rows in groups:
+        gnode = branch.add(Text(gname, style=f"bold {theme.primary_glow}"))
+        for row in grp_rows:
+            color = _doctor_status_color(row.status)
+            leaf = Text()
+            leaf.append(f"{_DOCTOR_GLYPH.get(row.status, '•')} ", style=color)
+            leaf.append(row.label, style=("bold" if row.status == "ok" else f"bold {color}"))
+            pad = max(1, _DOCTOR_LABEL_COL - len(row.label))
+            leaf.append(f" {'·' * pad} ", style=theme.text_dim)
+            leaf.append(row.detail, style=theme.text_secondary)
+            node = gnode.add(leaf)
+            if row.status != "ok" and row.suggest:
+                node.add(Text(f"↳ {row.suggest}", style=theme.text_dim))
+
+    console.print(root)
+
+
+def _render_doctor_plain(
+    groups: list[tuple[str, list[DoctorRow]]],
+    counts: dict[str, int],
+    *,
+    env_name: str | None,
+    tier: str | None,
+) -> None:
+    """Pure-ASCII grouped list for plain/compatibility mode (no Tree, no glyphs)."""
+    from rich.text import Text
+
     console.print()
-    console.print(f"[dim]{summary}[/dim]")
+    console.print(Text("Atlas Configuration Health Check"))
+    chips, health, _state = _doctor_subtitle(counts, env_name=env_name, tier=tier)
+    console.print(Text("  " + " - ".join([*chips, health])))
+    console.print()
+
+    for gname, grp_rows in groups:
+        console.print(Text(gname))
+        console.print(Text("-" * len(gname)))
+        for row in grp_rows:
+            tag = _DOCTOR_TAG.get(row.status, "[ ?? ]")
+            pad = max(1, _DOCTOR_LABEL_COL - len(row.label))
+            console.print(Text(f"  {tag} {row.label} {'.' * pad} {row.detail}"))
+            if row.status != "ok" and row.suggest:
+                console.print(Text(f"         -> {row.suggest}"))
+        console.print()
 
 
 @registry.register("config", "plain", description="Toggle plain/compatibility mode on or off")

@@ -18,7 +18,7 @@
           "type": "object",
           "required": [
             "atlas_version", "generated_at", "session", "organization",
-            "environment", "hostname", "platform_version",
+            "environment", "tier", "hostname", "platform_version",
             "ruleset_id", "ruleset_version", "ruleset_profile",
             "captured_at", "modules_ran"
           ],
@@ -29,6 +29,7 @@
             "session":           { "type": "string", "description": "Atlas session name." },
             "organization":      { "type": "string", "description": "organization_name from Atlas config." },
             "environment":       { "type": "string", "description": "Active Atlas environment name, or empty string if none." },
+            "tier":              { "type": "string", "enum": ["standard", "extended"], "description": "Audit tier this report was generated under: 'standard' (application-only) or 'extended' (full infrastructure)." },
             "hostname":          { "type": "string", "description": "Hostname of the primary IAP node captured." },
             "platform_version":  { "type": "string", "description": "IAP version string from the /health/server endpoint, or 'Unknown' if not captured." },
             "ruleset_id":        { "type": "string", "description": "Ruleset identifier (e.g. p6-master-ruleset)." },
@@ -151,7 +152,6 @@
     "server_specs": {
       "description": "Operating system and hardware specs for a single server role.",
       "type": "object",
-      "required": ["os_type", "cpu_cores", "memory_gb", "disk_space_gb"],
       "additionalProperties": true,
       "properties": {
         "os_type":          { "type": "string", "description": "e.g. 'RHEL 8', 'RHEL 9', 'Other'." },
@@ -165,7 +165,6 @@
     "deployment_block": {
       "description": "Deployment type for a component.",
       "type": "object",
-      "required": ["deployment_type"],
       "additionalProperties": true,
       "properties": {
         "deployment_type":       { "type": "string", "description": "e.g. 'Bare Metal', 'VM', 'Container (Docker)', 'Kubernetes', 'Other'." },
@@ -176,7 +175,6 @@
     "arch_environment": {
       "description": "Environment-wide facts: type, datacenter, and hosting provider.",
       "type": "object",
-      "required": ["environment_type", "datacenter_location", "hosting_provider"],
       "additionalProperties": true,
       "properties": {
         "environment_type":      { "type": "string", "description": "e.g. 'Production', 'Staging', 'Development', 'DR'." },
@@ -189,7 +187,6 @@
     "arch_platform": {
       "description": "IAP instance count, deployment type, and server specs.",
       "type": "object",
-      "required": ["active_instance_count", "standby_instance_count", "deployment", "server_specs"],
       "additionalProperties": true,
       "properties": {
         "active_instance_count":   { "type": "integer", "minimum": 0 },
@@ -204,7 +201,6 @@
     "arch_gateway4": {
       "description": "Gateway4 presence, instance count, and migration plans. All fields beyond 'present' are absent when present=false.",
       "type": "object",
-      "required": ["present"],
       "additionalProperties": true,
       "properties": {
         "present":                       { "type": "boolean" },
@@ -221,7 +217,6 @@
     "arch_gateway5": {
       "description": "Gateway5 presence, cluster topology, and HA config. All fields beyond 'present' are absent when present=false.",
       "type": "object",
-      "required": ["present"],
       "additionalProperties": true,
       "properties": {
         "present":                     { "type": "boolean" },
@@ -231,7 +226,6 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["server_count", "runner_count"],
             "additionalProperties": true,
             "properties": {
               "server_count": { "type": "integer", "minimum": 1 },
@@ -250,7 +244,6 @@
     "arch_mongodb": {
       "description": "MongoDB replica set topology and server specs.",
       "type": "object",
-      "required": ["same_datacenter_as_platform", "replica_count", "server_specs"],
       "additionalProperties": true,
       "properties": {
         "same_datacenter_as_platform":   { "type": "boolean" },
@@ -264,7 +257,6 @@
     "arch_redis": {
       "description": "Redis deployment topology, node count, and server specs.",
       "type": "object",
-      "required": ["deployment_type", "redis_node_count", "same_datacenter_as_platform", "server_specs"],
       "additionalProperties": true,
       "properties": {
         "deployment_type":             { "type": "string", "description": "e.g. 'Single Instance', 'Sentinel (recommended for HA)', 'Cluster'." },
@@ -279,7 +271,6 @@
     "arch_load_balancer": {
       "description": "Load balancer presence, type, routing policy, and health check config. All fields beyond 'present' are absent when present=false.",
       "type": "object",
-      "required": ["present"],
       "additionalProperties": true,
       "properties": {
         "present":                  { "type": "boolean" },
@@ -295,7 +286,6 @@
     "arch_kubernetes": {
       "description": "Kubernetes deployment facts. All fields beyond 'deployed_on_kubernetes' are absent when deployed_on_kubernetes=false.",
       "type": "object",
-      "required": ["deployed_on_kubernetes"],
       "additionalProperties": true,
       "properties": {
         "deployed_on_kubernetes":  { "type": "boolean" },
@@ -320,7 +310,6 @@
     "arch_network_security": {
       "description": "Network MTU, connectivity concerns, SELinux mode, and compliance standards.",
       "type": "object",
-      "required": ["mtu_size", "has_connectivity_concerns", "selinux_mode"],
       "additionalProperties": true,
       "properties": {
         "mtu_size":                  { "type": "string", "description": "e.g. '1500 (Standard — recommended)', '9000 (Jumbo Frames)', 'Other', 'Unknown'." },
@@ -340,7 +329,6 @@
     "arch_vulnerability_assessments": {
       "description": "Whether the environment undergoes vulnerability assessments, the tool(s) used, and how often.",
       "type": "object",
-      "required": ["performs_assessments"],
       "additionalProperties": true,
       "properties": {
         "performs_assessments": { "type": "boolean", "description": "True if scans / penetration tests / compliance audits are run on this environment." },

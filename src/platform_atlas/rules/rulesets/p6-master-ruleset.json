@@ -3,11 +3,11 @@
   "ruleset": {
     "id": "p6-master-ruleset",
     "name": "Platform 6 Master Ruleset",
-    "version": "1.0.2",
+    "version": "1.0.4",
     "description": "Master ruleset for Platform 6 — all rules, all systems",
     "author": "Itential",
     "target_product": "Platform_6",
-    "updated_at": "2026-05-27"
+    "updated_at": "2026-06-15"
   },
   "rules": [
     {
@@ -263,6 +263,7 @@
       },
       "name": "Gateway Store Backend",
       "path": "gateway5.variables.GATEWAY_STORE_BACKEND",
+      "alt_path": "gateway5.config_file.store.backend",
       "rule_number": "IAG-012",
       "severity": "info",
       "validation": {
@@ -283,6 +284,7 @@
       },
       "name": "Gateway Client TLS",
       "path": "gateway5.variables.GATEWAY_CLIENT_USE_TLS",
+      "alt_path": "gateway5.config_file.client.use_tls",
       "rule_number": "IAG-013",
       "severity": "warning",
       "validation": {
@@ -303,6 +305,7 @@
       },
       "name": "Gateway Logging Levels",
       "path": "gateway5.variables.GATEWAY_LOG_LEVEL",
+      "alt_path": "gateway5.config_file.log.level",
       "rule_number": "IAG-014",
       "severity": "warning",
       "validation": {
@@ -327,6 +330,7 @@
       },
       "name": "Gateway Connect Enabled",
       "path": "gateway5.variables.GATEWAY_CONNECT_ENABLED",
+      "alt_path": "gateway5.config_file.connect.enabled",
       "rule_number": "IAG-015",
       "severity": "warning",
       "validation": {
@@ -347,6 +351,7 @@
       },
       "name": "Gateway Connect Insecure TLS",
       "path": "gateway5.variables.GATEWAY_CONNECT_INSECURE_TLS",
+      "alt_path": "gateway5.config_file.connect.insecure_tls",
       "rule_number": "IAG-016",
       "severity": "warning",
       "validation": {
@@ -367,6 +372,7 @@
       },
       "name": "Gateway Server TLS",
       "path": "gateway5.variables.GATEWAY_SERVER_USE_TLS",
+      "alt_path": "gateway5.config_file.server.use_tls",
       "rule_number": "IAG-017",
       "severity": "warning",
       "validation": {
@@ -387,6 +393,7 @@
       },
       "name": "Gateway Feature: Ansible",
       "path": "gateway5.variables.GATEWAY_FEATURES_ANSIBLE_ENABLED",
+      "alt_path": "gateway5.config_file.features.ansible_enabled",
       "rule_number": "IAG-018",
       "severity": "info",
       "validation": {
@@ -407,6 +414,7 @@
       },
       "name": "Gateway Feature: Hostkeys",
       "path": "gateway5.variables.GATEWAY_FEATURES_HOSTKEYS_ENABLED",
+      "alt_path": "gateway5.config_file.features.hostkeys_enabled",
       "rule_number": "IAG-019",
       "severity": "info",
       "validation": {
@@ -427,6 +435,7 @@
       },
       "name": "Gateway Feature: OpenTofu",
       "path": "gateway5.variables.GATEWAY_FEATURES_OPENTOFU_ENABLED",
+      "alt_path": "gateway5.config_file.features.opentofu_enabled",
       "rule_number": "IAG-020",
       "severity": "info",
       "validation": {
@@ -447,6 +456,7 @@
       },
       "name": "Gateway Feature: Python",
       "path": "gateway5.variables.GATEWAY_FEATURES_PYTHON_ENABLED",
+      "alt_path": "gateway5.config_file.features.python_enabled",
       "rule_number": "IAG-021",
       "severity": "info",
       "validation": {
@@ -467,6 +477,7 @@
       },
       "name": "Gateway Runner TLS",
       "path": "gateway5.variables.GATEWAY_RUNNER_USE_TLS",
+      "alt_path": "gateway5.config_file.runner.use_tls",
       "rule_number": "IAG-022",
       "severity": "warning",
       "validation": {
@@ -487,6 +498,7 @@
       },
       "name": "Gateway Console Log: JSON",
       "path": "gateway5.variables.GATEWAY_LOG_CONSOLE_JSON",
+      "alt_path": "gateway5.config_file.log.console_json",
       "rule_number": "IAG-023",
       "severity": "info",
       "validation": {
@@ -507,6 +519,7 @@
       },
       "name": "Gateway File Log: JSON",
       "path": "gateway5.variables.GATEWAY_LOG_FILE_JSON",
+      "alt_path": "gateway5.config_file.log.file_json",
       "rule_number": "IAG-024",
       "severity": "info",
       "validation": {
@@ -527,6 +540,7 @@
       },
       "name": "Gateway Connect Redundancy Check",
       "path": "gateway5.variables.GATEWAY_CONNECT_SERVER_HA_ENABLED",
+      "alt_path": "gateway5.config_file.connect.server_ha_enabled",
       "rule_number": "IAG-025",
       "severity": "info",
       "validation": {
@@ -551,6 +565,7 @@
         "when_status": "FAIL"
       },
       "path": "gateway5.variables.GATEWAY_CONNECT_SERVER_HA_IS_PRIMARY",
+      "alt_path": "gateway5.config_file.connect.server_ha_is_primary",
       "rule_number": "IAG-026",
       "severity": "info",
       "validation": {
@@ -575,6 +590,7 @@
       },
       "name": "Gateway Client Certificate File",
       "path": "gateway5.variables.GATEWAY_CLIENT_CERTIFICATE_FILE",
+      "alt_path": "gateway5.config_file.client.certificate_file",
       "rule_number": "IAG-027",
       "severity": "warning",
       "validation": {
@@ -598,6 +614,7 @@
       },
       "name": "Gateway Connect Certificate File",
       "path": "gateway5.variables.GATEWAY_CONNECT_CERTIFICATE_FILE",
+      "alt_path": "gateway5.config_file.connect.certificate_file",
       "rule_number": "IAG-028",
       "severity": "warning",
       "validation": {
@@ -621,6 +638,7 @@
       },
       "name": "Gateway Runner Certificate File",
       "path": "gateway5.variables.GATEWAY_RUNNER_CERTIFICATE_FILE",
+      "alt_path": "gateway5.config_file.runner.certificate_file",
       "rule_number": "IAG-029",
       "severity": "warning",
       "validation": {
@@ -635,15 +653,15 @@
       "description": "Validate Gateway Version",
       "enabled": true,
       "messages": {
-        "pass": "Gateway 5 (iagctl) is running version 5.2 or newer",
-        "fail": "Gateway 5 (iagctl) is running a version older than 5.2 — please update to the latest release for security patches and new features"
+        "pass": "Gateway 5 (iagctl) is running version 5.4 or newer",
+        "fail": "Gateway 5 (iagctl) is running a version older than 5.4 — please update to the latest release for security patches and new features"
       },
       "name": "Gateway Version Check",
       "path": "gateway5.iagctl.version",
       "rule_number": "IAG-030",
-      "severity": "info",
+      "severity": "critical",
       "validation": {
-        "expected": "5.2",
+        "expected": "5.4",
         "operator": "gte",
         "type": "semver"
       },
@@ -680,6 +698,7 @@
       },
       "name": "Gateway Runner Anouncement Address",
       "path": "gateway5.variables.GATEWAY_RUNNER_ANNOUNCEMENT_ADDRESS",
+      "alt_path": "gateway5.config_file.runner.announcement_address",
       "rule_number": "IAG-032",
       "severity": "info",
       "validation": {
@@ -700,6 +719,7 @@
       },
       "name": "Gateway Server Distributed Execution",
       "path": "gateway5.variables.GATEWAY_SERVER_DISTRIBUTED_EXECUTION",
+      "alt_path": "gateway5.config_file.server.distributed_execution",
       "rule_number": "IAG-033",
       "severity": "info",
       "validation": {
@@ -724,6 +744,7 @@
       },
       "name": "Gateway Server Certificate File",
       "path": "gateway5.variables.GATEWAY_SERVER_CERTIFICATE_FILE",
+      "alt_path": "gateway5.config_file.server.certificate_file",
       "rule_number": "IAG-034",
       "severity": "warning",
       "validation": {
@@ -732,6 +753,50 @@
         "type": "string"
       },
       "updated_at": "2026-03-01"
+    },
+    {
+      "category": "gateway5",
+      "description": "Validate the Python virtual environment pruner sweep interval (how often the pruner scans for idle environments) is at its default of 24h",
+      "enabled": true,
+      "messages": {
+        "pass": "The Gateway 5 Python virtual environment pruner sweep interval is at the default of 24h — the pruner scans for idle environments on the standard cadence",
+        "fail": "The Gateway 5 Python virtual environment pruner sweep interval (GATEWAY_APPLICATION_VENV_SWEEP_INTERVAL) is not at its default of 24h, or is not set — this setting controls how often the pruner scans for idle virtual environments; confirm any non-default cadence is intentional"
+      },
+      "name": "Gateway Venv Pruner Sweep Interval",
+      "path": "gateway5.variables.GATEWAY_APPLICATION_VENV_SWEEP_INTERVAL",
+      "alt_path": "gateway5.config_file.application.venv_sweep_interval",
+      "rule_number": "IAG-035",
+      "severity": "warning",
+      "validation": {
+        "expected": ["24h", "1d"],
+        "operator": "in",
+        "type": "string"
+      },
+      "default_value": "(not set)",
+      "created_at": "2026-06-05",
+      "updated_at": "2026-06-05"
+    },
+    {
+      "category": "gateway5",
+      "description": "Validate the Python virtual environment pruner retention period (how long an environment may be idle before removal) is at its default of 30d",
+      "enabled": true,
+      "messages": {
+        "pass": "The Gateway 5 Python virtual environment pruner retention period is at the default of 30d — idle environments are retained for the standard window before the pruner removes them",
+        "fail": "The Gateway 5 Python virtual environment pruner retention period (GATEWAY_APPLICATION_VENV_RETENTION_PERIOD) is not at its default of 30d, or is not set — this setting controls how long an idle virtual environment is kept before removal; setting it too low risks premature pruning that forces a full dependency reinstall on the next run, so confirm any non-default value is intentional"
+      },
+      "name": "Gateway Venv Pruner Retention Period",
+      "path": "gateway5.variables.GATEWAY_APPLICATION_VENV_RETENTION_PERIOD",
+      "alt_path": "gateway5.config_file.application.venv_retention_period",
+      "rule_number": "IAG-036",
+      "severity": "warning",
+      "validation": {
+        "expected": ["30d", "720h"],
+        "operator": "in",
+        "type": "string"
+      },
+      "default_value": "(not set)",
+      "created_at": "2026-06-05",
+      "updated_at": "2026-06-05"
     },
     {
       "rule_number": "MDB-001",
@@ -1401,24 +1466,24 @@
     },
     {
       "rule_number": "PLAT-027",
-      "name": "Mongo URL",
-      "description": "Validate mongoURL for any additional properties",
+      "name": "MongoDB URL Arguments",
+      "description": "Surface any query-string arguments appended to the MongoDB connection URL (anything after the '?') so they can be reviewed for correctness. Informational only — having arguments is not inherently wrong.",
       "category": "platform",
-      "severity": "warning",
+      "severity": "info",
       "path": "platform.config_file.mongo_url.value",
       "alt_path": "platform.config_file.mongo_url",
       "validation": {
         "type": "string",
-        "operator": "contains",
+        "operator": "not_contains",
         "expected": "?"
       },
       "messages": {
-        "pass": "MongoDB connection URL includes query parameters for connection tuning (e.g., replica set name, timeouts)",
-        "fail": "MongoDB connection URL does not contain any query parameters — verify that required connection options like replica set and TLS settings are configured"
+        "pass": "The MongoDB connection URL has no query-string arguments (no '?') — there are no extra connection options to review here",
+        "fail": "The MongoDB connection URL includes query-string arguments (everything after the '?') — double-check that you're not using any incorrect or unintended MongoDB connection options here"
       },
       "enabled": true,
       "created_at": "2026-01-29",
-      "updated_at": "2026-01-29"
+      "updated_at": "2026-06-15"
     },
     {
       "rule_number": "PLAT-028",
@@ -1859,6 +1924,28 @@
       "updated_at": "2026-05-10"
     },
     {
+      "category": "platform",
+      "description": "Validate Platform JSON Logging is Enabled",
+      "enabled": true,
+      "messages": {
+        "pass": "JSON Logging is enabled in the Platform",
+        "fail": "JSON Logging is not enabled - Please enable this in the Platform Properties for better logging output"
+      },
+      "name": "Platform JSON Logging",
+      "path": "platform.config.console_format_json.value",
+      "alt_path": "platform.config_file.console_format_json",
+      "rule_number": "PLAT-049",
+      "severity": "info",
+      "validation": {
+        "expected": true,
+        "operator": "eq",
+        "type": "bool"
+      },
+      "default_value": "(not set)",
+      "created_at": "2026-06-06",
+      "updated_at": "2026-06-06"
+    },
+    {
       "rule_number": "RDS-001",
       "name": "Redis Configuration File",
       "description": "Check if redis has a configuration file set",
@@ -1942,19 +2029,19 @@
     {
       "rule_number": "RDS-005",
       "name": "Redis Version",
-      "description": "Verify Redis version is in supported list",
+      "description": "Verify Redis version is within the supported range (7.0.x through 7.4.x)",
       "category": "redis",
       "severity": "critical",
       "enabled": true,
       "path": "redis.info.redis_version",
       "validation": {
         "type": "semver",
-        "operator": "gte",
-        "expected": "7.4.0"
+        "operator": "in_range",
+        "expected": ["7.0.0", "7.4.9999"]
       },
       "messages": {
-        "pass": "Redis is running a supported version with current security patches",
-        "fail": "Redis is running an outdated version that may contain unpatched security vulnerabilities — please upgrade to a supported release"
+        "pass": "Redis is running a supported version within the 7.0.x–7.4.x range",
+        "fail": "Redis version is outside the supported range of 7.0.x through 7.4.x — run a release within that range (7.0.0 up to but not including 7.5.0)"
       }
     },
     {
@@ -1962,8 +2049,8 @@
       "description": "Validate if TCP-keepalive is too low or too high",
       "enabled": true,
       "messages": {
-        "pass": "TCP keepalive is set between 60 and 120 seconds, which reliably detects dead connections without excessive overhead",
-        "fail": "TCP keepalive is outside the recommended range of 60-120 seconds — too low wastes bandwidth on health checks, too high delays detection of dead connections"
+        "pass": "TCP keepalive is set between 60 and 300 seconds, which reliably detects dead connections without excessive overhead",
+        "fail": "TCP keepalive is outside the recommended range of 60-300 seconds — too low wastes bandwidth on health checks, too high delays detection of dead connections"
       },
       "name": "Redis TCP Keepalive",
       "path": "redis.runtime_config.tcp-keepalive",
@@ -1972,7 +2059,7 @@
       "validation": {
         "expected": [
           60,
-          120
+          300
         ],
         "operator": "in_range",
         "type": "int"

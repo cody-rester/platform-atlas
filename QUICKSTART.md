@@ -3,7 +3,7 @@
 ### Install
 
 ```bash
-pip install platform_atlas-1.7.0-py3-none-any.whl
+pip install platform_atlas-2.0.0-py3-none-any.whl
 ```
 
 ### Configure
@@ -12,16 +12,17 @@ pip install platform_atlas-1.7.0-py3-none-any.whl
 platform-atlas config init
 ```
 
-Follow the interactive wizard. You'll set global preferences first, then create your first named environment with your Platform URI, OAuth2 client ID and secret, and optionally your MongoDB and Redis URIs. For Linux servers without a desktop, install `keyrings.alt` first (`pip install keyrings.alt`).
+Follow the interactive wizard. You'll set global preferences first, then create your first named environment with your Platform URI, OAuth2 client ID and secret, and optionally your MongoDB and Redis URIs. The wizard also asks where to store secrets. On a headless Linux server with no desktop keyring, choose the **Encrypted Local File** backend when prompted — no extra packages needed.
 
 ### Choose Your Tier
 
-Platform Atlas 1.7+ ships with two audit modes. Fresh installs default to **Standard**; upgrades from 1.6.x default to **Extended**.
+Platform Atlas 2.0 ships with three audit modes. Fresh installs default to **Standard**.
 
 | Tier | What it audits | Requirements |
 |------|---------------|--------------|
-| **Standard** | Platform OAuth + optional IAG4 API (~54 rules) | Platform credentials only — no SSH, MongoDB, or Redis needed |
-| **Extended** | Full infrastructure: SSH, MongoDB, Redis, Kubernetes, Gateways (~107 rules) | SSH access + MongoDB/Redis URIs |
+| **Standard** | Platform OAuth + optional IAG4 API (~56 rules) | Platform credentials only — no SSH, MongoDB, or Redis needed |
+| **Extended** | Full infrastructure: SSH, MongoDB, Redis, Kubernetes, Gateways (~122 rules) | SSH access + MongoDB/Redis URIs |
+| **SaaS** | A single Itential Automation Gateway — GW4 *or* GW5 (gateway rules only) | Gateway API or SSH access — no Platform, MongoDB, or Redis |
 
 ```bash
 platform-atlas tier show                  # see your current tier
@@ -30,6 +31,8 @@ platform-atlas tier set extended          # switch to Extended
 platform-atlas tier upgrade               # interactive upgrade to Extended
 platform-atlas tier downgrade             # interactive downgrade to Standard
 ```
+
+**SaaS is picked when you create an environment** (the setup wizard offers it) and is fixed for that environment — `tier set saas` is intentionally blocked, and `tier upgrade`/`downgrade` only move between Standard and Extended. To audit a single gateway, create a new SaaS environment.
 
 Sessions bind the tier at creation time — switching sessions restores the tier automatically. Use `--tier standard` or `--tier extended` as a one-off override on any command without changing the persisted setting.
 
@@ -99,7 +102,7 @@ platform-atlas config doctor                         # run a configuration healt
 platform-atlas --debug session run capture           # verbose output for troubleshooting
 ```
 
-### Fleet Dashboard (1.7+)
+### Fleet Dashboard
 
 Get a compliance overview across all your environments from local cache — no captures triggered:
 
@@ -108,7 +111,7 @@ platform-atlas fleet status                          # overview of all environme
 platform-atlas fleet status --json                   # machine-readable output
 ```
 
-### Continuous Audit (1.7+)
+### Continuous Audit
 
 Schedule automatic drift monitoring that re-runs a Platform OAuth capture against your active ruleset and surfaces changes as alerts:
 
@@ -161,10 +164,10 @@ Quick review of the 3 main things you can switch between, `rules/profiles`, `env
 | `~/.atlas/config.json` | Global configuration (no secrets) |
 | `~/.atlas/environments/` | Named environment files (one per deployment) |
 | `~/.atlas/sessions/` | Audit sessions (capture, validation, reports) |
-| `~/.atlas/continuous/` | Continuous audit runs, alerts, and event timeline (1.7+) |
+| `~/.atlas/continuous/` | Continuous audit runs, alerts, and event timeline |
 | `~/.atlas/atlas.log` | Application log |
 
-Credentials are stored in your OS keyring (scoped per environment) or HashiCorp Vault — never on disk.
+Credentials live in one of three backends you pick at setup — your **OS keyring** (scoped per environment), an **encrypted local file** (AES-256-GCM, for headless hosts), or **HashiCorp Vault** — never in plain text.
 
 ### Need Help?
 

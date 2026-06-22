@@ -4,7 +4,7 @@
 -->
 
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -12,7 +12,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23101625'/><path d='M16 6L6 26h20L16 6z' fill='none' stroke='%231B93D2' stroke-width='2.5' stroke-linejoin='round'/><circle cx='16' cy='19' r='2' fill='%231B93D2'/></svg>">
 
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&family=Open+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@300;400;500;600;700;800&family=Sora:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
     :root {
       /* Itential Brand */
@@ -33,16 +33,19 @@
       --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
       /* Type */
-      --font-display: "Montserrat", system-ui, sans-serif;
-      --font-body: "Open Sans", system-ui, sans-serif;
+      --font-display: "Sora", system-ui, sans-serif;
+      --font-body: "Hanken Grotesk", system-ui, sans-serif;
       --font-mono: "JetBrains Mono", "SF Mono", monospace;
+
+      --band: linear-gradient(135deg, #0c1220 0%, #14223d 46%, #1b4d76 122%);
+      --band-glow: radial-gradient(circle, rgba(197,37,143,0.42), transparent 62%);
 
       /* Radius */
       --r-xs: 4px;
-      --r-sm: 6px;
-      --r-md: 10px;
-      --r-lg: 14px;
-      --r-xl: 20px;
+      --r-sm: 8px;
+      --r-md: 12px;
+      --r-lg: 18px;
+      --r-xl: 24px;
       --r-pill: 100px;
     }
 
@@ -115,17 +118,17 @@
 
     /* ── Light Theme ── */
     [data-theme="light"] {
-      --bg-base: #f4f6f9;
+      --bg-base: #f3f1ec;
       --bg-surface: #ffffff;
-      --bg-elevated: #f8f9fb;
-      --bg-overlay: #eef1f5;
-      --bg-input: rgba(0,0,0,0.03);
+      --bg-elevated: #f4f1ea;
+      --bg-overlay: #ece8e0;
+      --bg-input: rgba(22,20,31,0.04);
       --bg-glass: rgba(255,255,255,0.88);
 
-      --text-primary: #101625;
-      --text-secondary: #4a5568;
-      --text-muted: #8494a7;
-      --text-ghost: rgba(132,148,167,0.5);
+      --text-primary: #16141f;
+      --text-secondary: #4b4758;
+      --text-muted: #87828f;
+      --text-ghost: rgba(135,130,143,0.55);
 
       --accent: #0e7bb5;
       --accent-hover: #0c6a9e;
@@ -145,13 +148,13 @@
       --status-error: #a01d72;
       --status-error-bg: rgba(160,29,114,0.06);
 
-      --border-subtle: rgba(0,0,0,0.05);
-      --border-default: rgba(0,0,0,0.08);
-      --border-strong: rgba(0,0,0,0.14);
+      --border-subtle: rgba(22,20,31,0.07);
+      --border-default: rgba(22,20,31,0.11);
+      --border-strong: rgba(22,20,31,0.18);
 
-      --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
-      --shadow-md: 0 4px 16px rgba(0,0,0,0.06);
-      --shadow-lg: 0 12px 40px rgba(0,0,0,0.08);
+      --shadow-sm: 0 1px 3px rgba(22,20,31,0.05);
+      --shadow-md: 0 6px 24px -8px rgba(22,20,31,0.12);
+      --shadow-lg: 0 24px 60px -28px rgba(22,20,31,0.28);
 
       --gradient-brand: linear-gradient(135deg, #0e7bb5, #a01d72);
 
@@ -210,16 +213,24 @@
     /* ─────────────── HEADER ─────────────── */
 
     .header {
-      background: var(--bg-glass);
+      --text-primary: #fff;
+      --text-secondary: #bfcbdd;
+      --text-muted: #8595ac;
+      --border-default: rgba(255,255,255,0.10);
+      --border-strong: rgba(255,255,255,0.20);
+      --accent: #36a5e0;
+      --accent-ghost: rgba(54,165,224,0.18);
+      --bg-input: rgba(255,255,255,0.04);
+      background: #0c1322;
       backdrop-filter: blur(20px) saturate(140%);
       -webkit-backdrop-filter: blur(20px) saturate(140%);
-      padding: 0 24px;
+      padding: 0 32px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      height: 52px;
-      border-bottom: 1px solid var(--border-default);
-      box-shadow: var(--shadow-sm);
+      height: 58px;
+      border-bottom: 1px solid transparent;
+      box-shadow: none;
       position: sticky;
       top: 0;
       z-index: 500;
@@ -244,24 +255,24 @@
 
     .brand {
       font-family: var(--font-display);
-      font-size: 1.15rem;
+      font-size: 1.18rem;
       font-weight: 600;
-      letter-spacing: -0.03em;
+      letter-spacing: -0.035em;
       color: var(--text-primary);
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 1px;
     }
     .brand span { color: var(--accent); font-weight: 700; }
 
     .brand-link {
-      font-size: 0.7rem;
-      font-weight: 600;
-      letter-spacing: 0.06em;
+      font-size: 0.66rem;
+      font-weight: 700;
+      letter-spacing: 0.2em;
       text-transform: uppercase;
       color: var(--text-muted);
       text-decoration: none;
-      opacity: 0.7;
+      opacity: 0.85;
       transition: opacity 0.2s;
     }
     .brand-link:hover { opacity: 1; }
@@ -330,56 +341,68 @@
     .content {
       max-width: 1400px;
       margin: 0 auto;
-      padding: 2rem 2rem 4rem;
+      padding: 0 2rem 4rem;
     }
 
     /* ─────────────── REPORT HEADER ─────────────── */
 
     .report-header {
-      margin-bottom: 2rem;
-      padding-bottom: 1.5rem;
       position: relative;
+      margin: 0 calc(50% - 50vw);
+      padding: 58px 0 132px;
+      background: var(--band);
+      color: #fff;
+      overflow: hidden;
     }
 
     .report-header::after {
       content: "";
       position: absolute;
-      bottom: 0; left: 0;
-      width: 100%; height: 1px;
-      background: linear-gradient(90deg, var(--itl-pink) 0%, var(--text-muted) 50%, transparent 100%);
-      opacity: 0.18;
+      right: -120px; top: -200px;
+      width: 580px; height: 580px;
+      background: var(--band-glow);
+      pointer-events: none;
+    }
+
+    .report-header-inner {
+      position: relative;
+      z-index: 1;
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 0 2rem;
     }
 
     .report-label {
-      font-size: 0.8125rem;
-      font-weight: 600;
-      letter-spacing: 0.06em;
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      font-weight: 500;
+      letter-spacing: 0.22em;
       text-transform: uppercase;
-      margin-bottom: 0.625rem;
+      margin-bottom: 16px;
       line-height: 1;
-      background: var(--gradient-brand);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+      background: none;
+      color: #6dc5f0;
+      -webkit-text-fill-color: currentColor;
     }
 
     .report-title {
-      margin: 0 0 0.375rem;
+      margin: 0 0 12px;
       font-family: var(--font-display);
-      font-size: 1.625rem;
+      font-size: clamp(2.4rem, 5vw, 3.8rem);
       font-weight: 700;
-      line-height: 1.15;
-      letter-spacing: -0.03em;
-      color: var(--text-secondary);
+      line-height: 1.0;
+      letter-spacing: -0.045em;
+      color: #fff;
     }
 
     .report-subtitle {
       margin: 0;
-      font-size: 0.9375rem;
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
       font-weight: 500;
       letter-spacing: -0.01em;
       line-height: 1.4;
-      color: var(--text-muted);
+      color: rgba(255,255,255,0.72);
     }
 
     /* ─────────────── COMPARISON BANNER ─────────────── */
@@ -389,12 +412,15 @@
       grid-template-columns: 1fr auto 1fr;
       align-items: center;
       gap: 1.5rem;
+      margin-top: -94px;
       margin-bottom: 2rem;
       padding: 1.25rem 1.5rem;
       background: var(--bg-surface);
       border: 1px solid var(--border-strong);
       border-radius: var(--r-lg);
-      box-shadow: var(--shadow-sm);
+      box-shadow: var(--shadow-md);
+      position: relative;
+      z-index: 2;
       transition: box-shadow 0.2s ease;
     }
 
@@ -1207,7 +1233,9 @@
       * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
       html[data-theme] { --bg-base: #fff; --bg-surface: #fff; --bg-elevated: #f0f0f0; --text-primary: #101625; --text-secondary: #333; --text-muted: #666; }
       body { background: #fff !important; color: #101625 !important; }
-      .header { position: static; box-shadow: none; }
+      .header { display: none !important; }
+      .report-header::after { display: none; }
+      .report-header { break-after: avoid; }
       .scroll-progress { display: none; }
       .theme-toggle, .print-btn { display: none; }
       .card, .actions-panel, .comparison-banner {
@@ -1250,10 +1278,6 @@
       <nav class="header-nav">
         <a href="#" class="active">Diff</a>
       </nav>
-      <button class="theme-toggle" id="themeToggle" title="Toggle theme">
-        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-      </button>
       <button class="print-btn" onclick="window.print()" title="Print report">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
       </button>
@@ -1261,14 +1285,16 @@
   </header>
 
   <main class="content">
-    <!-- Report Header -->
+    <!-- Report Header / Cover Band -->
     <div class="report-header">
-      <div class="report-label">Diff report</div>
-      <h1 class="report-title">{{TITLE}}</h1>
-      <p class="report-subtitle">{{ORGANIZATION_NAME}} • {{SUBTITLE}}</p>
-      <div class="report-tier-row" style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-        <span style="background:{{TIER_COLOR}};color:#fff;padding:2px 10px;border-radius:4px;font-weight:700;letter-spacing:0.5px;font-size:11px;">{{TIER_LABEL}}</span>
-        <span style="opacity:0.8;font-size:13px;">{{TIER_COVER_KIND}}</span>
+      <div class="report-header-inner">
+        <div class="report-label">Diff report</div>
+        <h1 class="report-title">{{TITLE}}</h1>
+        <p class="report-subtitle">{{ORGANIZATION_NAME}} • {{SUBTITLE}}</p>
+        <div class="report-tier-row" style="margin-top:18px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <span style="background:{{TIER_COLOR}};color:#fff;padding:3px 11px;border-radius:6px;font-weight:700;letter-spacing:0.04em;font-size:0.72rem;font-family:var(--font-display);">{{TIER_LABEL}}</span>
+          <span style="opacity:0.75;font-size:13px;">{{TIER_COVER_KIND}}</span>
+        </div>
       </div>
     </div>
 

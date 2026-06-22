@@ -7,6 +7,10 @@ Commands:
     tier set        — Set the global default tier (standard | extended)
     tier upgrade    — Interactive Standard → Extended upgrade
     tier downgrade  — Interactive Extended → Standard downgrade
+
+SaaS is not a global default and is never a conversion target — a SaaS
+environment binds its tier (and gateway kind) at create time. Upgrade/
+downgrade between Standard and Extended work exactly as before.
 """
 
 from __future__ import annotations
@@ -49,7 +53,10 @@ def handle_tier_show(_: Namespace) -> int:
     table.add_column(style=f"bold {theme.text_primary}")
     table.add_column()
 
-    color = theme.primary if tier == "standard" else theme.accent
+    color = {
+        "standard": theme.tier_standard,
+        "saas": theme.tier_saas,
+    }.get(tier, theme.tier_extended)
     badge = f"[bold {color}]{tier.upper()}[/bold {color}]"
     table.add_row("Mode", badge)
 
@@ -68,6 +75,31 @@ def handle_tier_show(_: Namespace) -> int:
         try:
             ruleset = ctx().ruleset
             table.add_row("Active rules", f"{len(ruleset.rules)} (Standard-tier)")
+        except Exception:
+            pass
+    elif tier == "saas":
+        kind = (config.saas_gateway_kind or "").strip().lower()
+        if kind:
+            kind_label = "Gateway 4 (IAG4)" if kind == "gateway4" else "Gateway 5 (IAG5)"
+            table.add_row("Gateway under audit", f"[green]{kind_label}[/green]")
+        else:
+            table.add_row(
+                "Gateway under audit",
+                f"[{theme.warning}]not set — recreate the environment[/{theme.warning}]",
+            )
+        if kind == "gateway4":
+            api_state = (
+                "[green]enabled[/green]" if config.gateway4_uri
+                else f"[{theme.text_dim}]not configured — add gateway4_uri to your env[/{theme.text_dim}]"
+            )
+            table.add_row("Gateway4 API (ipsdk)", api_state)
+        table.add_row(
+            "Platform / MongoDB / Redis",
+            f"[{theme.text_dim}]not part of a SaaS audit[/{theme.text_dim}]",
+        )
+        try:
+            ruleset = ctx().ruleset
+            table.add_row("Active rules", f"{len(ruleset.rules)} (SaaS gateway rules)")
         except Exception:
             pass
     else:
@@ -126,6 +158,15 @@ def handle_tier_set(args: Namespace) -> int:
         )
         return 1
 
+    if new_tier == "saas":
+        console.print(
+            f"  [{theme.warning}]SaaS is not a global default — it is chosen "
+            f"per-environment at create time.[/{theme.warning}]\n"
+            f"  [{theme.text_dim}]Run [bold]platform-atlas env create[/bold] and pick "
+            f"the SaaS tier there.[/{theme.text_dim}]"
+        )
+        return 1
+
     return _persist_tier(new_tier)
 
 
@@ -143,6 +184,9 @@ def handle_tier_upgrade(_: Namespace) -> int:
     and ``config init`` so the upgrade flow stays composable rather
     than duplicating wizard logic.
     """
+    if ctx().tier == "saas":
+        _print_saas_conversion_blocked()
+        return 1
     if ctx().tier == "extended":
         console.print(
             f"  [{theme.text_dim}]Already in Extended Mode — nothing to upgrade.[/{theme.text_dim}]"
@@ -204,6 +248,9 @@ def handle_tier_downgrade(_: Namespace) -> int:
     friction-free. Only flips the global tier and warns about reduced
     coverage.
     """
+    if ctx().tier == "saas":
+        _print_saas_conversion_blocked()
+        return 1
     if ctx().tier == "standard":
         console.print(
             f"  [{theme.text_dim}]Already in Standard Mode — nothing to downgrade.[/{theme.text_dim}]"
@@ -246,6 +293,18 @@ def handle_tier_downgrade(_: Namespace) -> int:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _print_saas_conversion_blocked() -> None:
+    """Explain why a SaaS environment cannot be converted to another tier."""
+    console.print(
+        f"  [{theme.warning}]This environment is a SaaS (single-gateway) audit — "
+        f"its tier is fixed at create time.[/{theme.warning}]\n"
+        f"  [{theme.text_dim}]A SaaS environment has a fundamentally different shape "
+        f"(gateway anchor, no Platform/Mongo/Redis), so converting it would leave it "
+        f"half-invalid. Create a new environment with "
+        f"[bold]platform-atlas env create[/bold] instead.[/{theme.text_dim}]"
+    )
+
 
 def _persist_tier(new_tier: str) -> int:
     """Write ``tier`` to ~/.atlas/config.json and refresh in-memory state."""
@@ -291,7 +350,15 @@ def _persist_tier(new_tier: str) -> int:
             mgr = get_environment_manager()
             if mgr.exists(active_env):
                 env = mgr.load(active_env)
-                if env.tier:
+                if env.tier == "saas":
+                    # SaaS envs bind tier at create time — never converted.
+                    # The new default still applies to non-SaaS environments.
+                    console.print(
+                        f"  [{theme.text_dim}]Active environment '{active_env}' is a "
+                        f"SaaS audit — its tier stays fixed; the new default applies "
+                        f"to other environments.[/{theme.text_dim}]"
+                    )
+                elif env.tier:
                     env.tier = new_tier
                     mgr.save(env)
         except Exception as exc:
