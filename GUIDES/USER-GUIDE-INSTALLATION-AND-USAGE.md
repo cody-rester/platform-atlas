@@ -16,26 +16,33 @@ Each step builds on the previous one. Once you've completed the initial setup, d
 
 ---
 
-## What's New in v1.7
+## What's New in v2.0
 
-v1.7 is the largest release since v1.5. The headline changes are below; each one has its own
+v2.0 is the largest release since v1.5. The headline changes are below; each one has its own
 section later in the guide.
 
-### Standard and Extended tiers
+### Standard, SaaS, and Extended tiers
 
-Platform Atlas now ships with two distinct audit modes. You choose the tier once — it applies
-globally until you change it.
+Platform Atlas ships with three audit modes. The SaaS tier is new in v2.0. Standard and
+Extended are global settings you choose once; SaaS is chosen per-environment at create time.
 
 **Standard** collects data only from the Platform API (OAuth) and the Automation Gateway 4 API.
 No SSH, no MongoDB, no Redis. Setup takes about five minutes. If you have a Platform URI and
-OAuth credentials, you're ready to run. The report covers ~54 rules focused on the application
+OAuth credentials, you're ready to run. The report covers ~56 rules focused on the application
 layer.
 
-**Extended** is the full infrastructure audit that existed in previous versions — SSH into every
-server, collect MongoDB and Redis configuration, run all collectors. ~107 rules, full coverage.
+**SaaS** audits a single standalone Automation Gateway — Gateway 4 or Gateway 5 — with no
+Platform, MongoDB, or Redis anywhere in the flow. Gateway 4 is audited over its REST API with
+an optional SSH block for deeper config; Gateway 5 is read over SSH `printenv`, from a local
+Docker Compose / Helm values file, or from the server `gateway.conf` over SSH. The audit runs
+only that gateway's rules and produces a single merged report.
 
-Fresh installs default to Standard. Upgrades from 1.6.x default to Extended (nothing changes
-for you unless you explicitly switch).
+**Extended** is the full infrastructure audit that existed in previous versions — SSH into every
+server, collect MongoDB and Redis configuration, run all collectors. ~122 rules, full coverage.
+
+Fresh installs default to Standard; Standard and Extended are interchangeable global settings
+you can switch at any time (nothing changes for you unless you explicitly switch). SaaS is the
+exception — it's chosen per-environment at create time and stays fixed.
 
 ```bash
 platform-atlas tier show
@@ -93,7 +100,7 @@ AppRole-Wrapped and non-renewable Token raise a clear error pointing at the rota
 A browser-based interface ships as a separate optional wheel.
 
 ```bash
-pip install platform_atlas_webui-1.7.0-py3-none-any.whl
+pip install platform_atlas_webui-2.0.0-py3-none-any.whl
 platform-atlas-webui
 ```
 
@@ -142,10 +149,10 @@ required; the WebUI is optional.
 
 ```bash
 # Required — core CLI
-pip install platform_atlas-1.7.0-py3-none-any.whl
+pip install platform_atlas-2.0.0-py3-none-any.whl
 
 # Optional — browser-based interface
-pip install platform_atlas_webui-1.7.0-py3-none-any.whl
+pip install platform_atlas_webui-2.0.0-py3-none-any.whl
 ```
 
 Once installed, the `platform-atlas` command is available in your terminal. Verify it works:
@@ -154,7 +161,7 @@ Once installed, the `platform-atlas` command is available in your terminal. Veri
 platform-atlas --version
 ```
 
-You should see something like `platform-atlas 1.7.0`.
+You should see something like `platform-atlas 2.0.0`.
 
 ### Upgrading
 
@@ -214,17 +221,19 @@ You'll be asked for a name, an organization name (defaults from global config), 
 
 #### Credential Storage
 
-Atlas needs to store sensitive values like your Platform client secret and database URIs. It never stores these in plain text on disk. Instead, it uses one of two backends:
+Atlas needs to store sensitive values like your Platform client secret and database URIs. It never stores these in plain text on disk. At setup you make one explicit choice between three backends — the **OS Keyring** (recommended), an **Encrypted local file**, or **HashiCorp Vault** — and Atlas uses exactly that store on every run. There is no probing and no automatic fallback, so a credential can only ever be where you put it:
 
-**OS Keyring** (default) — Uses your operating system's built-in credential store. Credentials are scoped per environment (stored under `platform-atlas/<env-name>` in the keyring), so each environment has fully isolated secrets.
+**OS Keyring** (recommended) — Uses your operating system's built-in credential store. Credentials are scoped per environment (stored under `platform-atlas/<env-name>` in the keyring), so each environment has fully isolated secrets. This is the recommended default whenever the keyring works on your host.
 
 - macOS: Keychain (built-in, no extra setup)
 - Windows: Credential Locker (built-in, no extra setup)
-- Linux: Requires `gnome-keyring` with D-Bus, or the `keyrings.alt` package for headless/server environments
+- Linux: `gnome-keyring` with D-Bus on the desktop. On a headless server with no usable keyring, choose the **Encrypted local file** instead (described next) — the wizard shows whether the keyring actually works on this host so you can pick before hitting a wall.
 
 > **Updating or rotating credentials later:** Use `platform-atlas config credentials` at any time to add, change, or rotate any stored credential without recreating the environment. This is the right command whenever a credential is rotated upstream, when retrofitting a credential that wasn't collected during the original setup (e.g. a Gateway4 password on an existing env), or when populating the keyring on a new machine after restoring `~/.atlas/` from backup. Credentials live outside `~/.atlas/`, so they don't travel with the config directory.
 
-**HashiCorp Vault** — If your organization manages secrets in Vault, Atlas can read credentials from a KV v2 secrets engine. In this mode, Atlas only *reads* from Vault — it never writes secrets. Your Vault administrator manages the actual credentials. Atlas supports several authentication methods: a static token, AppRole (role_id + secret_id), and three automated options designed for environments where credentials rotate — see the *Vault Integration* section in the FAQ for details on choosing the right one.
+**Encrypted local file** — A first-class, explicit choice (not a hidden fallback): pick it on a headless Linux server with no D-Bus session, or anywhere you'd rather keep secrets off the OS keyring. Atlas stores credentials in an encrypted, machine-bound file at `~/.atlas/credentials.enc`. Encryption is AES-256-GCM keyed to this host and user plus a random per-install salt (`~/.atlas/.keysalt`), so the file won't decrypt if copied elsewhere, and a single leaked file is useless without the salt. Atlas reports the file store honestly (preflight, `config doctor`, the banner, `config credentials`) — never dressed up as an encrypted keyring. You can switch an existing environment to it later with `platform-atlas config credentials --use-file-store` (and back with `--use-keyring`); you re-enter your secrets, nothing is silently copied between stores.
+
+**HashiCorp Vault** — If your organization manages secrets in Vault, Atlas can read credentials from a KV v2 secrets engine. In this mode, Atlas only *reads* from Vault — it never writes secrets. Your Vault administrator manages the actual credentials. Atlas supports several authentication methods: a static token, AppRole (role_id + secret_id), and three automated options designed for environments where credentials rotate — see the *Vault Integration* section in the FAQ for details on choosing the right one. Vault's own connection settings (URL, token) still need a local home — Atlas asks where to keep them when you choose Vault, with the **OS keyring recommended** (the encrypted local file is the alternative when the keyring isn't usable).
 
 #### Connection Credentials
 
@@ -236,7 +245,7 @@ You'll be prompted for the credentials Atlas needs to connect to this environmen
 - **MongoDB URI** — The full connection string for your MongoDB instance. You can skip this if MongoDB auditing isn't needed.
 - **Redis URI** — The full connection string for your Redis instance. You can skip this if Redis auditing isn't needed.
 
-All of these are stored in your OS keyring (scoped to the environment name) or Vault — never in config files.
+All of these are stored in whichever backend you chose for this environment (OS keyring, encrypted local file, or Vault), scoped to the environment name — never in config files.
 
 #### Deployment Topology
 
@@ -308,6 +317,22 @@ To set Standard tier:
 platform-atlas tier set standard
 ```
 
+### SaaS tier
+
+Use SaaS if:
+- You are auditing a **standalone Automation Gateway** (Gateway 4 or Gateway 5) with no
+  Itential Platform behind it — the common shape for SaaS/cloud gateway customers
+- You want a gateway-anchored report with no Platform/MongoDB/Redis anywhere in the flow
+
+SaaS is chosen **per-environment** when you run `platform-atlas env create` — pick the SaaS
+tier, then the gateway kind (strictly one per environment). Gateway 4 is audited over its
+REST API with an optional SSH block for deeper config; Gateway 5 is read over SSH
+`printenv`, from a local Docker Compose / Helm values file, or from the server `gateway.conf`
+over SSH. The audit produces a single report file (compliance + Architecture Overview merged).
+
+There is no `tier set saas` — SaaS is not a global default, and a SaaS environment's tier
+and gateway kind are fixed for its lifetime.
+
 ### Extended tier
 
 Use Extended if:
@@ -315,7 +340,9 @@ Use Extended if:
 - You are conducting a formal quarterly health assessment
 - You already have SSH access and database credentials set up
 
-Extended is the default for upgrades from 1.6.x.
+Extended is the full-coverage global tier; switch to it whenever you need infrastructure
+checks. (Installs upgraded from the 1.6.x line started on Extended, preserving their original
+experience.)
 
 To set Extended tier:
 
@@ -325,8 +352,10 @@ platform-atlas tier set extended
 
 ### Switching tiers
 
-You can switch tiers at any time. Existing sessions are not affected — each session stores the
-tier it was created with. New sessions will use the current global tier.
+You can switch between Standard and Extended at any time. Existing sessions are not
+affected — each session stores the tier it was created with. New sessions will use the
+current global tier. SaaS environments are the exception: they bind their tier at create
+time and cannot be converted (create a new environment instead).
 
 ```bash
 platform-atlas tier show        # see the current tier
@@ -338,7 +367,7 @@ platform-atlas tier downgrade   # guided Extended → Standard with explanations
 
 ## WebUI
 
-The optional WebUI package (`platform-atlas-webui` 1.0.0) is a browser-based interface for
+The optional WebUI package (`platform-atlas-webui` 2.0.0) is a browser-based interface for
 managing sessions, running audits, viewing reports, and operating Continuous Audit and the
 fleet view. It's a thin presentation layer over the same engines the CLI uses — there is no
 duplicated logic. Both interfaces read and write the same `~/.atlas/` directory; what you do
@@ -351,7 +380,7 @@ machine as your `~/.atlas/`.
 ### Installing and first launch
 
 ```bash
-pip install platform_atlas_webui-1.7.0-py3-none-any.whl
+pip install platform_atlas_webui-2.0.0-py3-none-any.whl
 platform-atlas-webui
 ```
 
@@ -414,9 +443,9 @@ when there are unacked alerts.
 | **Dashboard** (`/`) | KPI tiles and an audit-activity heatmap of the last 48 h. Empty tiles show a one-line teaching helper instead of a bare zero. |
 | **Sessions** (`/sessions`) | Create, activate, run capture/validate/report, and delete sessions. Each running stage streams live output via Server-Sent Events; a force-kill button appears on jobs that run more than 60 s. |
 | **Environments** (`/environments`) | Create, edit, activate, and delete environments. Activation atomically restores tier, ruleset, and profile alongside the active environment, matching the CLI. The form pane covers tier, deployment topology (including ControlMaster IAP transport), Kubernetes settings, and Gateway 4 connection details. |
-| **Credentials** (`/credentials`) | Reconfigure the active environment's credential backend (Keyring or Vault). All five Vault auth methods are supported — Token, AppRole, AppRole (Wrapped), Token (file), Token (env). |
+| **Credentials** (`/credentials`) | Reconfigure the active environment's credential backend (Keyring, Encrypted File, or Vault). All five Vault auth methods are supported — Token, AppRole, AppRole (Wrapped), Token (file), Token (env). |
 | **Reports** (`/reports`) | Direct links to every session's compliance, operational, and architecture HTML reports. |
-| **Tier** (`/tier`) | Side-by-side cards for Standard and Extended with a "when to use" hint. The active tier is highlighted; switching opens a confirmation modal that explains what changes. |
+| **Tier** (`/tier`) | Side-by-side cards for Standard and Extended with a "when to use" hint (SaaS environments show their fixed tier instead). The active tier is highlighted; switching opens a confirmation modal that explains what changes. |
 | **Fleet** (`/fleet`) | The same data as `fleet status` rendered as a sortable card grid — tier, last session age, pass rate, continuous-audit state, unacked alerts. Read-only; never triggers a capture. |
 | **Continuous** (`/continuous`) | Status, settings, and run history for the active environment's continuous audit. Buttons for run-now, enable, disable, and an Alerting block with `alert_policy` selector and a chip editor for the watchlist. |
 | **Alerts** (`/alerts`) | Drift timeline with ack and ack-all. The bell icon in the topbar shows unacked count and links here. |
@@ -459,7 +488,7 @@ Preflight checks each service independently and reports results as pass, fail, w
 - **Redis** — Connects and auto-detects whether it's a standalone Redis or Sentinel setup.
 - **SSH targets** — Tests SSH connectivity to each server in your topology.
 - **Config files** — Checks that configuration files (mongod.conf, redis.conf, etc.) exist and are readable on the target servers.
-- **Gateway4 / Gateway5** — Checks for the Automation Gateway virtual environment or environment variables.
+- **Gateway4 / Gateway5** — Checks for the Automation Gateway virtual environment or environment variables. A containerized or file-based Gateway 5 (Docker Compose / Helm values) needs no SSH — Atlas reads the file you pointed it at.
 
 If anything fails, the output includes a description of what went wrong. Fix the issue and re-run preflight until everything passes. Common fixes include updating SSH keys, opening firewall ports, or correcting a URI in your credentials.
 
@@ -888,7 +917,7 @@ platform-atlas fleet status --json   # for piping into jq / monitoring
 
 For each environment you'll see:
 
-- Current tier (Standard / Extended)
+- Current tier (Standard / Extended / SaaS)
 - Most recent session and its age
 - Pass rate from that session
 - Continuous-audit state (disabled / enabled / running / failed) and last-run age
@@ -965,12 +994,16 @@ Pick a theme from the interactive list. The change takes effect the next time yo
 
 Make sure the Python `bin` or `Scripts` directory is in your system PATH. If you installed with `--user`, the location is typically `~/.local/bin` on Linux/macOS. Try running `python -m platform_atlas` as an alternative.
 
-**Q: The setup wizard says "Insecure keyring backend detected."**
+**Q: The setup wizard says "Insecure keyring backend detected" — or I'm on a headless server.**
 
-This happens on Linux servers without a graphical desktop environment. The `keyring` library can't find a secure credential store. You have two options:
+On Linux servers without a graphical desktop, the `keyring` library often can't reach a secure credential store. Atlas never silently downgrades — at setup you explicitly choose where credentials live, and the wizard shows whether the OS keyring actually works on this host so you can decide before hitting a wall.
 
-1. Install the encrypted file backend: `pip install keyrings.alt` — this stores credentials in an encrypted file.
-2. Use HashiCorp Vault as your credential backend instead of the OS keyring.
+On a headless host, pick one of:
+
+1. The **Encrypted local file** backend (`~/.atlas/credentials.enc`, machine-bound, AES-256-GCM) — the simplest choice, always available, and the recommended headless path. Switch an existing environment to it with `platform-atlas config credentials --use-file-store` (revert with `--use-keyring`).
+2. **HashiCorp Vault** as your credential backend instead of the OS keyring.
+
+> The old `pip install keyrings.alt` / `export PYTHON_KEYRING_BACKEND=keyrings.alt.file.EncryptedKeyring` route still functions, but it is no longer recommended — use the first-class **Encrypted local file** backend above instead.
 
 **Q: Can I run Atlas on my laptop and connect to remote servers?**
 
@@ -1220,7 +1253,7 @@ For environments where Atlas cannot connect directly, combine `--manual` with `-
 platform-atlas session run capture --manual --import-dir /data/atlas-capture/
 ```
 
-Make sure your credential store works in non-interactive environments. On Linux, this typically means using `keyrings.alt` (encrypted file backend) or Vault instead of `gnome-keyring`, which requires a D-Bus session.
+Make sure your chosen credential backend works in non-interactive environments. On a headless Linux host, that means using the **Encrypted local file** backend or Vault rather than `gnome-keyring`, which needs a D-Bus session.
 
 ---
 
@@ -1229,9 +1262,11 @@ Make sure your credential store works in non-interactive environments. On Linux,
 **Q: Which tier should I use?**
 
 Start with **Standard** if you just have a Platform URI and OAuth credentials and want a quick
-audit. It covers ~54 application-layer rules with zero server access needed. Switch to
+audit. It covers ~56 application-layer rules with zero server access needed. Switch to
 **Extended** when you need full coverage — MongoDB config, Redis config, system info, SSH-based
-checks, and ~107 rules total.
+checks, and ~122 rules total. Pick **SaaS** (during `env create`) when the thing you're
+auditing is a standalone Gateway 4 or Gateway 5 with no Itential Platform behind it — it runs
+only that gateway's rules and produces a single merged report.
 
 **Q: Can I switch tiers without breaking existing sessions?**
 
@@ -1244,7 +1279,7 @@ with a notice banner.
 The Standard ruleset covers the application layer using the Platform OAuth API only — that
 works on Kubernetes deployments without any extra setup. If you need infrastructure rules too,
 switch to Extended (`platform-atlas tier set extended`) and pick **Kubernetes** as the
-deployment mode during topology setup. The Extended ruleset has 13 kubectl-based fallbacks
+deployment mode during topology setup. The Extended ruleset has 15 kubectl-based fallbacks
 that close most of the gap from inaccessible MongoDB / Redis / SSH on K8s.
 
 ### Continuous Audit and Notifications

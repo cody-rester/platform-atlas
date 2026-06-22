@@ -28,12 +28,17 @@ in config.json or the active environment ("keyring" or "vault").
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
-import sys
+import os
+import stat
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum, unique
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import keyring
@@ -41,7 +46,6 @@ import keyring.errors
 
 from platform_atlas.core.exceptions import (
     CredentialError,
-    InsecureBackendError,
     TierViolationError,
 )
 
@@ -50,12 +54,19 @@ __all__ = [
     "CredentialBackendType",
     "CredentialKey",
     "CredentialStore",
+    "FileSecretStore",
+    "FileStoreHealth",
     "KeyringBackend",
+    "KeyringSecretStore",
+    "SecretStore",
     "VaultAuthMethod",
     "VaultBackend",
     "VaultConfig",
+    "active_secret_store",
+    "applicable_keys",
     "credential_store",
     "migrate_legacy_credentials",
+    "required_keys",
     "reset_credential_store",
     "scoped_service_name",
     "verify_keyring_backend",
@@ -94,18 +105,18 @@ class CredentialKey(Enum):
 
     @property
     def required(self) -> bool:
-        """True if this credential is always required regardless of topology."""
-        return self in _ALWAYS_REQUIRED
+        """True if this credential must exist under the active tier.
+
+        Tier-aware: PLATFORM_SECRET is required in the platform-anchored
+        tiers (standard/extended) but not in SaaS, which never talks to
+        the Platform.
+        """
+        return self in required_keys()
 
     @property
     def collector_module(self) -> str | None:
         """The collector module that needs this credential, or None if always required."""
         return _KEY_MODULE_MAP.get(self)
-
-# Credentials that must always be present
-_ALWAYS_REQUIRED: frozenset[CredentialKey] = frozenset({
-    CredentialKey.PLATFORM_SECRET,
-})
 
 # Maps optional credentials to the collector module that needs them
 _KEY_MODULE_MAP: dict[CredentialKey, str] = {
@@ -114,10 +125,42 @@ _KEY_MODULE_MAP: dict[CredentialKey, str] = {
     CredentialKey.GATEWAY4_PASSWORD: "gateway4",
 }
 
-# Credentials that require Extended Mode. The tier-aware credential store
-# refuses to write these and silently returns None on read while tier=standard,
-# so there is no leakage path between tier switches. Defense 3 of the hard
-# mode boundary (alongside registry pruning and require_extended() guards).
+# ── Tier-aware credential gating (defense 3 of the hard mode boundary) ──
+# Which keys are usable per tier. The credential store refuses to write any
+# key outside the active tier's set and silently returns None/absent on
+# read, so there is no leakage path between tier switches (alongside
+# registry pruning and the require_extended()/require_infra() guards).
+#
+#   standard — app-only audit: Platform OAuth + optional Gateway4 API. No SSH.
+#   saas     — single-gateway audit: gateway SSH + Gateway4 API. No Platform.
+#   extended — full infrastructure audit: everything.
+_TIER_APPLICABLE_KEYS: dict[str, frozenset[CredentialKey]] = {
+    "standard": frozenset({CredentialKey.PLATFORM_SECRET, CredentialKey.GATEWAY4_PASSWORD}),
+    "saas":     frozenset({CredentialKey.SSH_PASSPHRASE, CredentialKey.GATEWAY4_PASSWORD}),
+    "extended": frozenset(CredentialKey),
+}
+
+# Keys that must exist before a capture can run, per tier. PLATFORM_SECRET
+# is required only where the audit is platform-anchored — a SaaS audit never
+# talks to the Platform, so nothing is statically required there (the
+# Gateway4 API password is needed only when a GW4 API target is configured,
+# which preflight checks contextually).
+_TIER_REQUIRED_KEYS: dict[str, frozenset[CredentialKey]] = {
+    "standard": frozenset({CredentialKey.PLATFORM_SECRET}),
+    "saas":     frozenset(),
+    "extended": frozenset({CredentialKey.PLATFORM_SECRET}),
+}
+
+_TIER_LABELS: dict[str, str] = {
+    "standard": "Standard",
+    "saas": "SaaS",
+    "extended": "Extended",
+}
+
+# Back-compat export: the keys hidden while tier=standard (everything the
+# app-only tier has no use for). Store gating itself resolves through
+# applicable_keys() now; this set remains for callers that present
+# Standard's reduced credential surface (WebUI routes, tests).
 #
 # GATEWAY4_PASSWORD is intentionally NOT in this set — Gateway4 API auth
 # works in Standard via ipsdk over HTTPS.
@@ -128,19 +171,43 @@ EXTENDED_ONLY_KEYS: frozenset[CredentialKey] = frozenset({
 })
 
 
-def _is_standard_tier() -> bool:
+def _active_tier() -> str | None:
     """
-    True if the active tier is Standard. Safe to call before config is
-    loaded — returns False if the tier cannot be determined yet, which
-    keeps init/setup paths unblocked.
+    The active tier, or None when it cannot be determined yet (no config
+    loaded and no context initialized). Returning None keeps init/setup
+    paths unblocked — credential gating only activates once Atlas has
+    resolved its tier.
     """
     try:
-        from platform_atlas.core.config import get_config, is_config_loaded
-        if not is_config_loaded():
-            return False
-        return get_config().tier == "standard"
+        from platform_atlas.core.config import get_config
+        return get_config().tier
     except Exception:
-        return False
+        return None
+
+
+def applicable_keys(tier: str | None = None) -> frozenset[CredentialKey]:
+    """
+    The credential keys usable under *tier* (default: the active tier).
+
+    Unknown or not-yet-resolved tiers fail open to the full set so
+    early-startup and setup paths are never blocked before config exists.
+    """
+    resolved = tier if tier is not None else _active_tier()
+    if resolved is None:
+        return frozenset(CredentialKey)
+    return _TIER_APPLICABLE_KEYS.get(resolved, frozenset(CredentialKey))
+
+
+def required_keys(tier: str | None = None) -> frozenset[CredentialKey]:
+    """
+    The credential keys that must exist under *tier* (default: the active
+    tier). Falls back to the extended set (PLATFORM_SECRET) when the tier
+    cannot be resolved, preserving the historical always-required behavior.
+    """
+    resolved = tier if tier is not None else _active_tier()
+    if resolved is None:
+        return _TIER_REQUIRED_KEYS["extended"]
+    return _TIER_REQUIRED_KEYS.get(resolved, _TIER_REQUIRED_KEYS["extended"])
 
 
 def scoped_service_name(env_name: str | None = None) -> str:
@@ -162,6 +229,7 @@ def scoped_service_name(env_name: str | None = None) -> str:
 class CredentialBackendType(Enum):
     """Which credential backend is active — persisted in config.json."""
     KEYRING = "keyring"
+    FILE    = "file"
     VAULT   = "vault"
 
 
@@ -188,7 +256,15 @@ class CredentialBackend(Protocol):
     def read_only(self) -> bool: ...
 
 class KeyringBackend:
-    """OS keyring backend (macOS Keychain, Windows Credential Locker, etc.)."""
+    """Local-store credential backend for the five Atlas secrets.
+
+    The underlying substrate is resolved by :func:`active_secret_store` — the
+    OS keyring (macOS Keychain, Windows Credential Locker, Linux Secret
+    Service) under normal conditions, or the encrypted local file store
+    (:class:`FileSecretStore`) transparently when the keyring is unavailable or
+    the file store has been forced. The class name is historical: this is the
+    "local" backend, as opposed to :class:`VaultBackend`.
+    """
 
     def __init__(self, service: str = SERVICE_NAME) -> None:
         self._service = service
@@ -203,62 +279,19 @@ class KeyringBackend:
         return False
 
     def get(self, key: str) -> str | None:
-        try:
-            return keyring.get_password(self._service, key)
-        except keyring.errors.KeyringError as e:
-            # ChainerBackend can fail at runtime even after a successful startup
-            # probe (e.g. SecretService becomes unavailable mid-session). Switch
-            # to a working alt backend and retry once before giving up.
-            if type(keyring.get_keyring()).__name__ == "ChainerBackend":
-                logger.debug("ChainerBackend failed get(%s), switching backend", key)
-                _switch_to_alt_keyring()
-                try:
-                    return keyring.get_password(self._service, key)
-                except Exception:
-                    pass
-            logger.warning("Keyring read failed for %s: %s", key, e)
-            return None
-        except ValueError as e:
-            logger.warning("Keyring read failed for %s: %s", key, e)
-            return None
+        return active_secret_store().get(self._service, key)
 
     def set(self, key: str, value: str) -> None:
-        try:
-            keyring.set_password(self._service, key, value)
-        except keyring.errors.KeyringError as e:
-            # Same ChainerBackend runtime-failure guard as get().
-            if type(keyring.get_keyring()).__name__ == "ChainerBackend":
-                logger.debug("ChainerBackend failed set(%s), switching backend", key)
-                _switch_to_alt_keyring()
-                try:
-                    keyring.set_password(self._service, key, value)
-                    return
-                except keyring.errors.KeyringError as retry_e:
-                    e = retry_e
-            raise CredentialError(
-                f"Failed to store '{key}' in OS keyring",
-                details={"key": key, "error": str(e)},
-            ) from e
-        except ValueError as e:
-            raise CredentialError(
-                "Incorrect keyring password. Re-run and enter the correct password "
-                "for the encrypted keyring, or delete the keyring file to start fresh.",
-                details={"key": key, "error": str(e)},
-            ) from e
+        active_secret_store().set(self._service, key, value)
 
     def delete(self, key: str) -> None:
-        try:
-            keyring.delete_password(self._service, key)
-        except keyring.errors.PasswordDeleteError:
-            pass  # Already gone
-        except keyring.errors.KeyringError as e:
-            logger.warning("Keyring delete failed for %s: %s", key, e)
+        active_secret_store().delete(self._service, key)
 
     def exists(self, key: str) -> bool:
         return self.get(key) is not None
 
     def __repr__(self) -> str:
-        return f"KeyringBackend(service={self._service!r})"
+        return f"KeyringBackend(service={self._service!r}, store={active_secret_store()!r})"
 
 
 @dataclass(frozen=True)
@@ -366,14 +399,21 @@ class VaultBackend:
         cls,
         config: VaultConfig,
         service: str = SERVICE_NAME,
+        store: SecretStore | None = None,
     ) -> None:
-        """Persist Vault connection settings in the OS keyring.
+        """Persist Vault connection settings into a local secret store.
+
+        ``store`` defaults to :func:`active_secret_store` (the env's configured
+        local store). The setup wizard passes an explicit store because the new
+        environment's choice is not yet the active config. The method name is
+        historical.
 
         Args:
             config: The Vault connection configuration to save.
-            service: The keyring service name. Pass a scoped name
-                     (``scoped_service_name(env_name)``) to isolate
-                     Vault settings per environment.
+            service: The store service name. Pass a scoped name
+                     (``scoped_service_name(env_name)``) to isolate Vault
+                     settings per environment.
+            store: The local secret store to write into; defaults to the active.
         """
         mapping: dict[str, str] = {
             "vault_url":              config.url,
@@ -388,34 +428,13 @@ class VaultBackend:
             "vault_verify_ssl":       str(config.verify_ssl),
             "vault_namespace":        config.namespace or "",
         }
-        _MAX_KEYRING_ATTEMPTS = 3
-        for attempt in range(_MAX_KEYRING_ATTEMPTS):
-            try:
-                for k, v in mapping.items():
-                    if v:
-                        keyring.set_password(service, k, v)
-                    else:
-                        # Clean up empty values so _load doesn't pick up stale data
-                        try:
-                            keyring.delete_password(service, k)
-                        except keyring.errors.PasswordDeleteError:
-                            pass
-                return  # all writes succeeded
-            except ValueError:
-                remaining = _MAX_KEYRING_ATTEMPTS - attempt - 1
-                if remaining > 0:
-                    print(
-                        f"\nIncorrect keyring password — {remaining} attempt(s) remaining.",
-                        file=sys.stderr,
-                    )
-                    # keyrings.alt calls _lock() on failure, so the next set_password
-                    # call will re-prompt for the password automatically.
-                    continue
-                raise CredentialError(
-                    "Incorrect keyring password after 3 attempts. "
-                    "Re-run and enter the correct password, or delete the keyring file to start fresh.",
-                    details={"service": service},
-                ) from None
+        store = store or active_secret_store()
+        for k, v in mapping.items():
+            if v:
+                store.set(service, k, v)
+            else:
+                # Clean up empty values so _load doesn't pick up stale data
+                store.delete(service, k)
 
     @classmethod
     def _load_config_from_keyring(
@@ -427,16 +446,22 @@ class VaultBackend:
         Args:
             service: The keyring service name to read from.
         """
+        # Vault's own connection settings live in the local secret store chosen
+        # for this environment (active_secret_store() — OS keyring or encrypted
+        # file; deterministic, no probing or fallback).
+        store = active_secret_store()
+
         def _get(key: str) -> str | None:
             try:
-                return keyring.get_password(service, key)
-            except (keyring.errors.KeyringError, ValueError):
+                return store.get(service, key)
+            except Exception:
                 return None
 
         url = _get("vault_url")
         if not url:
             raise CredentialError(
-                "Vault URL not found in OS keyring",
+                "Vault URL not found in the credential store. Run "
+                "'platform-atlas config init' and select Vault as the credential backend.",
                 details={
                     "service": service,
                     "fix": "Run 'platform-atlas config init' and select Vault as the credential backend",
@@ -468,20 +493,18 @@ class VaultBackend:
     def config_exists_in_keyring(cls, service: str = SERVICE_NAME) -> bool:
         """Check whether Vault connection settings have been stored."""
         try:
-            val = keyring.get_password(service, "vault_url")
-            return val is not None
-        except keyring.errors.KeyringError:
+            return active_secret_store().get(service, "vault_url") is not None
+        except Exception:
             return False
 
     @classmethod
     def clear_config_from_keyring(cls, service: str = SERVICE_NAME) -> None:
-        """Remove all Vault connection settings from the OS keyring."""
+        """Remove all Vault connection settings from the active secret store."""
+        store = active_secret_store()
         for k in cls._VAULT_KEYS:
             try:
-                keyring.delete_password(service, k)
-            except keyring.errors.PasswordDeleteError:
-                pass
-            except keyring.errors.KeyringError as e:
+                store.delete(service, k)
+            except Exception as e:
                 logger.warning("Failed to delete vault key '%s': %s", k, e)
 
     # --- Connection ---
@@ -945,8 +968,10 @@ class CredentialStore:
         """Instantiate the appropriate backend."""
         if backend_type == CredentialBackendType.VAULT:
             # Pass the scoped service so Vault connection config is
-            # loaded from the environment's keyring namespace
+            # loaded from the environment's local-store namespace
             return VaultBackend(service=self._service)
+        # KEYRING and FILE both use the local backend; whether secrets land in
+        # the OS keyring or the encrypted file is decided by active_secret_store().
         return KeyringBackend(self._service)
 
     # --- Properties ---
@@ -964,9 +989,8 @@ class CredentialStore:
             if isinstance(vault, VaultBackend):
                 return f"HashiCorp Vault ({vault.config.display_url})"
             return "HashiCorp Vault"
-        _, _, name = verify_keyring_backend()
         env_suffix = f" [{self._env_name}]" if self._env_name else ""
-        return f"OS Keyring ({name}){env_suffix}"
+        return f"{active_secret_store().display_name}{env_suffix}"
 
     @property
     def env_name(self) -> str | None:
@@ -994,12 +1018,14 @@ class CredentialStore:
         """
         Retrieve a credential. Returns None if not found.
 
-        In Standard Mode, Extended-only keys silently return None — Standard
-        code paths should never ask for these in the first place, but if
+        Keys outside the active tier's applicable set silently return None —
+        Extended-only keys in Standard, Platform/Mongo/Redis keys in SaaS.
+        Those code paths should never ask in the first place, but if
         something does, it gets a clean miss rather than leaking a stale
-        Extended credential.
+        credential across the tier boundary.
         """
-        if key in EXTENDED_ONLY_KEYS and _is_standard_tier():
+        tier = _active_tier()
+        if tier is not None and key not in applicable_keys(tier):
             return None
         return self._backend.get(key.value)
 
@@ -1008,15 +1034,18 @@ class CredentialStore:
         Store a credential in the active backend.
 
         Raises CredentialError if the backend is read-only (Vault).
-        Raises TierViolationError if writing an Extended-only key under tier=standard.
+        Raises TierViolationError if writing a key outside the active
+        tier's applicable set (e.g. an Extended-only key under standard,
+        or a Platform/Mongo/Redis key under saas).
         """
         if not value:
             logger.debug("Skipping empty value for %s", key.value)
             return
-        if key in EXTENDED_ONLY_KEYS and _is_standard_tier():
+        tier = _active_tier()
+        if tier is not None and key not in applicable_keys(tier):
             raise TierViolationError(
                 f"credential_store.set({key.value})",
-                hint=f"{key.display_name} is not used in Standard Mode.",
+                hint=f"{key.display_name} is not used in {_TIER_LABELS.get(tier, tier)} Mode.",
             )
         if self.is_read_only:
             raise CredentialError(
@@ -1050,10 +1079,11 @@ class CredentialStore:
         """
         Check if a credential is stored.
 
-        Mirrors get(): in Standard Mode, Extended-only keys appear absent
-        so the public surface is consistent.
+        Mirrors get(): keys outside the active tier's applicable set
+        appear absent so the public surface is consistent.
         """
-        if key in EXTENDED_ONLY_KEYS and _is_standard_tier():
+        tier = _active_tier()
+        if tier is not None and key not in applicable_keys(tier):
             return False
         return self._backend.exists(key.value)
 
@@ -1074,6 +1104,10 @@ class CredentialStore:
                     vault_path = vault.config.full_path
                 fix = f"Add '{key.value}' to Vault at {vault_path}"
             else:
+                # Reflect the real substrate so the message isn't misleading when
+                # the encrypted local file store is active instead of the keyring.
+                if active_secret_store().is_file:
+                    backend_label = "encrypted local file"
                 fix = "Run 'platform-atlas config credentials' to configure"
 
             raise CredentialError(
@@ -1133,71 +1167,498 @@ def _probe_keyring() -> bool:
         return False
 
 
-def _persist_keyring_backend(module_path: str, class_name: str) -> None:
-    """Write the chosen backend to keyringrc.cfg so future processes skip ChainerBackend.
-
-    The keyring library reads this file at startup — persisting here means the
-    next invocation goes directly to the working backend without probing.
-    """
-    try:
-        import configparser
-        import sys as _sys
-        from pathlib import Path as _Path
-        if _sys.platform == "win32":
-            # keyring on Windows reads from %APPDATA%\Python\keyringrc.cfg
-            _appdata = os.environ.get("APPDATA") or str(_Path.home())
-            config_dir = _Path(_appdata) / "Python"
-        else:
-            # XDG base dir on Linux/macOS
-            config_dir = _Path.home() / ".local" / "share" / "python_keyring"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        cfg = configparser.ConfigParser()
-        cfg_path = config_dir / "keyringrc.cfg"
-        if cfg_path.exists():
-            cfg.read(cfg_path)
-        if "backend" not in cfg:
-            cfg["backend"] = {}
-        cfg["backend"]["default-keyring"] = f"{module_path}.{class_name}"
-        with open(cfg_path, "w", encoding="utf-8") as fh:
-            cfg.write(fh)
-        logger.debug("Persisted keyring backend %s.%s to %s", module_path, class_name, cfg_path)
-    except Exception as exc:
-        logger.debug("Could not write keyringrc.cfg: %s", exc)
+# ═══════════════════════════════════════════════════════════════════════════
+# Secret-store substrate  (OS keyring  ⇄  encrypted local file)
+#
+# The low-level (service, key) → value store that BOTH the local credential
+# backend (KeyringBackend) and Vault's connection-settings persistence sit on
+# top of. Two implementations: the OS keyring, and an encrypted machine-bound
+# file used as a seamless fallback when the keyring is unavailable or forced.
+# ═══════════════════════════════════════════════════════════════════════════
 
 
-def _switch_to_alt_keyring() -> None:
-    """Switch away from ChainerBackend to a deterministic, working alt backend.
+@runtime_checkable
+class SecretStore(Protocol):
+    """A namespaced ``(service, key) → value`` secret store."""
 
-    Probes each candidate with a real write/read before committing. Persists
-    the winner to keyringrc.cfg so future process invocations go directly to
-    the working backend and never touch ChainerBackend again.
+    #: True for the encrypted local file store; False for the OS keyring.
+    is_file: bool
+    #: Human-readable label for UI / preflight.
+    display_name: str
 
-    Candidate order:
-      1. CryptFileKeyring — AES-encrypted file (requires pycryptodome, bundled).
-         Prompts for a master password on first use.
-      2. PlaintextKeyring — unencrypted file, always works with no prompts.
-         Falls back to this in headless environments where CryptFileKeyring
-         cannot prompt interactively.
-    """
-    import importlib
-    for module_path, class_name in [
-        ("keyrings.alt.Crypter", "CryptFileKeyring"),
-        ("keyrings.alt.file",    "PlaintextKeyring"),
-    ]:
+    def get(self, service: str, key: str) -> str | None: ...
+    def set(self, service: str, key: str, value: str) -> None: ...
+    def delete(self, service: str, key: str) -> None: ...
+    def exists(self, service: str, key: str) -> bool: ...
+
+
+class KeyringSecretStore:
+    """SecretStore backed by the OS keyring (keyring library)."""
+
+    is_file = False
+
+    def get(self, service: str, key: str) -> str | None:
         try:
-            mod = importlib.import_module(module_path)
-            backend_cls = getattr(mod, class_name)
-            keyring.set_keyring(backend_cls())
-            if _probe_keyring():
-                _persist_keyring_backend(module_path, class_name)
-                logger.debug("Switched keyring to %s (probe passed, choice persisted)", class_name)
-                return
+            return keyring.get_password(service, key)
+        except (keyring.errors.KeyringError, ValueError) as e:
+            logger.warning("Keyring read failed for %s: %s", key, e)
+            return None
+
+    def set(self, service: str, key: str, value: str) -> None:
+        try:
+            keyring.set_password(service, key, value)
+        except keyring.errors.KeyringError as e:
+            raise CredentialError(
+                f"Failed to store '{key}' in OS keyring",
+                details={"key": key, "error": str(e)},
+            ) from e
+        except ValueError as e:
+            raise CredentialError(
+                "Incorrect keyring password. Re-run and enter the correct password "
+                "for the encrypted keyring, or delete the keyring file to start fresh.",
+                details={"key": key, "error": str(e)},
+            ) from e
+
+    def delete(self, service: str, key: str) -> None:
+        try:
+            keyring.delete_password(service, key)
+        except keyring.errors.PasswordDeleteError:
+            pass  # Already gone
+        except keyring.errors.KeyringError as e:
+            logger.warning("Keyring delete failed for %s: %s", key, e)
+
+    def exists(self, service: str, key: str) -> bool:
+        return self.get(service, key) is not None
+
+    @property
+    def display_name(self) -> str:
+        _, _, name = verify_keyring_backend()
+        return f"OS Keyring ({name})"
+
+    def __repr__(self) -> str:
+        return "KeyringSecretStore()"
+
+
+# AES-GCM associated data — binds the ciphertext to this store's purpose+version
+# so a blob can't be replayed into another context, and tampering fails loudly.
+_FILE_STORE_AAD = b"platform-atlas-credential-store-v1"
+_FILE_STORE_VERSION = 1
+# scrypt cost parameters (n must be a power of two). 2**14 is fast (<100ms) yet
+# meaningfully slows brute force; stored in the envelope so they can evolve.
+_SCRYPT_N = 2 ** 14
+_SCRYPT_R = 8
+_SCRYPT_P = 1
+
+
+def _machine_id() -> str:
+    """Best-effort stable per-host identifier. Empty string if unavailable."""
+    import platform as _platform
+    system = _platform.system()
+    try:
+        if system == "Linux":
+            for p in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+                try:
+                    val = Path(p).read_text(encoding="utf-8").strip()
+                    if val:
+                        return val
+                except OSError:
+                    continue
+        elif system == "Darwin":
+            import re
+            import subprocess  # nosec B404 — fixed argv, no shell
+            out = subprocess.run(  # nosec B603 B607
+                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                capture_output=True, text=True, timeout=5, check=False,
+            ).stdout
+            match = re.search(r'"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f-]+)"', out)
+            if match:
+                return match.group(1)
+        elif system == "Windows":
+            import winreg  # type: ignore[import-not-found]  # pylint: disable=import-error
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"SOFTWARE\Microsoft\Cryptography") as key:
+                val, _ = winreg.QueryValueEx(key, "MachineGuid")
+                if val:
+                    return str(val)
+    except Exception as e:
+        logger.debug("machine-id lookup failed: %s", e)
+    return ""
+
+
+def _machine_identity() -> list[str]:
+    """Host+user identity inputs mixed into the file-store key derivation.
+
+    Degrades gracefully: any part may be empty (e.g. no machine-id in a minimal
+    container). The random per-install salt is the always-present anchor, so a
+    usable key is always produced.
+    """
+    import getpass
+    import socket
+    parts = [_machine_id()]
+    try:
+        parts.append(getpass.getuser())
+    except Exception:
+        parts.append("")
+    if hasattr(os, "getuid"):
+        parts.append(str(os.getuid()))
+    try:
+        parts.append(socket.gethostname())
+    except Exception:
+        parts.append("")
+    return parts
+
+
+def _atomic_write_text(path: Path, text: str, mode: int = 0o600) -> None:
+    """Write text to ``path`` atomically with restrictive (0o600) permissions."""
+    import tempfile
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-cred-")
+    try:
+        try:
+            os.fchmod(fd, mode)  # type: ignore[attr-defined]
+        except (AttributeError, OSError):
+            pass  # Windows / unsupported — best effort; chmod below
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    try:
+        os.chmod(str(path), mode)
+    except OSError:
+        pass
+
+
+def _check_perms(path: Path) -> None:
+    """Tighten a credential file back to 0o600 if it became group/world accessible."""
+    if os.name != "posix":
+        return
+    try:
+        mode = path.stat().st_mode
+        if mode & (stat.S_IRWXG | stat.S_IRWXO):
+            logger.debug("Tightening permissions on %s (was %s)", path, oct(mode))
+            os.chmod(str(path), 0o600)
+    except OSError:
+        pass
+
+
+@unique
+class FileStoreHealth(Enum):
+    """On-disk state of the encrypted local credential file."""
+    EMPTY = "empty"            # no file yet (fresh install, or files deleted)
+    OK = "ok"                  # file present and decrypts on this host
+    UNREADABLE = "unreadable"  # file present but salt missing / wrong key / corrupt
+
+
+# Serializes the whole-blob read-modify-write so concurrent writers (e.g. a
+# continuous-notifications run racing an interactive `config credentials`, or
+# the WebUI's worker threads) can't clobber each other's keys. In-process via
+# this lock; cross-process via an advisory flock taken in `_write_lock`.
+_FILE_STORE_WRITE_LOCK = threading.Lock()
+
+
+class FileSecretStore:
+    """Encrypted, machine-bound local credential store.
+
+    The seamless fallback for when the OS keyring is unusable. All secrets live
+    in ``~/.atlas/credentials.enc`` as a single AES-256-GCM ciphertext; the key
+    is derived (scrypt) from host + user identity plus a random per-install salt
+    kept separately in ``~/.atlas/.keysalt``. Consequences:
+
+      • The file is **non-portable** — it won't decrypt on another host/user.
+      • A **single leaked file** is useless without the salt file too.
+
+    Honest about its limits (preflight reports it as a *warning*, never as a
+    secure keyring): this protects against stolen disks/backups, leaked files,
+    and casual inspection — NOT against code already running as the user. A
+    decrypt failure (machine changed, salt lost, tamper) is treated as an empty
+    store so the app keeps working and the user simply re-enters credentials.
+    """
+
+    is_file = True
+    display_name = "Encrypted local file"
+
+    def __init__(self) -> None:
+        self._cache: dict[str, dict[str, str]] | None = None
+        self._key: bytes | None = None
+
+    @staticmethod
+    def _file() -> Path:
+        from platform_atlas.core import paths
+        return paths.ATLAS_HOME / "credentials.enc"
+
+    @staticmethod
+    def _salt_file() -> Path:
+        from platform_atlas.core import paths
+        return paths.ATLAS_HOME / ".keysalt"
+
+    @staticmethod
+    def _lock_file() -> Path:
+        from platform_atlas.core import paths
+        return paths.ATLAS_HOME / ".credentials.lock"
+
+    @contextmanager
+    def _write_lock(self):
+        """Serialize the read-modify-write of the whole-blob file across threads
+        and processes so concurrent writers can't drop each other's keys.
+
+        In-process via the module lock; cross-process via an advisory flock where
+        available (POSIX). Best-effort: if the OS lock can't be taken we still
+        hold the in-process lock and proceed.
+        """
+        with _FILE_STORE_WRITE_LOCK:
+            fd = None
+            try:
+                import fcntl
+            except ImportError:
+                fcntl = None
+            if fcntl is not None:
+                try:
+                    lp = self._lock_file()
+                    lp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    fd = os.open(str(lp), os.O_CREAT | os.O_RDWR, 0o600)
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                except OSError as e:
+                    logger.debug("Could not acquire credential file lock: %s", e)
+                    if fd is not None:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+                        fd = None
+            try:
+                yield
+            finally:
+                if fd is not None:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except OSError:
+                        pass
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+    def _load_or_create_salt(self) -> bytes:
+        p = self._salt_file()
+        if p.exists():
+            try:
+                raw = p.read_text(encoding="utf-8").strip()
+                salt = base64.b64decode(raw) if raw else b""
+            except (OSError, ValueError) as e:
+                logger.debug("Key salt present but unreadable: %s", e)
+                salt = b""
+            if salt:
+                return salt
+            # The salt file exists but is empty/corrupt/unreadable. If an encrypted
+            # blob also exists, regenerating now would derive a new key and the
+            # next write would overwrite still-recoverable ciphertext — refuse and
+            # let the recovery flow ('config credentials') recreate the pair.
+            if self._file().exists():
+                raise CredentialError(
+                    "credential key salt (~/.atlas/.keysalt) is present but unreadable; "
+                    "refusing to regenerate it while ~/.atlas/credentials.enc exists. "
+                    "Run 'platform-atlas config credentials' to recreate the store."
+                )
+        salt = os.urandom(16)
+        _atomic_write_text(p, base64.b64encode(salt).decode("ascii"))
+        return salt
+
+    def _derive_key(self) -> bytes:
+        if self._key is not None:
+            return self._key
+        from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+        salt = self._load_or_create_salt()
+        material = "\x1f".join(_machine_identity()).encode("utf-8")
+        kdf = Scrypt(salt=salt, length=32, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P)
+        self._key = kdf.derive(material)
+        return self._key
+
+    def _try_decrypt(self) -> dict[str, dict[str, str]]:
+        """Read + decrypt the file, raising on any problem. Never creates a salt
+        (a read must not paper over a missing key). Raises FileNotFoundError if
+        the file is absent, CredentialError if the salt is gone, or a crypto
+        error if the key is wrong (moved host) or the ciphertext is corrupt.
+        """
+        from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        envelope = json.loads(self._file().read_text(encoding="utf-8"))
+        salt_path = self._salt_file()
+        if not salt_path.exists():
+            raise CredentialError("credential key salt (~/.atlas/.keysalt) is missing")
+        salt = base64.b64decode(salt_path.read_text(encoding="utf-8").strip())
+        key = Scrypt(
+            salt=salt, length=32,
+            n=int(envelope.get("n", _SCRYPT_N)),
+            r=int(envelope.get("r", _SCRYPT_R)),
+            p=int(envelope.get("p", _SCRYPT_P)),
+        ).derive("\x1f".join(_machine_identity()).encode("utf-8"))
+        plaintext = AESGCM(key).decrypt(
+            base64.b64decode(envelope["nonce"]),
+            base64.b64decode(envelope["ciphertext"]),
+            _FILE_STORE_AAD,
+        )
+        return json.loads(plaintext.decode("utf-8"))
+
+    def _read_all(self) -> dict[str, dict[str, str]]:
+        if self._cache is not None:
+            return self._cache
+        if not self._file().exists():
+            self._cache = {}
+            return self._cache
+        _check_perms(self._file())
+        _check_perms(self._salt_file())   # tighten the salt too if it was loosened
+        try:
+            self._cache = self._try_decrypt()
+        except FileNotFoundError:
+            self._cache = {}
+        except Exception as e:
+            # Salt lost, host changed, or tampering. Treat as empty so the app
+            # keeps working — never crash. health()/preflight surface it clearly,
+            # and 'config credentials' offers to recreate the file.
+            logger.warning(
+                "Local credential file could not be read (%s) — treating as empty. "
+                "Run 'platform-atlas config credentials' to recreate it.", type(e).__name__,
+            )
+            self._cache = {}
+        return self._cache
+
+    def _write_all(self, data: dict[str, dict[str, str]]) -> None:
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            nonce = os.urandom(12)
+            plaintext = json.dumps(data, ensure_ascii=False).encode("utf-8")
+            ciphertext = AESGCM(self._derive_key()).encrypt(nonce, plaintext, _FILE_STORE_AAD)
+            envelope = {
+                "version": _FILE_STORE_VERSION,
+                "kdf": "scrypt", "n": _SCRYPT_N, "r": _SCRYPT_R, "p": _SCRYPT_P,
+                "nonce": base64.b64encode(nonce).decode("ascii"),
+                "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
+            }
+            _atomic_write_text(self._file(), json.dumps(envelope, ensure_ascii=False))
+        except CredentialError:
+            raise
+        except Exception as e:
+            raise CredentialError(
+                "Failed to write the local credential file",
+                details={"path": str(self._file()), "error": str(e)},
+            ) from e
+        self._cache = data
+
+    def get(self, service: str, key: str) -> str | None:
+        val = self._read_all().get(service, {}).get(key)
+        return val if val else None  # Treat empty strings as missing
+
+    def set(self, service: str, key: str, value: str) -> None:
+        with self._write_lock():
+            self._cache = None                      # re-read current on-disk state
+            data = self._read_all()
+            data.setdefault(service, {})[key] = value
+            self._write_all(data)
+
+    def delete(self, service: str, key: str) -> None:
+        with self._write_lock():
+            self._cache = None
+            data = self._read_all()
+            bucket = data.get(service)
+            if bucket and key in bucket:
+                del bucket[key]
+                if not bucket:
+                    del data[service]
+                self._write_all(data)
+
+    def exists(self, service: str, key: str) -> bool:
+        return self.get(service, key) is not None
+
+    def health(self) -> FileStoreHealth:
+        """Classify the on-disk state without modifying anything.
+
+        EMPTY      → no file yet (fresh, or deleted) — just store credentials.
+        OK         → file present and decrypts on this host.
+        UNREADABLE → file present but the salt is missing, the key is wrong
+                     (moved from another machine), or the ciphertext is corrupt
+                     — the file must be recreated and credentials re-entered.
+        """
+        if not self._file().exists():
+            return FileStoreHealth.EMPTY
+        try:
+            self._try_decrypt()
+            return FileStoreHealth.OK
+        except FileNotFoundError:
+            return FileStoreHealth.EMPTY
         except Exception:
-            continue
-    logger.warning(
-        "Could not switch to any alt keyring backend — credential operations may fail. "
-        "Consider configuring HashiCorp Vault as the credential backend."
-    )
+            return FileStoreHealth.UNREADABLE
+
+    def reset(self) -> None:
+        """Delete the credential file and its salt so a fresh, valid pair is
+        created the next time a credential is stored. Used by the recovery flow
+        when the existing file is unreadable.
+        """
+        for path in (self._file(), self._salt_file()):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as e:
+                logger.debug("Could not remove %s: %s", path, e)
+        self._cache = None
+        self._key = None
+
+    def __repr__(self) -> str:
+        return "FileSecretStore(path=~/.atlas/credentials.enc)"
+
+
+# --- Substrate resolution (explicit, config-driven — no probe, no fallback) ---
+
+_secret_store: SecretStore | None = None
+
+
+def active_secret_store() -> SecretStore:
+    """Resolve (once per process) the local secret-store substrate.
+
+    A pure read of the saved choice — there is NO probing and NO automatic
+    fallback. Atlas only ever uses the store the user picked:
+      • ``credential_backend == "file"``  → encrypted local file
+      • ``credential_backend == "vault"`` → the env's ``vault_secret_store``
+        (``keyring`` or ``file``; unset means keyring — the pre-2.0 location
+        where existing Vault installs already keep their connection settings)
+      • otherwise (``"keyring"``)          → OS keyring
+    The deprecated ``use_file_store`` flag, if set, still maps to the file store.
+    """
+    global _secret_store
+    if _secret_store is None:
+        _secret_store = _resolve_secret_store()
+    return _secret_store
+
+
+def _resolve_secret_store() -> SecretStore:
+    """Pick the local substrate from saved config — keyring or encrypted file."""
+    backend = "keyring"
+    vault_store: str | None = None
+    use_file = False
+    try:
+        from platform_atlas.core.config import get_config, is_config_loaded
+        if is_config_loaded():
+            cfg = get_config()
+            backend = (cfg.credential_backend or "keyring").strip().lower()
+            vault_store = getattr(cfg, "vault_secret_store", None)
+            use_file = bool(getattr(cfg, "use_file_store", False))
+    except Exception:
+        pass  # Config not loaded yet — keyring is the safe default
+    if backend == "file" or use_file:
+        return FileSecretStore()
+    if backend == "vault":
+        # Vault's own connection settings need a local home. Default to the OS
+        # keyring when unset (where pre-2.0 Vault installs already keep them);
+        # honor an explicit "file" otherwise.
+        if (vault_store or "keyring").strip().lower() == "file":
+            return FileSecretStore()
+        return KeyringSecretStore()
+    return KeyringSecretStore()
 
 
 def verify_keyring_backend() -> tuple[bool, bool, str]:
@@ -1210,26 +1671,17 @@ def verify_keyring_backend() -> tuple[bool, bool, str]:
 
     ChainerBackend is probed with a real write/read because it can appear
     functional while silently failing (e.g. SecretService requires a GUI
-    unlock that isn't available). If the probe fails, we switch to
-    CryptFileKeyring so the rest of the session uses a backend that works.
-
-    If we end up on ChainerBackend AFTER probing+switching, the alt fallback
-    failed too — the backend is genuinely broken. Report is_functional=False
-    so callers can refuse to proceed instead of silently losing credentials.
+    unlock that isn't available). A probe failure is reported as
+    is_functional=False; the caller (:func:`active_secret_store`) then falls
+    back to the encrypted local file store. This function is a pure reporter —
+    it never mutates keyring state.
     """
     backend = keyring.get_keyring()
     name = type(backend).__name__
 
     if name == "ChainerBackend" and not _probe_keyring():
-        _switch_to_alt_keyring()
-        backend = keyring.get_keyring()
-        name = type(backend).__name__
-        # If we still have ChainerBackend after the switch attempt, every alt
-        # backend (CryptFileKeyring, PlaintextKeyring) failed to initialise.
-        # Probe one more time before accepting the result so we don't report
-        # functional=True for a backend that can't store data.
-        if name == "ChainerBackend" and not _probe_keyring():
-            return False, False, name
+        # Non-functional keyring — the file store takes over upstream.
+        return False, False, name
 
     is_functional = name not in _BROKEN_BACKENDS
     is_secure = name not in _INSECURE_BACKENDS
@@ -1276,18 +1728,19 @@ def migrate_legacy_credentials(env_name: str) -> int:
     legacy_service = SERVICE_NAME
     scoped = scoped_service_name(env_name)
     migrated = 0
+    store = active_secret_store()
 
     def _get(service: str, key: str) -> str | None:
         try:
-            return keyring.get_password(service, key)
-        except keyring.errors.KeyringError:
+            return store.get(service, key)
+        except Exception:
             return None
 
     def _set(service: str, key: str, value: str) -> bool:
         try:
-            keyring.set_password(service, key, value)
+            store.set(service, key, value)
             return True
-        except keyring.errors.KeyringError as e:
+        except Exception as e:
             logger.debug("Migration failed for key '%s': %s", key, e)
             return False
 
@@ -1329,12 +1782,9 @@ def credential_store() -> CredentialStore:
     """
     global _store
     if _store is None:
-        # Probe ChainerBackend and switch to a working alt backend if needed.
-        # keyring.set_keyring() is process-local, so this must run once per
-        # invocation — not just during setup flows.
-        verify_keyring_backend()
-
-        # Determine backend and active environment from config (if loaded)
+        # Determine backend and active environment from config (if loaded).
+        # The local substrate (OS keyring vs encrypted file) is resolved lazily
+        # by active_secret_store() from the saved credential_backend — no probe.
         backend_type = CredentialBackendType.KEYRING
         env_name: str | None = None
         try:
@@ -1369,10 +1819,12 @@ def credential_store() -> CredentialStore:
 
 def reset_credential_store() -> None:
     """
-    Reset the singleton so it will be re-created on next access.
+    Reset the singletons so they are re-created on next access.
 
-    Call this after changing ``credential_backend`` in config so the
-    store picks up the new backend type.
+    Call this after changing ``credential_backend`` or ``vault_secret_store``
+    in config so the store re-resolves both the backend type and the local
+    secret-store substrate.
     """
-    global _store
+    global _store, _secret_store
     _store = None
+    _secret_store = None

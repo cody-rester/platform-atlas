@@ -105,6 +105,12 @@
     "IAG-034": {
       "enabled": false
     },
+    "IAG-035": {
+      "enabled": false
+    },
+    "IAG-036": {
+      "enabled": false
+    },
     "MDB-002": {
       "enabled": false
     },

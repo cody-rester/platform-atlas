@@ -3,18 +3,23 @@
 Work through these items before installing Platform Atlas. Gather credentials, verify access,
 and confirm your deployment topology before you begin.
 
-**New in v1.7 — Two Tiers:** Platform Atlas now ships with two audit modes. Choose which one
-applies to you before working through this checklist.
+**Three Tiers:** Platform Atlas ships with three audit modes. Choose which one applies to you
+before working through this checklist.
 
 | Tier | What it audits | What you need |
 |---|---|---|
 | **Standard** | Platform application layer only (Platform OAuth + IAG4 API) | Sections 1, 2, and optionally 7 |
 | **Extended** | Full infrastructure (all of Standard + SSH, MongoDB, Redis, Gateways) | All applicable sections |
+| **SaaS** | A single Itential Automation Gateway (GW4 *or* GW5), gateway rules only — no Platform, MongoDB, or Redis | Sections 1, and 7 *or* 8 (plus 5 if the gateway needs SSH) |
 
-If you are not sure which tier to use, start with **Standard**. You can upgrade to Extended
-at any time with `platform-atlas tier upgrade`.
+If you are not sure which tier to use, start with **Standard**. You can convert between Standard
+and Extended at any time with `platform-atlas tier upgrade`. **SaaS is chosen when you create an
+environment and cannot be switched afterward** — `tier set saas` is blocked, and only
+Standard↔Extended conversion is supported.
 
-> Fresh installs default to Standard. Upgrades from 1.6.x default to Extended.
+> Fresh installs default to Standard; you select the tier when creating each environment, and
+> SaaS is one of those creation-time choices. (Historically, installs upgraded from 1.6.x
+> defaulted to Extended.)
 
 ---
 
@@ -30,15 +35,18 @@ at any time with `platform-atlas tier upgrade`.
 - [ ] pip is available and up to date
   - Verify with `pip3 --version`. Update with `pip3 install --upgrade pip`.
 - [ ] Platform Atlas `.whl` file(s) received from your Itential contact
-  - The core wheel is named `platform_atlas-1.7.0-py3-none-any.whl`. If you want the optional
-    browser interface, also request `platform_atlas_webui-1.7.0-py3-none-any.whl`. If you
+  - The core wheel is named `platform_atlas-2.0.0-py3-none-any.whl`. If you want the optional
+    browser interface, also request `platform_atlas_webui-2.0.0-py3-none-any.whl`. If you
     haven't received them yet, contact your Itential Customer Success representative.
 - [ ] Credential storage backend is ready
-  - Atlas never stores secrets in plain text. Choose one:
-    - **macOS:** Keychain is built-in — nothing to do.
-    - **Linux (desktop with GNOME):** gnome-keyring is typically built-in.
-    - **Linux (headless/server):** Run `pip install keyrings.alt` for encrypted file-based
-      storage, or use HashiCorp Vault.
+  - Atlas never stores secrets in plain text. You choose one of three explicit backends during
+    setup (OS Keyring is recommended):
+    - **OS Keyring** — macOS Keychain is built-in; on a Linux desktop, gnome-keyring is
+      typically built-in. Nothing to install.
+    - **Encrypted Local File** — AES-256-GCM encrypted store (salt in `~/.atlas/.keysalt`).
+      This is the recommended path for headless/server installs where no OS keyring is
+      available. Just select it at setup — nothing extra to install.
+    - **HashiCorp Vault** — KV v2 secrets engine, for teams already running Vault.
 
 ---
 
@@ -96,12 +104,13 @@ at any time with `platform-atlas tier upgrade`.
 
 ---
 
-## 5. SSH Access to Servers `Extended tier only`
+## 5. SSH Access to Servers `Extended and SaaS`
 
 Atlas supports three transport options for connecting to each node. Most deployments use
 **SSH** for everything — the items below cover that path. If direct SSH to the Platform server
 is not possible (CyberArk PSMP, etc.) see Section 5b *ControlMaster*. If Atlas is installed
-**on** the Platform server itself, see Section 5c *Local transport*.
+**on** the Platform server itself, see Section 5c *Local transport*. Under the **SaaS** tier,
+SSH connects only to the single gateway — there is no Platform, MongoDB, or Redis node.
 
 - [ ] Full list of server hostnames or IP addresses is available
   - Every server Atlas will connect to: IAP nodes, MongoDB nodes, Redis nodes, and any Gateway
@@ -194,7 +203,7 @@ instead of SSH. MongoDB, Redis, and Gateway nodes still use SSH (Section 5).
 
 ---
 
-## 7. Automation Gateway 4 `Optional — Standard and Extended`
+## 7. Automation Gateway 4 `Optional — Standard, Extended, and SaaS`
 
 *Skip this section if Gateway 4 is not part of your IAP deployment.*
 
@@ -213,37 +222,46 @@ instead of SSH. MongoDB, Redis, and Gateway nodes still use SSH (Section 5).
 
 ---
 
-## 8. Automation Gateway 5 `Optional — Extended tier only`
+## 8. Automation Gateway 5 `Optional — Extended and SaaS`
 
 *Skip this section if Gateway 5 is not part of your IAP deployment.*
 
-- [ ] Gateway 5 node hostname(s) or IP address(es) are documented
-  - Note all hostnames where the Gateway 5 virtual environment is installed. These must already
-    be covered by your SSH setup (Section 5).
-- [ ] Gateway 5 virtual environment path is known
-  - Atlas locates Gateway 5 by inspecting the virtual environment (typically under `/opt/`) and
-    reading the installed `automation-gateway` package version via `pip list` over SSH. Confirm
-    the venv path with your Gateway administrator.
-- [ ] Gateway 5 environment variables are configured on the host
-  - Gateway 5 is configured via environment variables rather than a config file. Atlas reads
-    these over SSH from the process environment or systemd unit file. Confirm that the Gateway 5
-    service is running and its environment is set on the target host.
-- [ ] SSH user has read access to the Gateway 5 venv and service files
-  - The `platformatlas` SSH user needs read access to the Gateway 5 virtual environment
-    directory and the systemd unit or init script where environment variables are defined. Test
-    with: `ssh platformatlas@<gw5-host> "ls /opt/automation-gateway/"`
+Gateway 5 is configured through environment variables, and Atlas can read them from one of
+**four** sources. Decide which applies to your deployment, then complete the matching items:
 
-> Gateway 5 is entirely SSH-based — there is no REST API to query. Atlas reads package version
-> information and environment variables over the same SSH connection used for the rest of the
-> audit. No additional network ports need to be opened beyond SSH.
+- **SSH `printenv`** — read the live process environment over SSH (traditional venv install).
+- **Docker Compose file** — read variables from a local `docker-compose.yml` (containerized GW5).
+- **Helm `values.yaml`** — read variables from a local Helm values file (Kubernetes GW5).
+- **Server `gateway.conf`** — read the IAG5 *server* config file (INI) over SSH. Server-mode
+  gateways only (`application_mode = server`); the section ↔ key mapping is surfaced as the
+  fallback source for the gateway settings rules.
+
+- [ ] (SSH / gateway.conf sources) Gateway 5 node hostname(s) or IP address(es) are documented,
+      and the host is covered by your SSH setup (Section 5)
+  - Note all hostnames where the Gateway 5 service runs. For `gateway.conf`, confirm the path to
+    the server config file with your Gateway administrator.
+- [ ] (SSH source) Gateway 5 environment variables are configured on the host
+  - Atlas reads them over SSH from the process environment or systemd unit file. Confirm the
+    Gateway 5 service is running and its environment is set on the target host. The
+    `platformatlas` SSH user needs read access to the service/unit files — test with:
+    `ssh platformatlas@<gw5-host> "ls /opt/automation-gateway/"`
+- [ ] (Docker Compose / Helm sources) The Compose `docker-compose.yml` or Helm `values.yaml`
+      file is available on the machine running Atlas
+  - For containerized Gateway 5, point Atlas at the local file during setup — **no SSH is
+    required** for these two sources.
+
+> Gateway 5 is configured via environment variables, and Atlas reads them from one of the four
+> sources above. The SSH-based sources (`printenv` and server `gateway.conf`) need no network
+> ports beyond SSH; the Compose and Helm file sources need no server access at all. Gateway 5
+> has no REST API to query.
 
 ---
 
-## 9. WebUI `Optional — Standard and Extended`
+## 9. WebUI `Optional — Standard, Extended, and SaaS`
 
 *Skip this section if you only intend to use the CLI.*
 
-The WebUI ships as a separate `platform_atlas_webui-1.7.0-py3-none-any.whl` and runs on the
+The WebUI ships as a separate `platform_atlas_webui-2.0.0-py3-none-any.whl` and runs on the
 same machine as the CLI. It is local-only — there is no remote / multi-tenant deployment mode.
 
 - [ ] You'll run the WebUI on the same machine where Platform Atlas is installed
@@ -266,10 +284,10 @@ Once all applicable items are checked, install:
 
 ```bash
 # Core CLI (required)
-pip install platform_atlas-1.7.0-py3-none-any.whl
+pip install platform_atlas-2.0.0-py3-none-any.whl
 
 # Optional WebUI — browser-based interface
-pip install platform_atlas_webui-1.7.0-py3-none-any.whl
+pip install platform_atlas_webui-2.0.0-py3-none-any.whl
 ```
 
 Then follow the Installation & Usage Guide to configure your first environment and run your

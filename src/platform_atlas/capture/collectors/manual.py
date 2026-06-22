@@ -1085,6 +1085,35 @@ class ArchitectureProgress:
 
 # ─────────────── ORCHESTRATOR ─────────────── #
 
+def _sections_for_tier(sections: list[ArchitectureSection]) -> list[ArchitectureSection]:
+    """Scope the section list to the active tier.
+
+    SaaS audits are gateway-anchored: the Platform/MongoDB/Redis sections
+    (and the other gateway's) are dropped entirely — those systems don't
+    exist in that world. Load Balancer and Kubernetes stay (gateways may
+    sit behind an LB; a containerized GW5 may live in K8s). Standard never
+    reaches here (run_architecture_collection returns early); Extended
+    keeps everything.
+    """
+    try:
+        from platform_atlas.core.context import ctx
+        if not ctx().is_saas:
+            return sections
+        kind = (ctx().config.saas_gateway_kind or "").strip().lower()
+    except Exception:
+        return sections
+    drop: tuple[type, ...] = (
+        PlatformArchitectureCollector,
+        MongoDBArchitectureCollector,
+        RedisArchitectureCollector,
+    )
+    if kind == "gateway4":
+        drop += (Gateway5ArchitectureCollector,)
+    elif kind == "gateway5":
+        drop += (Gateway4ArchitectureCollector,)
+    return [s for s in sections if not isinstance(s, drop)]
+
+
 @dataclass
 class ArchitectureValidationCollector:
     """Orchestrates all manual architecture validation data collection for ONE env.
@@ -1120,7 +1149,7 @@ class ArchitectureValidationCollector:
         if not self.environment and hints.environment_name:
             self.environment = hints.environment_name
 
-        self.sections = [
+        self.sections = _sections_for_tier([
             EnvironmentOverviewCollector(hints),
             PlatformArchitectureCollector(hints),
             Gateway4ArchitectureCollector(hints),
@@ -1132,7 +1161,7 @@ class ArchitectureValidationCollector:
             MonitoringHealthCheckCollector(hints),
             NetworkSecurityCollector(hints),
             VulnerabilityAssessmentsCollector(hints),
-        ]
+        ])
         self.progress = ArchitectureProgress.load(self.environment)
 
     @property
@@ -1195,6 +1224,11 @@ class ArchitectureValidationCollector:
         pending = self.pending_sections
 
         if not pending:
+            # Everything's already answered/skipped — heal the status flag so
+            # downstream consumers that key off it agree with reality.
+            if self.progress.status != "complete":
+                self.progress.status = "complete"
+                self.progress.save()
             console.print(
                 f"\n[{theme.success}]All architecture sections already "
                 f"collected for env=[bold]{self.environment or '_default'}[/bold].[/{theme.success}]"
@@ -1355,8 +1389,11 @@ def run_architecture_collection(
     form and imports the exported JSON. Falls back to CLI prompts if the user
     chooses or if the form cannot be opened.
 
-    Returns an empty payload when the active tier is Standard — architecture
-    review is Extended-only and silently skipped during capture.
+    Returns an empty payload when the active tier is Standard — the
+    architecture form is not part of the app-only Standard tier and is
+    silently skipped during capture. In SaaS the form runs gateway-scoped:
+    the Platform/MongoDB/Redis sections (and the other gateway's) are
+    dropped in both the HTML form and the CLI fallback.
     """
     try:
         from platform_atlas.core.context import ctx
@@ -1428,6 +1465,43 @@ def load_architecture_progress(environment: str = "") -> dict[str, Any] | None:
     if progress.is_complete and progress.completed:
         return {"architecture_validation": progress.completed}
     return None
+
+
+def architecture_status(environment: str = "") -> tuple[str, int, int]:
+    """Return ``(state, done, total)`` for an environment's architecture interview.
+
+    ``state`` is ``"complete"`` when every section is answered or skipped,
+    ``"partial"`` when only some are, and ``"empty"`` when none are. Derived
+    from actual section coverage rather than the stored ``status`` flag, which
+    is unreliable — intermediate saves and some entry paths leave a fully
+    answered file marked ``"in_progress"``.
+    """
+    env = environment or _resolve_env_for_arch(None)
+    progress = ArchitectureProgress.load(env)
+    try:
+        section_names = [s.name for s in ArchitectureValidationCollector(environment=env).sections]
+    except Exception:  # pragma: no cover - defensive; fall back to saved keys
+        section_names = list(progress.completed.keys())
+    total = len(section_names)
+    done = sum(1 for name in section_names if progress.is_done(name))
+    if done <= 0:
+        return ("empty", 0, total)
+    if total and done >= total:
+        return ("complete", done, total)
+    return ("partial", done, total)
+
+
+def load_architecture_data(environment: str = "") -> dict[str, Any]:
+    """Return saved architecture sections for ``environment`` (active env if blank).
+
+    Unlike :func:`load_architecture_progress`, this never gates on the
+    ``status`` flag — any saved sections (complete or partial) are returned so
+    partially filled forms still surface in the report. Returns ``{}`` when
+    nothing has been collected.
+    """
+    env = environment or _resolve_env_for_arch(None)
+    progress = ArchitectureProgress.load(env)
+    return dict(progress.completed or {})
 
 
 if __name__ == "__main__":

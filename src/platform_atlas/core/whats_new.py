@@ -40,7 +40,8 @@ ASSETS_IMAGES_DIR = PROJECT_TEMPLATES.parent / "images"
 
 # Minor version series that have a What's New page.
 # Key is "major.minor" — covers all patch releases in that series.
-WHATS_NEW_VERSIONS = {"1.5", "1.6", "1.7", "1.8"}
+# Only the current series ships a page; older pages are retired on each major.
+WHATS_NEW_VERSIONS = {"2.0"}
 
 
 # ── Version helpers ───────────────────────────────────────────────
@@ -147,41 +148,15 @@ def _build_html(version: str) -> str | None:
 # ── CLI Summary (bullet points in terminal) ──────────────────────
 
 _CLI_BULLETS: dict[str, list[str]] = {
-    "1.5": [
-        "Sessions now bind an environment, ruleset, and profile together",
-        "Switching sessions restores the full context automatically",
-        "Each environment carries its own organization name",
-        "Redesigned dashboard shows your active session at a glance",
-        "Gateway4 direct API collection (SSH is now a fallback)",
-        "JSON/Markdown exports include environment in metadata",
-        "Knowledge Base remediation steps shown by default in reports",
-        "Run [bold]session repair[/bold] to backfill pre-1.5 session metadata",
-    ],
-    "1.6": [
-        "MongoDB logs now collected and analyzed alongside IAP logs",
-        "Kubernetes environment support — values.yaml + kubectl, no SSH required",
-        "[bold]--version[/bold] now shows Python version, path, and OS info",
-        "[bold]session prune --older-than DAYS[/bold] — bulk-delete uncaptured sessions",
-        "Use [bold]--dry-run[/bold] to preview which sessions would be pruned",
-    ],
-    "1.7": [
-        "[bold]Two tiers[/bold] — Standard (Platform OAuth + IAG4 API) and Extended (full audit)",
-        "Standard mode runs ~54 rules with no SSH, MongoDB, or Redis required",
-        "[bold]platform-atlas tier show / set / upgrade / downgrade[/bold] — tier management commands",
-        "Sessions bind a tier at create time, just like rulesets and environments",
-        "Cross-tier diffs are flagged with a notice banner in the report",
-        "WebUI ships as a separate optional [bold]platform-atlas-webui[/bold] wheel",
-        "Existing 1.6.x sessions and configs are preserved as Extended mode",
-    ],
-    "1.8": [
-        "[bold]Resume interrupted captures[/bold] — re-run [bold]session run capture[/bold] after a Ctrl-C or connection drop to continue from the last checkpoint",
-        "[bold]ruleset skip-rule / unskip-rule[/bold] — suppress rules per environment with a required justification; amber [bold]Suppressed[/bold] badge in reports",
-        "[bold]support-bundle[/bold] — collect a diagnostic ZIP (Platform health, config, SSH logs) with [bold]platform-atlas support-bundle[/bold]",
-        "[bold]ruleset update[/bold] — pull SHA-256-verified ruleset updates from GitHub; dashboard shows a notice when an update is waiting",
-        "11 new Kubernetes rules (KBS-005–015) — probes, resource limits, HPA, and pod restart count; 119 rules total",
-        "[bold]Windows 11 native support[/bold] — Atlas runs on Windows 11 workstations with no workarounds",
-        "Architecture discovery warnings — cross-DC latency, single-node risk, and cloud cross-region MongoDB flagged automatically from capture data",
-        "ControlMaster preflight — socket files verified before capture; missing sessions get the exact [bold]ssh -M -S[/bold] command to open them",
+    "2.0": [
+        "[bold]SaaS tier[/bold] — audit a single standalone Gateway 4 or Gateway 5 with no Platform, MongoDB, or Redis anywhere in the flow",
+        "[bold]Three explicit credential backends[/bold] — OS Keyring, Encrypted Local File, or HashiCorp Vault, chosen at setup and never auto-switched",
+        "[bold]Gateway 5 from a file[/bold] — read GATEWAY_* config from a Docker Compose or Helm file; a containerized gateway needs no SSH",
+        "[bold]session export[/bold] is now a complete delivery package — full report set + machine-readable report.json + metadata, named for your organization",
+        "[bold]env architecture[/bold] — record architecture details any time; the interview no longer interrupts capture",
+        "2 new Gateway 5 rules (IAG-035 / IAG-036) for the venv pruner — [bold]121 rules[/bold] total",
+        "Legacy 2023.x rulesets and profiles are hidden unless an environment is marked legacy",
+        "[bold]WebUI 2.0[/bold] — full SaaS support, Platform asset export inside support bundles, and a credential-backend picker",
     ],
 }
 

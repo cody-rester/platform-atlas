@@ -63,6 +63,16 @@ class ValidationStatus(str, Enum):
     SKIP = "SKIP"
     ERROR = "ERROR"
 
+# Skip-kind families — set on a SKIP result's ``skip_kind`` so the report can
+# color-code *why* a rule was skipped (see report.html skip callout):
+#   unreachable — the data was never collected (service down / file unreadable).
+#                 Enriched with the collector's real error from failed_modules.
+#   no_data     — the section WAS collected, but this specific setting was absent.
+#   conditional — skipped on purpose by a rule dependency or version gate.
+SKIP_UNREACHABLE = "unreachable"
+SKIP_NO_DATA = "no_data"
+SKIP_CONDITIONAL = "conditional"
+
 @dataclass(frozen=True, slots=True)
 class ValidationResult:
     """Result of evaluating a single rule"""
@@ -76,6 +86,11 @@ class ValidationResult:
     actual: Any
     operator: str
     recommendations: str
+    # For SKIP rows only: which family of skip this is, so the report can
+    # color-code it — "unreachable" (data not collected / service down),
+    # "no_data" (collected but the setting was absent), or "conditional"
+    # (skipped by a rule dependency / version gate). None for PASS/FAIL.
+    skip_kind: str | None = None
 
     @classmethod
     def from_rule(
@@ -86,6 +101,7 @@ class ValidationResult:
         expected: Any = None,
         actual: Any = None,
         recommendations: str = "",
+        skip_kind: str | None = None,
     ) -> "ValidationResult":
         """Create a result from a rule dictionary"""
         validation = rule.get("validation", {})
@@ -100,6 +116,7 @@ class ValidationResult:
             actual=actual,
             operator=validation.get("operator", ""),
             recommendations=recommendations,
+            skip_kind=skip_kind,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -417,6 +434,7 @@ def evaluate_rule(rule: dict, data: dict) -> dict:
                 label = _section_label(rule["path"])
                 return ValidationResult.from_rule(
                     rule, status=ValidationStatus.SKIP, expected=expected,
+                    skip_kind=SKIP_UNREACHABLE,
                     recommendations=(
                         f"Rule skipped because the {label} data was not collected. "
                         f"This usually means the configuration file could not be read "
@@ -435,6 +453,7 @@ def evaluate_rule(rule: dict, data: dict) -> dict:
                 )
                 return ValidationResult.from_rule(
                     rule, status=ValidationStatus.SKIP, expected=expected,
+                    skip_kind=SKIP_NO_DATA,
                     recommendations=skip_msg
                 ).to_dict()
 
@@ -566,8 +585,13 @@ def should_execute_rule(
 
     return False, reason
 
-def create_skip_result(rule: dict, reason: str) -> dict:
-    """Create a SKIP result for a rule that wasn't executed"""
+def create_skip_result(rule: dict, reason: str, *, kind: str = SKIP_CONDITIONAL) -> dict:
+    """Create a SKIP result for a rule that wasn't executed.
+
+    ``kind`` defaults to "conditional" because this path is used for
+    dependency / version-gate skips (and user-suppression, which the report
+    relabels to "Suppressed" anyway).
+    """
     validation = rule.get("validation", {})
     return {
         "rule_number": rule["rule_number"],
@@ -580,6 +604,7 @@ def create_skip_result(rule: dict, reason: str) -> dict:
         "actual": None,
         "operator": validation.get("operator", ""),
         "recommendations": reason,
+        "skip_kind": kind,
     }
 ### END RULE-CHAINING FUNCTIONS ###
 
@@ -615,12 +640,44 @@ def validate(ruleset: dict, captured_data: dict, *, headless: bool = False) -> p
     # an empty dict does not suppress kubernetes rules.
     has_k8s_data = (captured_data.get("system") or {}).get("kubernetes") is not None
 
+    # Map each attempted-and-FAILED module to its rule category and remember the
+    # collector's real failure reason. This lets an unreachable subsystem show
+    # up as color-coded "skipped: couldn't connect" rows (enriched after the
+    # evaluation loop) instead of silently vanishing from the report. Only
+    # modules that were actually tried appear here, so out-of-tier/never-run
+    # categories stay filtered out.
+    failed_modules = (
+        captured_data.get("_atlas", {}).get("metadata", {}).get("failed_modules", []) or []
+    )
+    category_errors: dict[str, str] = {}
+    for _fm in failed_modules:
+        if not isinstance(_fm, dict):
+            continue
+        _cat = _MODULE_TO_CATEGORY.get(_fm.get("name", ""), _fm.get("name", ""))
+        _msg = (_fm.get("error_message") or "").strip()
+        if _cat and _msg and _cat not in category_errors:
+            category_errors[_cat] = _msg
+    failed_categories = set(category_errors)
+
     if modules_ran and "all" not in modules_ran:
         resolved_categories = {_MODULE_TO_CATEGORY.get(m, m) for m in modules_ran}
         # Non-kubernetes captures also run the "system" module, so we need the
         # k8s data check here too — "system" alone is not proof of kubernetes.
         if not has_k8s_data:
             resolved_categories.discard("kubernetes")
+        # Keep rules for categories whose collector was tried but FAILED, so the
+        # subsystem outage surfaces per-rule (as unreachable skips) below.
+        resolved_categories |= failed_categories
+        # SaaS hard boundary: the gateway-category allowlist always wins.
+        # The system→kubernetes mapping (or any future mapping) must never
+        # pull a non-gateway category into a SaaS run. The loaded ruleset
+        # is already tier-filtered to gateway rules; this keeps the
+        # boundary even for hand-loaded rulesets.
+        try:
+            if ctx().is_saas:
+                resolved_categories &= {"gateway4", "gateway5"}
+        except Exception:
+            pass
         enabled_rules = [
             r for r in enabled_rules
             if r.get("category", "") in resolved_categories
@@ -704,6 +761,20 @@ def validate(ruleset: dict, captured_data: dict, *, headless: bool = False) -> p
                 fail_count += 1
             live.update(make_status_text())
 
+    # Enrich "unreachable" skips with the collector's real failure reason, so a
+    # rule skipped because its subsystem was down can name *why* (e.g. "auth
+    # failed at host:port") instead of only "the service was unreachable".
+    if category_errors:
+        for result in results.values():
+            if (
+                result.get("status") == "SKIP"
+                and result.get("skip_kind") == SKIP_UNREACHABLE
+            ):
+                err = category_errors.get(result.get("category", ""))
+                if err:
+                    base = (result.get("recommendations") or "").rstrip()
+                    result["recommendations"] = f"{base} Reported error: {err}".strip()
+
     # Convert to DataFrame
     df = pd.DataFrame(list(results.values()))
 
@@ -715,6 +786,19 @@ def validate(ruleset: dict, captured_data: dict, *, headless: bool = False) -> p
 
     # Convert to DataFrame
     return df
+
+
+def _extended_checks_enabled() -> bool:
+    """Whether the Additional Validation Checks (AVC) should run.
+
+    They run only in the platform-anchored tiers. A SaaS audit is a single
+    gateway with no Platform/MongoDB/Redis, and every AVC inspects exactly that
+    architecture (adapters, applications, Mongo/Redis health, …) — so under SaaS
+    they would only ever SKIP, and the SaaS report omits them entirely. Disable
+    them there so they don't run at all.
+    """
+    return bool(ctx().config.extended_validation_checks) and not ctx().is_saas
+
 
 # MAIN ENTRYPOINT
 def validate_from_files(data_path: str | Path, *, headless: bool = False) -> pd.DataFrame:
@@ -750,9 +834,9 @@ def validate_from_files(data_path: str | Path, *, headless: bool = False) -> pd.
     # Validate Rules and Load into DataFrame
     df = validate(rules, captured_data, headless=headless)
 
-    # EXTENDED VALIDATION CHECKS
+    # EXTENDED VALIDATION CHECKS (AVC) — platform-anchored tiers only; never SaaS.
     extended_results = []
-    if config.extended_validation_checks:
+    if _extended_checks_enabled():
         console.print("\n◉ Running Additional Validation Checks", style=f"bold {theme.primary}")
         try:
             extended_results = run_extended_validation(captured_data, headless=headless)

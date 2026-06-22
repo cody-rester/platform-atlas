@@ -1312,11 +1312,18 @@ def run_extended_validation(capture_data: dict, *, headless: bool = False) -> li
     The active tier is read from the capture metadata when present (so
     re-running validation against an old capture preserves the original
     tier semantics), falling back to the live config tier.
+
+    Returns no results under SaaS: every AVC inspects Platform/MongoDB/Redis
+    architecture (adapters, applications, infra health) that a single-gateway
+    SaaS audit never collects, so they are not applicable there. Short-circuiting
+    here covers every caller (validation, report/viewmodel re-runs).
     """
     tier = (
         capture_data.get("_atlas", {}).get("metadata", {}).get("tier")
         or _resolve_active_tier()
     )
+    if tier == "saas":
+        return []
     return get_registry().execute_all(capture_data, tier=tier, headless=headless)
 
 

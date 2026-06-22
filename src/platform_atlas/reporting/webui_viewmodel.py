@@ -51,7 +51,7 @@ from platform_atlas.reporting.reporting_engine import (
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 
 # Status normalization — mirrors the value sets used by report_renderer.calculate_stats
 # and the chart data generators so per-category / per-severity counts agree across
@@ -535,6 +535,9 @@ def _rule_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
     candidate_cols = [
         "rule_number", "name", "category", "severity", "status",
         "path", "operator", "expected", "actual", "message", "recommendations",
+        # Drives the WebUI's color-coded skip callout: "unreachable" /
+        # "no_data" / "conditional". None for non-skip rows.
+        "skip_kind",
     ]
     available = [c for c in candidate_cols if c in df.columns]
     out: list[dict[str, Any]] = []
@@ -545,6 +548,16 @@ def _rule_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
         # Normalize status to upper so the frontend never has to guess casing.
         if "status" in record and isinstance(record["status"], str):
             record["status"] = record["status"].upper()
+        # skip_kind drives the WebUI's color-coded skip callout. Only the three
+        # string kinds are valid: collapse everything else to null — NaN from
+        # non-skip rows (the column round-trips through parquet as float NaN,
+        # which _json_safe leaves untouched) and user-suppressed rows (the
+        # WebUI has no suppression UI yet, so they stay plain skips, matching
+        # the standalone report which excludes them from its skip map).
+        sk = record.get("skip_kind")
+        susp = row.get("user_suppressed")
+        suppressed = susp is not None and not pd.isna(susp) and bool(susp)
+        record["skip_kind"] = sk if (isinstance(sk, str) and sk and not suppressed) else None
         out.append(record)
     return out
 

@@ -7,10 +7,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Platform Atlas // {{TITLE}}</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23101625'/><path d='M16 6L6 26h20L16 6z' fill='none' stroke='%231B93D2' stroke-width='2.5' stroke-linejoin='round'/><circle cx='16' cy='19' r='2' fill='%231B93D2'/></svg>">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23101625'/%3E%3Cpath d='M16 6L6 26h20L16 6z' fill='none' stroke='%231B93D2' stroke-width='2.5' stroke-linejoin='round'/%3E%3Ccircle cx='16' cy='19' r='2' fill='%231B93D2'/%3E%3C/svg%3E">
 
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&family=Open+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@300;400;500;600;700;800&family=Sora:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
     :root {
       /* Itential Brand */
@@ -31,32 +31,36 @@
       --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
       /* Type */
-      --font-display: "Montserrat", system-ui, sans-serif;
-      --font-body: "Open Sans", system-ui, sans-serif;
+      --font-display: "Sora", system-ui, sans-serif;
+      --font-body: "Hanken Grotesk", system-ui, sans-serif;
       --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", monospace;
+
+      /* Cover band gradient (Atlas 2.0) */
+      --band: linear-gradient(135deg, #0c1220 0%, #14223d 46%, #1b4d76 122%);
+      --band-glow: radial-gradient(circle, rgba(197,37,143,0.42), transparent 62%);
 
       /* Radius */
       --r-xs: 4px;
-      --r-sm: 6px;
-      --r-md: 10px;
-      --r-lg: 14px;
-      --r-xl: 20px;
+      --r-sm: 8px;
+      --r-md: 12px;
+      --r-lg: 18px;
+      --r-xl: 24px;
       --r-pill: 100px;
     }
 
     /* ── Dark Theme ── */
     [data-theme="dark"] {
-      --bg-base: #101625;
-      --bg-surface: #161d30;
-      --bg-elevated: #1a2340;
-      --bg-overlay: #1e2848;
+      --bg-base: #0a0f1e;
+      --bg-surface: #121a30;
+      --bg-elevated: #1a2440;
+      --bg-overlay: #202c4d;
       --bg-input: rgba(255,255,255,0.04);
-      --bg-glass: rgba(16,22,37,0.85);
+      --bg-glass: rgba(10,15,30,0.85);
 
-      --text-primary: #f0f4f8;
-      --text-secondary: #a8bdd0;
-      --text-muted: #607590;
-      --text-ghost: rgba(96,117,144,0.5);
+      --text-primary: #eef3fb;
+      --text-secondary: #9fb0cc;
+      --text-muted: #6a7a98;
+      --text-ghost: rgba(106,122,152,0.5);
 
       --accent: var(--itl-blue);
       --accent-hover: #2ca3e2;
@@ -78,13 +82,22 @@
       --status-error: #C5258F;
       --status-error-bg: rgba(197,37,143,0.08);
 
-      --border-subtle: rgba(27,147,210,0.06);
-      --border-default: rgba(27,147,210,0.10);
-      --border-strong: rgba(27,147,210,0.18);
+      /* Skip-reason families — muted tints, distinct from pass/fail/warn so a
+         skipped rule's *why* reads at a glance without colliding with status. */
+      --skip-unreachable: #caa23f;            /* bronze — couldn't reach / collect */
+      --skip-unreachable-bg: rgba(202,162,63,0.12);
+      --skip-nodata: #8a97ad;                 /* slate — collected but nothing found */
+      --skip-nodata-bg: rgba(138,151,173,0.12);
+      --skip-conditional: #7e93d6;            /* periwinkle — skipped by rule logic */
+      --skip-conditional-bg: rgba(126,147,214,0.12);
+
+      --border-subtle: rgba(255,255,255,0.06);
+      --border-default: rgba(255,255,255,0.10);
+      --border-strong: rgba(255,255,255,0.16);
 
       --shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
-      --shadow-md: 0 4px 16px rgba(0,0,0,0.4);
-      --shadow-lg: 0 12px 40px rgba(0,0,0,0.5);
+      --shadow-md: 0 8px 30px -10px rgba(0,0,0,0.6);
+      --shadow-lg: 0 24px 60px -24px rgba(0,0,0,0.7);
       --shadow-glow: 0 0 30px rgba(27,147,210,0.15);
 
       --chart-grid: rgba(255,255,255,0.04);
@@ -104,17 +117,17 @@
        header itself flips to a navy band via overrides further down — see
        the [data-theme="light"] .header { ... } rule. */
     [data-theme="light"] {
-      --bg-base: #ffffff;
+      --bg-base: #f3f1ec;
       --bg-surface: #ffffff;
-      --bg-elevated: #f5f7fa;
-      --bg-overlay: #eef2f6;
-      --bg-input: rgba(16,22,37,0.04);
+      --bg-elevated: #f4f1ea;
+      --bg-overlay: #ece8e0;
+      --bg-input: rgba(22,20,31,0.04);
       --bg-glass: rgba(255,255,255,0.88);
 
-      --text-primary: #101625;
-      --text-secondary: #3a4254;
-      --text-muted: #6b7280;
-      --text-ghost: rgba(107,114,128,0.5);
+      --text-primary: #16141f;
+      --text-secondary: #4b4758;
+      --text-muted: #87828f;
+      --text-ghost: rgba(135,130,143,0.55);
 
       --accent: #1b93d2;
       --accent-hover: #1782bc;
@@ -136,14 +149,22 @@
       --status-error: #a01d72;
       --status-error-bg: rgba(160,29,114,0.06);
 
-      --border-subtle: rgba(16,22,37,0.06);
-      --border-default: rgba(16,22,37,0.10);
-      --border-strong: rgba(16,22,37,0.20);
-      --border-sep: rgba(16,22,37,0.20);
+      /* Skip-reason families — light theme (deeper inks for white surfaces) */
+      --skip-unreachable: #9a7714;
+      --skip-unreachable-bg: rgba(154,119,20,0.10);
+      --skip-nodata: #6b7280;
+      --skip-nodata-bg: rgba(107,114,128,0.10);
+      --skip-conditional: #4f63b0;
+      --skip-conditional-bg: rgba(79,99,176,0.10);
 
-      --shadow-sm: 0 1px 3px rgba(16,22,37,0.06);
-      --shadow-md: 0 4px 16px rgba(16,22,37,0.08);
-      --shadow-lg: 0 12px 40px rgba(16,22,37,0.10);
+      --border-subtle: rgba(22,20,31,0.07);
+      --border-default: rgba(22,20,31,0.11);
+      --border-strong: rgba(22,20,31,0.20);
+      --border-sep: rgba(22,20,31,0.20);
+
+      --shadow-sm: 0 1px 3px rgba(22,20,31,0.05);
+      --shadow-md: 0 6px 24px -8px rgba(22,20,31,0.12);
+      --shadow-lg: 0 24px 60px -28px rgba(22,20,31,0.28);
       --shadow-glow: 0 0 30px rgba(27,147,210,0.10);
 
       --chart-grid: rgba(16,22,37,0.06);
@@ -187,7 +208,7 @@
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html { font-size: 17px; scroll-behavior: smooth; }
+    html { font-size: 17px; scroll-behavior: smooth; overflow-x: hidden; }
 
     body {
       font-family: var(--font-body);
@@ -236,13 +257,13 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      height: 52px;
-      padding: 0 24px;
+      height: 58px;
+      padding: 0 32px;
       background: var(--bg-glass);
       backdrop-filter: blur(20px) saturate(140%);
       -webkit-backdrop-filter: blur(20px) saturate(140%);
-      border-bottom: 1px solid var(--border-default);
-      box-shadow: var(--shadow-sm);
+      border-bottom: 1px solid transparent;
+      box-shadow: none;
       transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
     }
     .header.scrolled {
@@ -263,25 +284,25 @@
 
     .brand {
       font-family: var(--font-display);
-      font-size: 1.15rem;
+      font-size: 1.18rem;
       font-weight: 600;
-      letter-spacing: -0.03em;
+      letter-spacing: -0.035em;
       color: var(--text-primary);
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 1px;
     }
     .brand span { color: var(--accent); font-weight: 700; }
 
     /* Itential Link */
     .brand-link {
-      font-size: 0.7rem;
-      font-weight: 600;
-      letter-spacing: 0.06em;
+      font-size: 0.66rem;
+      font-weight: 700;
+      letter-spacing: 0.2em;
       text-transform: uppercase;
       color: var(--text-muted);
       text-decoration: none;
-      opacity: 0.7;
+      opacity: 0.85;
       transition: opacity 0.2s;
     }
     .brand-link:hover { opacity: 1; }
@@ -392,95 +413,101 @@
       margin-bottom: 28px;
     }
 
+    /* ── Atlas 2.0 Cover Band ── full-bleed navy banner carrying the title */
     .hero {
-      text-align: center;
-      padding: 56px 32px 44px;
       position: relative;
-      border-bottom: 1px solid var(--border-subtle);
+      margin: 0 calc(50% - 50vw);
+      padding: 64px 0 134px;
+      background: var(--band);
+      color: #fff;
       overflow: hidden;
+      border-bottom: none;
     }
-
     .hero::before {
       content: "";
       position: absolute;
-      inset: 0;
-      background: url("data:image/svg+xml,%3Csvg width='60' height='60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30 0L60 30L30 60L0 30z' fill='none' stroke='%231B93D2' stroke-width='0.3' opacity='0.05'/%3E%3C/svg%3E") repeat;
+      right: -120px; top: -200px;
+      width: 580px; height: 580px;
+      background: var(--band-glow);
       pointer-events: none;
     }
-
-    .hero-org {
-      font-family: var(--font-display);
-      font-size: 0.82rem;
-      font-weight: 700;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      background: var(--accent);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-      margin-bottom: 10px;
-    }
-
-    .hero-title {
-      font-family: var(--font-display);
-      font-size: clamp(2rem, 5vw, 3rem);
-      font-weight: 700;
-      letter-spacing: -0.04em;
-      line-height: 1.1;
-      margin-bottom: 8px;
-    }
-
-    .hero-subtitle {
-      font-size: 0.92rem;
-      color: var(--text-muted);
-      letter-spacing: -0.01em;
-    }
-
-    /* Hero quick-stat pills */
-    .hero-pills {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      margin-top: 24px;
-      padding: 14px 32px;
-      background: var(--bg-base);
-      border: 2px solid transparent;
-      border-radius: var(--r-pill);
-      background-clip: padding-box;
-      position: relative;
-      font-size: 0.82rem;
-      font-weight: 600;
-      color: var(--text-primary);
-      letter-spacing: 0.01em;
-    }
-    .hero-pills::before {
+    .hero::after {
       content: "";
       position: absolute;
-      inset: -2px;
-      border-radius: var(--r-pill);
-      padding: 2px;
-      background: linear-gradient(135deg, var(--itl-blue) 0%, var(--itl-pink) 100%);
-      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-      -webkit-mask-composite: xor;
-      mask-composite: exclude;
+      inset: 0;
+      background: url("data:image/svg+xml,%3Csvg width='64' height='64' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M32 0L64 32L32 64L0 32z' fill='none' stroke='%23ffffff' stroke-width='0.5' opacity='0.04'/%3E%3C/svg%3E") repeat;
       pointer-events: none;
     }
-    .hero-pills .sep { color: var(--border-sep); font-weight: 300; opacity: 0.8; }
-    .hero-pills .hero-label {
-      font-family: var(--font-display);
-      font-size: 0.78rem;
+    /* Animated constellation backdrop — sits above the band/glow, below the
+       z-index:1 hero content. pointer-events:none so it never blocks clicks.
+       Hidden (and the JS no-ops) under reduced-motion, and not drawn in print. */
+    .hero-canvas {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+    }
+    @media (prefers-reduced-motion: reduce) { .hero-canvas { display: none; } }
+    @media print { .hero-canvas { display: none; } }
+    .hero-inner {
+      position: relative;
+      z-index: 1;
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+    .hero-org {
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
       font-weight: 500;
-      color: var(--text-muted);
-      letter-spacing: 0.02em;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: #6dc5f0;
+      -webkit-text-fill-color: currentColor;
+      margin-bottom: 18px;
     }
-    .hero-pills .hero-value {
-      color: var(--accent);
-      font-weight: 700;
+    .hero-title {
       font-family: var(--font-display);
+      font-size: clamp(2.6rem, 5.4vw, 4.25rem);
+      font-weight: 700;
+      letter-spacing: -0.045em;
+      line-height: 0.99;
+      color: #fff;
+      max-width: 18ch;
+      margin: 0;
     }
-    [data-theme="dark"] .hero-pills .hero-value {
-      text-shadow: 0 0 20px rgba(27,147,210,0.3);
+    .hero-subtitle { font-size: 0.92rem; color: rgba(255,255,255,0.7); letter-spacing: -0.01em; }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px 44px;
+      margin-top: 34px;
+    }
+    .hero-meta .hm-item { display: flex; flex-direction: column; gap: 7px; }
+    .hero-meta .hm-label {
+      font-family: var(--font-display);
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.5);
+    }
+    .hero-meta .hm-value {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: #fff;
+    }
+    .hero-meta .hm-value.mode {
+      align-self: flex-start;
+      color: #fff;
+      padding: 3px 11px;
+      border-radius: 6px;
+      font-family: var(--font-display);
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      font-size: 0.72rem;
     }
 
     .anim-in {
@@ -535,9 +562,12 @@
 
     .dashboard {
       display: grid;
-      grid-template-columns: 260px 1fr;
-      gap: 16px;
+      grid-template-columns: 300px 1fr;
+      gap: 18px;
+      margin-top: -94px;
       margin-bottom: 28px;
+      position: relative;
+      z-index: 3;
     }
 
     .dashboard-right {
@@ -776,8 +806,8 @@
       color: var(--text-muted);
       margin: 0;
       display: -webkit-box;
-      line-clamp: 2;
       -webkit-line-clamp: 2;
+      line-clamp: 2;
       -webkit-box-orient: vertical;
       overflow: hidden;
     }
@@ -1598,9 +1628,7 @@
     .log-table-toggle svg { width: 14px; height: 14px; }
     .log-table-toggle.expanded svg { transform: rotate(180deg); }
 
-    /* Version diff */
-    .version-old { color: var(--status-fail); font-family: var(--font-mono); font-size: 0.82rem; }
-    .version-new { color: var(--status-pass); font-family: var(--font-mono); font-size: 0.82rem; }
+    /* Version diff — defined fully above at .version-old / .version-new */
 
     /* Section heading (used by fixes) */
     .section-heading {
@@ -1931,9 +1959,10 @@
       body { background: #fff; }
       .header, .scroll-progress, .theme-toggle, .print-btn, .table-toolbar, .rule-detail-modal, .back-to-top, .resources-bar { display: none !important; }
       .content { max-width: 100%; padding: 0; }
-      .hero { padding: 24px 0; break-after: avoid; }
+      .hero { padding: 28px 0 30px; break-after: avoid; }
+      .hero::before, .hero::after { display: none !important; }
       .card { box-shadow: none; border: 1px solid #ddd; break-inside: avoid; }
-      .dashboard { grid-template-columns: 200px 1fr; }
+      .dashboard { grid-template-columns: 200px 1fr; margin-top: 0; }
       table.dataframe thead th { position: static; }
       th.col-pinned, td.col-pinned { position: static; background: #f0f3f7 !important; }
       .collapsible-section.collapsed .collapsible-content { display: block !important; }
@@ -2317,6 +2346,54 @@
       background: var(--status-skip-bg);
     }
 
+    /* ── Skipped-rule callout (color-coded by reason) ── */
+    .rule-detail-skip {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin: 12px 24px 0;
+      padding: 12px 14px;
+      border-radius: var(--r-sm);
+      border-left: 3px solid var(--status-skip);
+      background: var(--status-skip-bg);
+    }
+    .rule-detail-skip .skip-dot {
+      width: 9px; height: 9px; border-radius: 50%;
+      margin-top: 4px; flex: 0 0 auto;
+      background: var(--status-skip);
+    }
+    .rule-detail-skip-title {
+      font-family: var(--font-display);
+      font-size: 0.78rem; font-weight: 700;
+      letter-spacing: 0.02em;
+      color: var(--status-skip);
+      margin-bottom: 2px;
+    }
+    .rule-detail-skip-text {
+      font-size: 0.85rem; line-height: 1.45;
+      color: var(--text-secondary);
+      word-break: break-word;
+    }
+    .rule-detail-skip.skip-unreachable { border-left-color: var(--skip-unreachable); background: var(--skip-unreachable-bg); }
+    .rule-detail-skip.skip-unreachable .skip-dot,
+    .rule-detail-skip.skip-unreachable .rule-detail-skip-title { color: var(--skip-unreachable); background: none; }
+    .rule-detail-skip.skip-unreachable .skip-dot { background: var(--skip-unreachable); }
+    .rule-detail-skip.skip-no_data { border-left-color: var(--skip-nodata); background: var(--skip-nodata-bg); }
+    .rule-detail-skip.skip-no_data .rule-detail-skip-title { color: var(--skip-nodata); }
+    .rule-detail-skip.skip-no_data .skip-dot { background: var(--skip-nodata); }
+    .rule-detail-skip.skip-conditional { border-left-color: var(--skip-conditional); background: var(--skip-conditional-bg); }
+    .rule-detail-skip.skip-conditional .rule-detail-skip-title { color: var(--skip-conditional); }
+    .rule-detail-skip.skip-conditional .skip-dot { background: var(--skip-conditional); }
+
+    /* Table card cue: tint the SKIP status pill + a leading dot, by reason */
+    .pill.skip .skip-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      flex: 0 0 auto; background: currentColor;
+    }
+    .pill.skip.skip-unreachable { color: var(--skip-unreachable); background: var(--skip-unreachable-bg); }
+    .pill.skip.skip-no_data { color: var(--skip-nodata); background: var(--skip-nodata-bg); }
+    .pill.skip.skip-conditional { color: var(--skip-conditional); background: var(--skip-conditional-bg); }
+
     .rule-detail-header {
       display: flex;
       align-items: flex-start;
@@ -2572,12 +2649,8 @@
         <a href="#section-results" data-section="results">Results</a>
         <a href="#section-details" data-section="details">Details</a>
         {{OPERATIONAL_NAV_LINK}}
-        <a href="05_arch.html" class="op-link arch-link">Architecture</a>
+        {{ARCHITECTURE_NAV_LINK}}
       </nav>
-      <button class="theme-toggle" id="themeToggle" title="Toggle theme">
-        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-      </button>
       <button class="print-btn" onclick="window.print()" title="Print report">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
       </button>
@@ -2586,22 +2659,18 @@
 
   <main class="content">
 
-    <!-- ═══ HERO ═══ -->
+    <!-- ═══ HERO / COVER BAND ═══ -->
     <div class="hero" id="section-overview">
-      <div class="hero-org">{{ORGANIZATION_NAME}}</div>
-      <h1 class="hero-title">{{TITLE}}</h1>
-      <div class="hero-pills">
-        <span class="hero-label">Mode:</span>
-        <span class="hero-value" style="background:{{TIER_COLOR}};color:#fff;padding:2px 10px;border-radius:4px;font-weight:700;letter-spacing:0.5px;">{{TIER_LABEL}}</span>
-        <span class="sep">|</span>
-        <span class="hero-label">Audit:</span>
-        <span class="hero-value">{{TIER_COVER_KIND}}</span>
-        <span class="sep">|</span>
-        <span class="hero-label">Session:</span>
-        <span class="hero-value">{{SUBTITLE}}</span>
-        <span class="sep">|</span>
-        <span class="hero-label">Generated:</span>
-        <span class="hero-value">{{TIMESTAMP}}</span>
+      <canvas class="hero-canvas" id="heroCanvas" aria-hidden="true"></canvas>
+      <div class="hero-inner">
+        <div class="hero-org">{{ORGANIZATION_NAME}}</div>
+        <h1 class="hero-title">{{TITLE}}</h1>
+        <div class="hero-meta">
+          <div class="hm-item"><span class="hm-label">Mode</span><span class="hm-value mode" data-tier-color="{{TIER_COLOR}}">{{TIER_LABEL}}</span></div>
+          <div class="hm-item"><span class="hm-label">Audit</span><span class="hm-value">{{TIER_COVER_KIND}}</span></div>
+          <div class="hm-item"><span class="hm-label">Session</span><span class="hm-value">{{SUBTITLE}}</span></div>
+          <div class="hm-item"><span class="hm-label">Generated</span><span class="hm-value">{{TIMESTAMP}}</span></div>
+        </div>
       </div>
     </div>
 
@@ -2763,7 +2832,9 @@
     </div>
 
     <!-- ═══ EXTENDED / DETAILS — moved to 05_arch.html ═══ -->
-    <div id="section-details"></div>
+    <!-- SaaS reports merge the Architecture Overview here instead of
+         emitting a separate 05_arch.html; empty in Standard/Extended. -->
+    <div id="section-details">{{ARCHITECTURE_SECTION}}</div>
 
     <!-- ═══ INFO BAR ═══ -->
     <div class="info-bar">
@@ -2845,8 +2916,15 @@
         <div style="font-size:0.7rem;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--status-suppress);margin-bottom:0.2rem;">Suppression Reason</div>
         <div id="ruleDetailSuppressionText" style="font-size:0.85rem;font-style:italic;color:var(--text-secondary);line-height:1.4;"></div>
       </div>
+      <div class="rule-detail-skip" id="ruleDetailSkip" style="display:none;">
+        <span class="skip-dot"></span>
+        <div>
+          <div class="rule-detail-skip-title" id="ruleDetailSkipTitle"></div>
+          <div class="rule-detail-skip-text" id="ruleDetailSkipText"></div>
+        </div>
+      </div>
       <div class="rule-detail-body">
-        <div class="rule-detail-label">Recommendation</div>
+        <div class="rule-detail-label" id="ruleDetailRecLabel">Recommendation</div>
         <div class="rule-detail-text" id="ruleDetailText"></div>
         <div class="rule-detail-expected-actual" id="ruleDetailExpActual">
           <div>
@@ -2884,6 +2962,81 @@
       </div>
     </div>
   </div>
+
+  <!-- 0. Hero Constellation Backdrop (animated background points, ported from whats-new-2.0) -->
+  <script>
+  (function() {
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var canvas = document.getElementById('heroCanvas');
+    if (!canvas || !canvas.getContext || reduce) return;
+    var ctx = canvas.getContext('2d');
+    var hero = canvas.parentElement;
+    var dots = [], W = 0, H = 0, mx = 0, my = 0;
+    function build() {
+      W = canvas.width = hero.offsetWidth;
+      H = canvas.height = hero.offsetHeight;
+      var n = Math.max(18, Math.min(60, Math.floor(W / 24)));
+      dots = [];
+      for (var i = 0; i < n; i++) {
+        dots.push({
+          x: Math.random() * W, y: Math.random() * H,
+          vx: (Math.random() - 0.5) * 0.28, vy: (Math.random() - 0.5) * 0.28,
+          r: Math.random() * 1.8 + 1, a: Math.random() * 0.4 + 0.18
+        });
+      }
+    }
+    function frame() {
+      ctx.clearRect(0, 0, W, H);
+      var i, j, p, q;
+      for (i = 0; i < dots.length; i++) {
+        p = dots[i];
+        p.x += p.vx; p.y += p.vy;
+        if (p.x < -20) p.x = W + 20; if (p.x > W + 20) p.x = -20;
+        if (p.y < -20) p.y = H + 20; if (p.y > H + 20) p.y = -20;
+      }
+      for (i = 0; i < dots.length; i++) {
+        p = dots[i];
+        for (j = i + 1; j < dots.length; j++) {
+          q = dots[j];
+          var dx = p.x - q.x, dy = p.y - q.y, d = Math.sqrt(dx * dx + dy * dy);
+          if (d < 124) {
+            ctx.strokeStyle = "rgba(109,197,240," + (0.12 * (1 - d / 124)) + ")";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(p.x + mx * p.a, p.y + my * p.a);
+            ctx.lineTo(q.x + mx * q.a, q.y + my * q.a);
+            ctx.stroke();
+          }
+        }
+      }
+      for (i = 0; i < dots.length; i++) {
+        p = dots[i];
+        ctx.fillStyle = "rgba(190,224,255," + p.a + ")";
+        ctx.beginPath();
+        ctx.arc(p.x + mx * p.a, p.y + my * p.a, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      requestAnimationFrame(frame);
+    }
+    hero.addEventListener("mousemove", function (e) {
+      var r = hero.getBoundingClientRect();
+      mx = ((e.clientX - r.left) / r.width - 0.5) * 28;
+      my = ((e.clientY - r.top) / r.height - 0.5) * 28;
+    });
+    var rt = null;
+    window.addEventListener("resize", function () { clearTimeout(rt); rt = setTimeout(build, 150); });
+    build();
+    frame();
+  })();
+  </script>
+
+  <!-- 0b. Tier Mode pill background (data-tier-color avoids CSS parser errors on {{}} placeholders) -->
+  <script>
+  (function() {
+    var el = document.querySelector('.hm-value.mode[data-tier-color]');
+    if (el) el.style.background = el.dataset.tierColor;
+  })();
+  </script>
 
   <!-- 1. Score Ring Animation + Color -->
   <script>
@@ -3087,6 +3240,9 @@
 
   <!-- User-suppressed rules — {rule_number: reason} dict from environment skip_rules -->
   <script type="application/json" id="atlasSuppressedRules">{{SUPPRESSED_RULES_JSON}}</script>
+
+  <!-- Skipped rules — {rule_number: skip_kind} so the modal/table color-code WHY a rule was skipped -->
+  <script type="application/json" id="atlasSkipInfo">{{SKIP_INFO_JSON}}</script>
   <script>
   (function() {
     var suppressCard = document.getElementById('suppressCard');
@@ -3115,9 +3271,14 @@
     const elEmpty    = document.getElementById('ruleDetailEmptyState');
     const elSuppression     = document.getElementById('ruleDetailSuppression');
     const elSuppressionText = document.getElementById('ruleDetailSuppressionText');
+    const elSkip      = document.getElementById('ruleDetailSkip');
+    const elSkipTitle = document.getElementById('ruleDetailSkipTitle');
+    const elSkipText  = document.getElementById('ruleDetailSkipText');
+    const elRecLabel  = document.getElementById('ruleDetailRecLabel');
     const elPrev     = document.getElementById('ruleDetailPrev');
     const elNext     = document.getElementById('ruleDetailNext');
     const suppressedMap = JSON.parse(document.getElementById('atlasSuppressedRules')?.textContent || '{}');
+    const skipInfoMap   = JSON.parse(document.getElementById('atlasSkipInfo')?.textContent || '{}');
     const elNavPos   = document.getElementById('ruleDetailNavPos');
     const fixesKB    = JSON.parse(document.getElementById('atlasFixesKB')?.textContent || '{}');
     if (!modal) return;
@@ -3140,6 +3301,18 @@
       'CRITICAL': 'Immediate attention required — may impact platform stability or security',
       'WARNING':  'Should be addressed soon — may cause degraded performance or reliability',
       'INFO':     'Best practice recommendation — no immediate impact if unresolved'
+    };
+
+    /* ── Skip-reason families (color-coded) ── */
+    var SKIP_KIND_TITLES = {
+      'unreachable': "Couldn't reach this system",
+      'no_data':     'No data collected for this check',
+      'conditional': 'Conditional check — not applicable'
+    };
+    var SKIP_KIND_LABELS = {
+      'unreachable': 'Skipped — Atlas could not reach or collect this data',
+      'no_data':     'Skipped — this setting was not present in the collected data',
+      'conditional': 'Skipped — depends on another check or a version that does not apply'
     };
 
     /* Helper: read cell text safely */
@@ -3193,6 +3366,21 @@
       row.dataset.category         = category;
       row.dataset.operator         = operator;
       row.dataset.suppressionReason = suppressedMap[ruleId] || '';
+      row.dataset.skipKind          = skipInfoMap[ruleId] || '';
+
+      /* Card cue: tint the SKIP pill by reason + prepend a colored dot so the
+         "why" is identifiable in the table without opening the card. */
+      var skipKind = row.dataset.skipKind;
+      if (skipKind && statusIdx >= 0 && row.cells[statusIdx]) {
+        var skipPill = row.cells[statusIdx].querySelector('.pill.skip');
+        if (skipPill && !skipPill.querySelector('.skip-dot')) {
+          skipPill.classList.add('skip-' + skipKind);
+          var sdot = document.createElement('span');
+          sdot.className = 'skip-dot';
+          skipPill.insertBefore(sdot, skipPill.firstChild);
+          skipPill.title = SKIP_KIND_LABELS[skipKind] || 'Skipped';
+        }
+      }
 
       /* Track row in navigation list */
       navRows.push(row);
@@ -3330,6 +3518,22 @@
       } else if (elSuppression) {
         elSuppression.style.display = 'none';
       }
+
+      /* ── Skip reason (color-coded callout) ── */
+      var skipKind = row.dataset.skipKind || '';
+      var showSkipCallout = (statusKey === 'skip' && skipKind && elSkip);
+      if (showSkipCallout) {
+        elSkip.className = 'rule-detail-skip skip-' + skipKind;
+        if (elSkipTitle) elSkipTitle.textContent = SKIP_KIND_TITLES[skipKind] || 'Skipped';
+        if (elSkipText)  elSkipText.textContent  = row.dataset.recText || '';
+        elSkip.style.display = '';
+      } else if (elSkip) {
+        elSkip.style.display = 'none';
+      }
+      /* The callout carries the skip reason, so hide the duplicate generic
+         "Recommendation" block when it's shown. */
+      if (elRecLabel) elRecLabel.style.display = showSkipCallout ? 'none' : '';
+      if (elText)     elText.style.display     = showSkipCallout ? 'none' : '';
 
       /* ── Remediation steps (--no-fixes to disable) ── */
       var fixRuleId = row.dataset.ruleId || '';
@@ -4252,4 +4456,5 @@
   </script>
 
 </body>
+</html>
 </html>

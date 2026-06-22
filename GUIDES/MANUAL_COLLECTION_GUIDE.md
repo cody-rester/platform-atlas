@@ -10,6 +10,11 @@ platform-atlas session run capture --manual
 Atlas will walk you through each file. This guide covers how to gather them
 all ahead of time so the process goes quickly.
 
+Atlas runs in one of three tiers — Standard, Extended, or SaaS. The sections
+below cover everything an Extended audit can use. Under the **SaaS** tier only
+a single gateway (Gateway4 *or* Gateway5) is audited, so collect just that
+gateway's section and ignore the Platform, MongoDB, and Redis sections.
+
 ---
 
 ## Before You Start
@@ -32,8 +37,12 @@ endpoint collection. It asks whether you're running Platform 6 or IAP 2023.x
 and collects the correct endpoints accordingly:
 
 ```bash
-bash collect_platform.sh <host>:<port> <TOKEN>
+bash collect_platform.sh <host> <port> <TOKEN>
 ```
+
+The host, port, and token are three separate arguments (the script builds
+`https://<host>:<port>` for you). Run it with no arguments to be prompted
+for each value interactively.
 
 If you prefer to collect them by hand, see below. Replace `<HOST>` with your
 Platform address (e.g. `localhost:3443`) and `<TOKEN>` with a valid API token.
@@ -253,6 +262,10 @@ cp /path/to/values.yaml ./gateway5_config.yml
 ```
 
 Atlas parses the environment variables from either format automatically.
+
+Only the Docker Compose / Helm env file is importable manually. The other
+Gateway5 sources — the server `gateway.conf` (INI) and SSH `printenv` — are
+captured automatically over SSH and have no manual-file equivalent.
 
 ---
 

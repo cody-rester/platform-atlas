@@ -1605,11 +1605,12 @@ def ping_ssh(credentials: SSHCredentials) -> tuple[bool, str]:
 def transport_from_config(target: dict) -> Transport:
     """Build a Transport instance from a target config dict.
 
-    SSH transports are gated on Extended Mode — Standard tier deployments
-    must never construct an SSH connection. ``LocalTransport`` is permitted
-    in either tier (used by preflight on the user's own machine).
+    SSH transports need infrastructure access — Standard tier deployments
+    must never construct an SSH connection (Extended and SaaS both may).
+    ``LocalTransport`` is permitted in every tier (used by preflight on the
+    user's own machine).
     """
-    from platform_atlas.core.context import require_extended
+    from platform_atlas.core.context import require_infra
     from platform_atlas.core.exceptions import ConfigError
 
     kind = target.get("transport", "local").lower()
@@ -1619,13 +1620,13 @@ def transport_from_config(target: dict) -> Transport:
 
     if kind == "ssh":
         # Hard mode boundary: SSH must never run in Standard.
-        require_extended(
+        require_infra(
             "transport_from_config(ssh)",
             hint="SSH transport is unavailable in Standard Mode.",
         )
         # User-configurable connect timeout (config.json / `config edit`); clamped
         # to a safe range. Absent/invalid keeps the historical 10s. ctx() is already
-        # initialized here — require_extended() above reads it.
+        # initialized here — require_infra() above reads it.
         from platform_atlas.core.context import ctx
         _connect_timeout = getattr(ctx().config, "ssh_connect_timeout_s", 10) or 10
         _connect_timeout = float(max(1, min(int(_connect_timeout), 120)))
@@ -1645,7 +1646,7 @@ def transport_from_config(target: dict) -> Transport:
         return transport
 
     if kind == "control_master":
-        require_extended(
+        require_infra(
             "transport_from_config(control_master)",
             hint="ControlMaster transport is unavailable in Standard Mode.",
         )

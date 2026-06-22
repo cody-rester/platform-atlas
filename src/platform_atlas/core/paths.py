@@ -29,6 +29,13 @@ ATLAS_PIPELINES_DIR = ATLAS_HOME / "pipelines"
 ATLAS_CONFIG_FILE = ATLAS_HOME / "config.json"
 ATLAS_SETTINGS_FILE = ATLAS_HOME / "settings.json"
 
+# Encrypted local credential file-store (used when credential_backend is "file",
+# or when Vault keeps its connection settings in the file). credentials.py
+# resolves these from ATLAS_HOME at runtime so tests that repoint ATLAS_HOME are
+# honoured; these constants mirror them for reference / the support-bundle denylist.
+ATLAS_CREDENTIALS_FILE = ATLAS_HOME / "credentials.enc"      # AES-GCM ciphertext
+ATLAS_CREDENTIALS_SALT = ATLAS_HOME / ".keysalt"             # per-install KDF salt
+
 # Architecture overview is now scoped per-environment under
 # ``~/.atlas/architecture/<env>.json``. The legacy global file
 # ``~/.atlas/architecture.json`` is kept as a constant only so the
@@ -49,9 +56,16 @@ KNOWLEDGEBASE_PATH = PROJECT_ROOT / "RULES_KNOWLEDGEBASE.md"
 # Atlas Templates
 DIFF_TEMPLATE = PROJECT_TEMPLATES / "diff.html"
 REPORT_TEMPLATE = PROJECT_TEMPLATES / "report.html"
+# Splash / cover page placed at the top level of an exported session archive
+# (REPORT.html), linking into the bundled reports under session_files/.
+REPORT_SPLASH_TEMPLATE = PROJECT_TEMPLATES / "report_splash.html"
 REPORT_JSON_SCHEMA = PROJECT_ROOT / "reporting" / "assets" / "schemas" / "report.schema.json"
 OPERATIONAL_TEMPLATE = PROJECT_TEMPLATES / "operational.html"
 ARCH_TEMPLATE = PROJECT_TEMPLATES / "arch.html"
+# Opt-in single-file report (``--unified``): Compliance + Operational +
+# Architecture combined into one standalone HTML, rendered client-side from the
+# embedded viewmodel JSON. Replaces 03_report.html when the flag is set.
+UNIFIED_REPORT_TEMPLATE = PROJECT_TEMPLATES / "report_unified.html"
 
 # Atlas Log File
 ATLAS_LOG_FILE = ATLAS_HOME / "atlas.log"

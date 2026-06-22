@@ -50,6 +50,9 @@ class DeploymentMode(Enum):
     HA2 = "ha2"
     CUSTOM = "custom"
     KUBERNETES = "kubernetes"
+    # SaaS tier: one standalone gateway (occasionally a couple of gateway
+    # hosts) with no IAP/Mongo/Redis nodes at all.
+    GATEWAY_ONLY = "gateway_only"
 
 
 @unique
@@ -193,6 +196,14 @@ class TargetNode:
     ssh_control_target: str = ""   # e.g. user@target-host@psmp-gateway.example.com
     modules: list[str] | None = None
     primary: bool = False
+    # Gateway5 file-based source: path to a local Docker Compose / Helm values
+    # file. Set together with transport="gateway5_file" for containerized
+    # gateways whose env vars are read from a file rather than printenv over SSH.
+    gateway5_source_path: str = ""
+    # Gateway5 server config-file source: remote path to the IAG5 server
+    # gateway.conf, read over SSH. Set on a normal transport="ssh" IAG node; when
+    # present, capture reads the config file (INI) instead of printenv.
+    gateway5_conf_path: str = ""
 
     def __post_init__(self) -> None:
         # Coerce string role to enum if needed (from JSON deserialization)
@@ -267,6 +278,11 @@ class TargetNode:
                 target["port"] = self.ssh_port
         # Kubernetes transport — no host/SSH details needed
         # Protocol collectors use URIs from config; K8s collector uses values.yaml
+        # gateway5_file transport — the file path is the only "connection" detail
+        if self.gateway5_source_path:
+            target["gateway5_source_path"] = self.gateway5_source_path
+        if self.gateway5_conf_path:
+            target["gateway5_conf_path"] = self.gateway5_conf_path
         return target
 
     # -- serialization ------------------------------------------------------
@@ -304,6 +320,10 @@ class TargetNode:
             data["modules"] = self.modules
         if self.primary:
             data["primary"] = True
+        if self.gateway5_source_path:
+            data["gateway5_source_path"] = self.gateway5_source_path
+        if self.gateway5_conf_path:
+            data["gateway5_conf_path"] = self.gateway5_conf_path
         return data
 
     @classmethod
@@ -341,6 +361,8 @@ class TargetNode:
             ssh_control_target=data.get("ssh_control_target", ""),
             modules=data.get("modules"),
             primary=data.get("primary", False),
+            gateway5_source_path=data.get("gateway5_source_path", ""),
+            gateway5_conf_path=data.get("gateway5_conf_path", ""),
         )
 
 
@@ -470,6 +492,7 @@ class DeploymentTopology:
             DeploymentMode.HA2: self._validate_ha2,
             DeploymentMode.CUSTOM: self._validate_custom,
             DeploymentMode.KUBERNETES: self._validate_kubernetes,
+            DeploymentMode.GATEWAY_ONLY: self._validate_gateway_only,
         }
         validators[self.mode]()
 
@@ -559,6 +582,21 @@ class DeploymentTopology:
         """Custom mode: minimal validation — just ensure nodes exist."""
         if not self.nodes:
             logger.warning("Custom deployment has no nodes defined")
+
+    def _validate_gateway_only(self) -> None:
+        """Gateway-only (SaaS) mode: every node is a gateway — no IAP/Mongo/Redis."""
+        if not self.nodes:
+            raise ConfigError(
+                "Gateway-only deployment requires at least one gateway node",
+                details={"mode": "gateway_only"},
+            )
+        invalid = sorted({n.role.value for n in self.nodes if n.role != NodeRole.IAG})
+        if invalid:
+            raise ConfigError(
+                f"Gateway-only mode allows only 'iag' nodes — found: {', '.join(invalid)}. "
+                "Platform/Mongo/Redis nodes have no place in a SaaS gateway audit.",
+                details={"invalid_roles": invalid},
+            )
 
     def _validate_kubernetes(self) -> None:
         """Kubernetes mode: nodes are virtual (protocol-only, no SSH)."""
@@ -758,6 +796,34 @@ def synthesize_standard_targets(config: Any) -> list[dict[str, Any]]:
     ]
     gateway4_uri = getattr(config, "gateway4_uri", "") or ""
     if gateway4_uri:
+        targets.append({
+            "name": "iag4",
+            "transport": "api",
+            "role": NodeRole.IAG.value,
+            "modules": ["gateway4_api"],
+        })
+    return targets
+
+
+def synthesize_saas_targets(config: Any) -> list[dict[str, Any]]:
+    """
+    Build the target list for a SaaS-tier capture without a topology.
+
+    A SaaS environment normally carries a ``gateway_only`` deployment written
+    by the setup wizard (an SSH gateway node, or the host-less ``gateway5_file``
+    node). This synthesizer covers the one shape that needs no topology at all:
+    a Gateway 4 audit with SSH declined — pure ipsdk over HTTPS, mirroring how
+    ``synthesize_standard_targets`` emits its API targets.
+
+    A Platform target is NEVER emitted — SaaS audits have no Platform anchor.
+    A Gateway 5 SaaS environment always has a deployment (its env-var source
+    is an SSH node or a Compose/Helm file node), so an empty list here simply
+    means the environment isn't fully configured yet.
+    """
+    targets: list[dict[str, Any]] = []
+    kind = (getattr(config, "saas_gateway_kind", None) or "").strip().lower()
+    gateway4_uri = getattr(config, "gateway4_uri", "") or ""
+    if kind != "gateway5" and gateway4_uri:
         targets.append({
             "name": "iag4",
             "transport": "api",

@@ -1,6 +1,6 @@
 # Platform Atlas — SSH Setup Guide
 
-> **Extended Tier only** — SSH connectivity is required exclusively when running Platform Atlas in **Extended** mode. Standard tier audits over Platform OAuth and the IAG4 API only and do not connect to any servers via SSH. If you are unsure which tier you are on, run `platform-atlas tier show`. If you are on Standard and do not need full infrastructure auditing, you can skip this guide entirely.
+> **Extended and SaaS tiers** — SSH connectivity is required when running Platform Atlas in **Extended** mode (full infrastructure audit) and in **SaaS** mode (the single gateway, unless its config is read from a Docker Compose / Helm file). Only **Standard** tier never uses SSH — it audits over Platform OAuth and the IAG4 API only and does not connect to any servers via SSH. If you are unsure which tier you are on, run `platform-atlas tier show`. If you are on Standard, you can skip this guide entirely.
 
 This guide walks through creating a dedicated SSH user for Platform Atlas on your IAP deployment servers. By the end, you'll have a single service account with key-based authentication that Atlas can use to connect to every target server.
 
@@ -18,7 +18,7 @@ This user is read-only. Atlas never writes to, modifies, or restarts anything on
 ## What You'll Need
 
 - Root or sudo access on each target server to create the user
-- A list of your target server hostnames or IPs (IAP, MongoDB, Redis, Gateway — whatever Atlas will audit)
+- A list of your target server hostnames or IPs (IAP, MongoDB, Redis, Gateway — whatever Atlas will audit). The relevant node set depends on tier: Extended covers the full deployment, while SaaS is just the single gateway node.
 - The workstation or laptop where Platform Atlas is installed
 
 ## Step 1: Create the User on Each Target Server
@@ -123,7 +123,7 @@ When prompted for SSH settings, enter:
 - **SSH key path:** `~/.ssh/platform-atlas`
 - **SSH key passphrase:** (your passphrase, or leave blank if none)
 
-These credentials are stored securely in your OS keyring, not in the config file.
+These credentials are stored in your configured credential backend (OS Keyring, Encrypted Local File, or Vault), never in the config file.
 
 ## Quick Reference
 
@@ -144,7 +144,7 @@ If direct SSH to your IAP server isn't possible — for example, because SSH goe
 
 In this mode, you open one authenticated SSH session manually (satisfying MFA once), and Atlas multiplexes all of its connections through that session with no further prompts.
 
-> **Scope:** ControlMaster applies to the **Platform (IAP) node only**. MongoDB and Redis nodes still need direct SSH access — set those up using Steps 1–6 above.
+> **Scope:** ControlMaster applies to the **Platform (IAP) node only** (Extended tier). MongoDB and Redis nodes still need direct SSH access — set those up using Steps 1–6 above. Under the SaaS tier there is no Platform node, so the single gateway connects over direct SSH (Steps 1–6), not ControlMaster.
 
 ### When to Use This
 
@@ -252,7 +252,7 @@ still use SSH.
 
 ### Setup
 
-1. Install Atlas on the IAP server (`pip install platform_atlas-1.7.0-py3-none-any.whl`).
+1. Install Atlas on the IAP server (`pip install platform_atlas-2.0.0-py3-none-any.whl`).
 2. Run `platform-atlas config init` (or `platform-atlas env create`).
 3. When the wizard asks how Atlas should connect to the Platform (IAP) server, choose **Local**.
 4. Configure SSH for MongoDB, Redis, and Gateway nodes as usual (Steps 1–6 above) if those services are on separate hosts.

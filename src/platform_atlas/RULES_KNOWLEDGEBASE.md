@@ -659,6 +659,22 @@ Validate Template Builder execution timeout is not set too high
 3. Either remove this setting completely, or adjust it to 10 seconds or less.
 4. Restart the Template Builder Application for the change to take effect.
 
+# PLAT-049: Platform JSON Logging
+
+## Purpose
+
+Validates that the Platform emits its console logs in structured JSON format. JSON-formatted
+logs are far easier for log aggregators (Splunk, Elastic, Loki, Datadog, etc.) to parse,
+index, and search than free-form text, which speeds up troubleshooting and post-incident
+analysis.
+
+## How to Fix
+
+1. Open the platform's `platform.properties` file.
+2. Locate or add the option named `console_format_json`.
+3. Set the value to `true`.
+4. Restart the platform for the change to take effect.
+
 # IAG-001: Logging Level
 
 ## Purpose
@@ -1354,6 +1370,51 @@ This rule only runs when IAG-017 passes.
 3. Ensure the corresponding private key is also configured via `GATEWAY_SERVER_PRIVATE_KEY_FILE`.
 4. Verify that both files are readable by the gateway process user.
 
+# IAG-035: Gateway Venv Pruner Sweep Interval
+
+## Purpose
+
+Automation Gateway 5 periodically prunes idle Python virtual environments to reclaim disk
+space. `GATEWAY_APPLICATION_VENV_SWEEP_INTERVAL` controls how often the pruner scans for idle
+environments; the supported default is `24h`. This check confirms the sweep interval is at
+that default (`24h` / `1d`). A non-default cadence is not necessarily wrong, but it should be
+deliberate.
+
+## How to Fix
+
+1. Locate where the Gateway 5 environment variables are defined for your deployment — the
+   Docker Compose `environment:` block, the Helm `values.yaml`, or the host environment file
+   the gateway service reads.
+2. Set the variable to the default cadence:
+   ```bash
+   GATEWAY_APPLICATION_VENV_SWEEP_INTERVAL=24h
+   ```
+3. Restart the Gateway 5 service (or re-deploy the container) for the change to take effect.
+4. If you are intentionally running a non-default sweep interval, suppress this check for the
+   environment instead of changing it — see the Platform Atlas user guide on skipping rules.
+
+# IAG-036: Gateway Venv Pruner Retention Period
+
+## Purpose
+
+`GATEWAY_APPLICATION_VENV_RETENTION_PERIOD` controls how long an idle Python virtual
+environment is kept before the Automation Gateway 5 pruner removes it; the supported default
+is `30d`. Setting it too low risks pruning environments that are still needed, which forces a
+full dependency reinstall on the next run and slows the first execution.
+
+## How to Fix
+
+1. Locate where the Gateway 5 environment variables are defined (Docker Compose
+   `environment:`, Helm `values.yaml`, or the gateway host environment file).
+2. Set the variable to the default retention window:
+   ```bash
+   GATEWAY_APPLICATION_VENV_RETENTION_PERIOD=30d
+   ```
+3. Restart the Gateway 5 service (or re-deploy the container) for the change to take effect.
+4. If a non-default retention period is intentional, confirm it is long enough to avoid
+   premature pruning, or suppress this check for the environment — see the user guide on
+   skipping rules.
+
 # RDS-001: Redis Configuration File
 
 ## Purpose
@@ -1441,8 +1502,8 @@ communication with Itential Platform nodes to reduce the attack surface.
 
 ## Purpose
 
-Validates that the running Redis version is at least `7.4.0`. Older versions may contain
-unpatched security vulnerabilities or lack features required by Itential Platform.
+Validates that the running Redis version is between `7.0.0` and `7.4.0`. Older versions
+may contain unpatched security vulnerabilities or lack features required by Itential Platform.
 
 ## How to Fix
 
@@ -1467,7 +1528,7 @@ risks holding stale connections open unnecessarily.
 ## How to Fix
 
 1. Open the Redis configuration file at `/etc/redis/redis.conf`.
-2. Locate or add the `tcp-keepalive` directive and set it to a value between 60 and 120:
+2. Locate or add the `tcp-keepalive` directive and set it to a value between 60 and 300:
    ```
    tcp-keepalive 60
    ```
@@ -1830,3 +1891,307 @@ impact data availability and puts the deployment at risk if the primary fails.
    ```
 5. Once the underlying issue is resolved, the replica set should self-heal. Contact
    Itential Support if the issue persists.
+
+# KBS-001: Liveness Probe Enabled
+
+## Purpose
+
+A Kubernetes liveness probe lets the kubelet detect a deadlocked or hung Platform container
+and restart it automatically. Without one, a wedged process keeps running and requires manual
+intervention to recover.
+
+## How to Fix
+
+1. In the Platform Helm chart `values.yaml`, enable the liveness probe for the Platform
+   deployment:
+   ```yaml
+   livenessProbe:
+     enabled: true
+   ```
+2. Apply the change with `helm upgrade <release> <chart> -f values.yaml`.
+3. Confirm the probe is configured: `kubectl describe pod <platform-pod> | grep -A5 Liveness`.
+
+> The exact values key can vary by chart version — consult the Itential Platform Helm chart
+> documentation if `livenessProbe.enabled` is not present.
+
+# KBS-002: Readiness Probe Enabled
+
+## Purpose
+
+A readiness probe tells Kubernetes when a pod is ready to serve requests, so traffic is
+withheld from pods that are still initializing or temporarily unhealthy. Without it, requests
+can be routed to a pod before it is ready, causing connection errors during rolling restarts.
+
+## How to Fix
+
+1. In the Platform Helm chart `values.yaml`, enable the readiness probe:
+   ```yaml
+   readinessProbe:
+     enabled: true
+   ```
+2. Apply with `helm upgrade <release> <chart> -f values.yaml`.
+3. Confirm: `kubectl describe pod <platform-pod> | grep -A5 Readiness`.
+
+> The exact values key can vary by chart version — consult the Itential Platform Helm chart
+> documentation if `readinessProbe.enabled` is not present.
+
+# KBS-003: Log Volume Persistent
+
+## Purpose
+
+Platform logs written to an ephemeral `emptyDir` are lost when the pod restarts, which makes
+post-incident analysis impossible. Mounting logs on a persistent volume keeps them available
+across the pod lifecycle.
+
+## How to Fix
+
+1. In the Platform Helm chart `values.yaml`, enable the persistent log volume:
+   ```yaml
+   mountLogVolume: true
+   ```
+2. Ensure a PersistentVolumeClaim (or a default StorageClass) is available to back the volume.
+3. Apply with `helm upgrade` and confirm the mount: `kubectl describe pod <platform-pod>`.
+
+# KBS-004: Pod QoS Class is Guaranteed
+
+## Purpose
+
+A pod reaches the "Guaranteed" QoS class only when every container sets CPU and memory
+**requests equal to its limits**. Guaranteed pods are the last to be evicted under node memory
+pressure, protecting Platform from being killed when a node runs low on resources.
+
+## How to Fix
+
+1. In the Platform Helm chart `values.yaml`, set requests equal to limits for both CPU and
+   memory:
+   ```yaml
+   resources:
+     requests:
+       cpu: "2"
+       memory: 4Gi
+     limits:
+       cpu: "2"
+       memory: 4Gi
+   ```
+2. Apply with `helm upgrade`, then verify:
+   `kubectl get pod <platform-pod> -o jsonpath='{.status.qosClass}'` should report
+   `Guaranteed`.
+
+# KBS-005: Startup Probe Enabled
+
+## Purpose
+
+A startup probe holds off the liveness probe until the application has finished initializing.
+Without one, a slow-starting Platform pod can be killed by the liveness probe before it is
+ready, causing a restart loop on slower nodes.
+
+## How to Fix
+
+1. In the Platform Helm chart `values.yaml`, configure a startup probe:
+   ```yaml
+   startupProbe:
+     enabled: true
+     failureThreshold: 30
+     periodSeconds: 10
+   ```
+   (`failureThreshold × periodSeconds` must exceed the slowest expected startup time — 30 × 10s
+   = 5 minutes in this example.)
+2. Apply with `helm upgrade` and confirm:
+   `kubectl describe pod <platform-pod> | grep -A5 Startup`.
+
+# KBS-006: Liveness Probe Timeout
+
+## Purpose
+
+`livenessProbe.timeoutSeconds` is how long the kubelet waits for a probe response before
+counting it as a failure. Keeping it at or below 10s lets Kubernetes detect a hung Platform
+process promptly, while still being long enough to avoid false positives on a busy node.
+
+## How to Fix
+
+1. In the Platform Helm chart `values.yaml`, set the liveness probe timeout to 10 seconds or
+   less:
+   ```yaml
+   livenessProbe:
+     timeoutSeconds: 5
+   ```
+2. Apply with `helm upgrade` for the change to take effect.
+
+# KBS-007: Readiness Probe Timeout
+
+## Purpose
+
+`readinessProbe.timeoutSeconds` is how long the kubelet waits for a readiness response before
+marking the pod not-ready. Keeping it at or below 10s ensures a temporarily unresponsive pod is
+pulled from service quickly instead of continuing to receive traffic.
+
+## How to Fix
+
+1. In the Platform Helm chart `values.yaml`, set the readiness probe timeout to 10 seconds or
+   less:
+   ```yaml
+   readinessProbe:
+     timeoutSeconds: 5
+   ```
+2. Apply with `helm upgrade` for the change to take effect.
+
+# KBS-008: Startup Probe Failure Threshold
+
+## Purpose
+
+`startupProbe.failureThreshold × periodSeconds` defines how long Kubernetes waits for Platform
+to start before killing the pod. The threshold must be high enough (≥ 10) that even the slowest
+expected startup completes within the window, otherwise a slow boot turns into a restart loop.
+
+## How to Fix
+
+1. In the Platform Helm chart `values.yaml`, raise the startup probe failure threshold:
+   ```yaml
+   startupProbe:
+     failureThreshold: 30
+     periodSeconds: 10
+   ```
+2. Confirm that `failureThreshold × periodSeconds` comfortably exceeds your slowest observed
+   startup time, then apply with `helm upgrade`.
+
+# KBS-009: CPU Requests Defined
+
+## Purpose
+
+CPU requests tell the Kubernetes scheduler how much CPU to reserve for the pod so it is placed
+on a node with enough headroom. Without requests, Platform pods can land on saturated nodes and
+suffer CPU contention.
+
+## How to Fix
+
+1. In the Platform Helm chart `values.yaml`, define a CPU request:
+   ```yaml
+   resources:
+     requests:
+       cpu: "2"
+   ```
+2. Apply with `helm upgrade`. For production, also set a matching limit (see KBS-010) so the
+   pod reaches Guaranteed QoS (KBS-004).
+
+# KBS-010: CPU Limits Defined
+
+## Purpose
+
+CPU limits cap how much CPU a pod can consume, preventing a runaway Platform process from
+starving other workloads sharing the same node.
+
+## How to Fix
+
+1. In the Platform Helm chart `values.yaml`, define a CPU limit:
+   ```yaml
+   resources:
+     limits:
+       cpu: "2"
+   ```
+2. Apply with `helm upgrade`. Setting the limit equal to the request (KBS-009) yields
+   Guaranteed QoS (KBS-004).
+
+# KBS-011: Memory Requests Defined
+
+## Purpose
+
+Memory requests inform the scheduler of the pod's expected memory footprint so it can place
+Platform on a node with enough free memory. Without them, pods can be scheduled onto
+memory-constrained nodes, increasing the risk of OOM kills.
+
+## How to Fix
+
+1. In the Platform Helm chart `values.yaml`, define a memory request:
+   ```yaml
+   resources:
+     requests:
+       memory: 4Gi
+   ```
+2. Apply with `helm upgrade`. Pair it with a matching limit (KBS-012) for Guaranteed QoS.
+
+# KBS-012: Memory Limits Defined
+
+## Purpose
+
+Memory limits cap how much memory a pod can consume. Without a limit, a memory leak in Platform
+will grow until the node's OOM killer steps in and terminates processes — possibly Platform
+itself or other critical workloads on the node.
+
+## How to Fix
+
+1. In the Platform Helm chart `values.yaml`, define a memory limit:
+   ```yaml
+   resources:
+     limits:
+       memory: 4Gi
+   ```
+2. Apply with `helm upgrade`. Set the limit equal to the request (KBS-011) for Guaranteed QoS
+   (KBS-004).
+
+# KBS-013: Pod Restart Count
+
+## Purpose
+
+A high restart count is a strong signal that a Platform pod is crash-looping or hitting repeated
+failures (OOM kills, failed probes, bad configuration). This check flags any Platform pod that
+has restarted more than 5 times as of capture time. It requires kubectl access.
+
+## How to Fix
+
+1. Identify the restarting pods:
+   ```bash
+   kubectl get pods -l app=platform -o wide
+   ```
+2. Inspect the logs from the previous (crashed) container instance:
+   ```bash
+   kubectl logs <pod> --previous
+   ```
+3. Review pod events for OOM kills or probe failures:
+   ```bash
+   kubectl describe pod <pod>
+   ```
+4. Address the root cause — common ones are memory limits set too low (KBS-012),
+   misconfigured probes (KBS-005 / KBS-006), or an application/configuration error. Contact
+   Itential Support if the cause is not clear from the logs.
+
+# KBS-014: HPA Enabled
+
+## Purpose
+
+A Horizontal Pod Autoscaler (HPA) scales Platform replicas up and down with load, preventing
+performance degradation during traffic spikes. This check requires kubectl access.
+
+## How to Fix
+
+1. Enable autoscaling in the Platform Helm chart `values.yaml`:
+   ```yaml
+   autoscaling:
+     enabled: true
+     minReplicas: 2
+     maxReplicas: 6
+     targetCPUUtilizationPercentage: 70
+   ```
+2. Apply with `helm upgrade` and confirm: `kubectl get hpa`.
+
+> If your chart does not manage the HPA, create one directly against the Platform deployment:
+> `kubectl autoscale deployment <platform> --min=2 --max=6 --cpu-percent=70`.
+
+# KBS-015: HPA Minimum Replicas
+
+## Purpose
+
+The HPA `minReplicas` is the floor the autoscaler can scale down to. A floor of 1 means the
+deployment can drop to a single, non-redundant pod; setting it to at least 2 keeps Platform
+redundant even at minimum load.
+
+## How to Fix
+
+1. In the Platform Helm chart `values.yaml`, set the autoscaler floor to at least 2:
+   ```yaml
+   autoscaling:
+     minReplicas: 2
+   ```
+2. Apply with `helm upgrade`, or patch an existing HPA directly:
+   ```bash
+   kubectl patch hpa <platform-hpa> -p '{"spec":{"minReplicas":2}}'
+   ```

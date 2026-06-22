@@ -44,6 +44,11 @@ class ProfileMetadata:
     description: str
     file_path: Path
     override_count: int
+    # Optional tier scope from the profile file's "tier" field. Profiles
+    # marked "saas" are visible ONLY under the SaaS tier — and the SaaS
+    # tier sees ONLY those profiles. None = a regular (Standard/Extended)
+    # profile.
+    tier: str | None = None
 
 class RulesetManager:
     """Manages ruleset loading and active state"""
@@ -65,9 +70,7 @@ class RulesetManager:
         Fast path: checks for ``{id}.json`` directly.
         Fallback:  scans all JSON files in the rulesets directory for a
                    file whose internal ``ruleset.id`` matches. This handles
-                   the case where the filename doesn't match the internal ID
-                   (e.g., file is ``20231-master-ruleset.json`` but the
-                   internal ID is ``2023-master-ruleset``).
+                   any case where the filename and internal ID diverge.
         """
         # Fast path: filename matches ID
         direct = self.RULESETS_DIR / f"{ruleset_id}.json"
@@ -203,8 +206,16 @@ class RulesetManager:
             last_modified=datetime.fromtimestamp(stat.st_mtime)
         )
 
-    def discover_rulesets(self) -> list[RulesetMetadata]:
-        """Scan directory and return metadata for all valid rulesets"""
+    def discover_rulesets(self, include_legacy: bool | None = None) -> list[RulesetMetadata]:
+        """Scan directory and return metadata for visible rulesets.
+
+        Legacy (2023.x) rulesets are hidden unless the active environment
+        is marked as a legacy deployment (its ``legacy_profile`` field) —
+        the files stay on disk and keep syncing/updating, they just never
+        appear in listings or pickers. ``include_legacy`` overrides the
+        environment-resolved default (True = show everything, e.g. for
+        internal lookups of an already-active ruleset).
+        """
         if not self.RULESETS_DIR.exists():
             return []
 
@@ -215,10 +226,36 @@ class RulesetManager:
             except (json.JSONDecodeError, KeyError):
                 continue
 
+        allow_legacy = include_legacy if include_legacy is not None else self._resolve_allow_legacy()
+        if not allow_legacy:
+            metadata_list = [
+                m for m in metadata_list
+                if not self.ruleset_is_legacy(m.id, m.target_product)
+            ]
+
         return sorted(metadata_list, key=lambda m: m.id)
 
-    def discover_profiles(self) -> list[ProfileMetadata]:
-        """Scan profiles directory and return metadata for all valid profiles"""
+    def discover_profiles(
+        self,
+        tier: str | None = None,
+        include_all_tiers: bool = False,
+        include_legacy: bool | None = None,
+    ) -> list[ProfileMetadata]:
+        """Scan profiles directory and return metadata for visible profiles.
+
+        Two orthogonal visibility filters apply:
+
+        * Tier scope — SaaS-marked profiles (``"tier": "saas"`` in the
+          profile file) appear ONLY when the active tier is SaaS, and the
+          SaaS tier sees ONLY those profiles. ``tier`` overrides the
+          context-resolved tier; ``include_all_tiers=True`` skips this
+          filter. When no tier can be resolved at all (context not
+          initialized), the tier filter is skipped rather than guessed.
+        * Legacy scope — 2023.x profiles are hidden unless the active
+          environment is marked as a legacy deployment (``legacy_profile``
+          field). ``include_legacy`` overrides the environment-resolved
+          default.
+        """
         if not self.PROFILES_DIR.exists():
             return []
 
@@ -233,11 +270,154 @@ class RulesetManager:
                     description=data.get("description", ""),
                     file_path=json_file,
                     override_count=len(data.get("rules", {})),
+                    tier=data.get("tier"),
                 ))
             except (json.JSONDecodeError, KeyError):
                 continue
 
+        allow_legacy = include_legacy if include_legacy is not None else self._resolve_allow_legacy()
+        if not allow_legacy:
+            profiles = [p for p in profiles if not self.profile_is_legacy(p.id)]
+
+        if not include_all_tiers:
+            active_tier = tier if tier is not None else self._resolve_active_tier()
+            if active_tier is not None:
+                profiles = [
+                    p for p in profiles
+                    if self.profile_visible_for_tier(p.tier, active_tier)
+                ]
+
         return sorted(profiles, key=lambda p: p.id)
+
+    @staticmethod
+    def _resolve_active_tier() -> str | None:
+        """Best-effort active tier from the context singleton.
+
+        Lazy import (mirrors get_ruleset_manager) — ruleset_manager loads
+        before context during init, so a module-level import would cycle.
+        Returns None when no context is initialized yet; discovery then
+        stays unfiltered rather than guessing a tier.
+        """
+        try:
+            from platform_atlas.core.context import ctx
+            return ctx().tier
+        except Exception:
+            return None
+
+    @staticmethod
+    def _resolve_allow_legacy() -> bool:
+        """Best-effort legacy marker from the active config.
+
+        True only when the active environment (or global config) carries a
+        ``legacy_profile`` value — i.e. the user really runs a 2023.x
+        deployment. Fails CLOSED: with no context, legacy stays hidden —
+        that is the correct default for every fresh install, and explicit
+        ``include_legacy=True`` exists for internal lookups.
+        """
+        try:
+            from platform_atlas.core.context import ctx
+            return bool(ctx().config.legacy_profile)
+        except Exception:
+            return False
+
+    @staticmethod
+    def ruleset_is_legacy(ruleset_id: str | None, target_product: str | None = None) -> bool:
+        """True when the ruleset targets the legacy 2023.x product line."""
+        return (
+            "2023" in (ruleset_id or "").lower()
+            or "2023" in (target_product or "").lower()
+        )
+
+    @staticmethod
+    def profile_is_legacy(profile_id: str | None) -> bool:
+        """True when the profile is scoped to the legacy 2023.x ruleset."""
+        return (profile_id or "").lower().startswith("2023")
+
+    @staticmethod
+    def profile_visible_for_tier(profile_tier: str | None, active_tier: str | None) -> bool:
+        """SaaS-scoped profiles and the SaaS tier are visible only to each other.
+
+        One boolean covers both directions: a ``tier: "saas"`` profile is
+        hidden from Standard/Extended, and a SaaS environment hides every
+        profile that is NOT SaaS-scoped.
+        """
+        profile_is_saas = (profile_tier or "").strip().lower() == "saas"
+        tier_is_saas = (active_tier or "").strip().lower() == "saas"
+        return profile_is_saas == tier_is_saas
+
+    def ensure_ruleset_allowed(self, ruleset_id: str, allow_legacy: bool | None = None) -> None:
+        """Raise ValueError when ``ruleset_id`` is a hidden legacy ruleset.
+
+        Guards explicit activation (``ruleset load``, the WebUI activate
+        endpoint) — session switching bypasses this so a legacy session's
+        bindings keep restoring. Unknown IDs pass through; the caller's
+        FileNotFoundError handling stays authoritative.
+        """
+        resolved = allow_legacy if allow_legacy is not None else self._resolve_allow_legacy()
+        if resolved:
+            return
+        target_product = ""
+        try:
+            path = self._resolve_ruleset_path(ruleset_id)
+            if path is not None:
+                target_product = self._extract_metadata(path).target_product
+        except Exception:
+            pass
+        if self.ruleset_is_legacy(ruleset_id, target_product):
+            raise ValueError(
+                f"Ruleset '{ruleset_id}' targets the legacy 2023.x platform — it is "
+                f"available only when the active environment is marked as a legacy "
+                f"deployment (its 'legacy_profile' field)."
+            )
+
+    def ensure_profile_allowed(
+        self,
+        profile_id: str,
+        tier: str | None = None,
+        allow_legacy: bool | None = None,
+    ) -> None:
+        """Raise ValueError when ``profile_id`` is hidden from this environment.
+
+        Two checks, matching discover_profiles() visibility: the profile's
+        tier scope (SaaS profiles only under SaaS, and vice versa) and the
+        legacy scope (2023.x profiles only for legacy-marked environments).
+
+        Guards the EXPLICIT activation paths (``ruleset profile set``,
+        ``ruleset load --profile``, the WebUI activate endpoint) against
+        IDs typed or posted directly — the pickers already filter their
+        listings. Session switching deliberately bypasses this: a session's
+        bindings (tier + ruleset + profile) restore atomically, and the
+        pre-switch context must not veto them. Unknown profile IDs pass
+        through here so the caller's FileNotFoundError handling stays
+        authoritative.
+        """
+        resolved_legacy = allow_legacy if allow_legacy is not None else self._resolve_allow_legacy()
+        if not resolved_legacy and self.profile_is_legacy(profile_id):
+            raise ValueError(
+                f"Profile '{profile_id}' targets the legacy 2023.x platform — it is "
+                f"available only when the active environment is marked as a legacy "
+                f"deployment (its 'legacy_profile' field)."
+            )
+
+        active_tier = tier if tier is not None else self._resolve_active_tier()
+        if active_tier is None:
+            return
+        try:
+            profile_tier = self._load_profile(profile_id).get("tier")
+        except (FileNotFoundError, json.JSONDecodeError):
+            return
+        if self.profile_visible_for_tier(profile_tier, active_tier):
+            return
+        if (profile_tier or "").strip().lower() == "saas":
+            raise ValueError(
+                f"Profile '{profile_id}' is a SaaS-tier profile — it applies only "
+                f"to SaaS (single-gateway) environments, not the {active_tier} tier."
+            )
+        saas_ids = ", ".join(p.id for p in self.discover_profiles(tier="saas")) or "saas-gateway4, saas-gateway5"
+        raise ValueError(
+            f"Profile '{profile_id}' is not available in the SaaS tier — "
+            f"a SaaS environment uses its own gateway profiles ({saas_ids})."
+        )
     # ──────────────────────────────────────────────────────────────
 
     def set_active_ruleset(self, ruleset_id: str, profile_id: str | None = None) -> None:

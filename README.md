@@ -18,12 +18,12 @@ Platform Atlas is a comprehensive CLI tool that captures configuration data from
 - [Initial Setup](#initial-setup)
 - [Configuration](#configuration)
 - [Environments](#environments)
+- [Tiers](#tiers)
 - [Kubernetes Deployments](#kubernetes-deployments)
 - [ControlMaster Transport (CyberArk PSMP)](#controlmaster-transport-cyberark-psmp)
 - [The Workflow](#the-workflow)
 - [Command Reference](#command-reference)
 - [Rulesets and Profiles](#rulesets-and-profiles)
-- [Multi-Tenant Mode](#multi-tenant-mode)
 - [Required Permissions](#required-permissions)
 - [Security](#security)
 - [Themes](#themes)
@@ -36,12 +36,12 @@ Platform Atlas is a comprehensive CLI tool that captures configuration data from
 
 ## Features
 
-- **Two Audit Tiers** — Choose between Standard (Platform OAuth + IAG4 API only, ~55 rules, no SSH/MongoDB/Redis required) and Extended (full infrastructure audit via SSH, MongoDB, Redis, Kubernetes, and Gateways, ~108 rules). Switch at any time with `platform-atlas tier set`.
+- **Three Audit Tiers** — **Standard** (Platform OAuth + IAG4 API only, ~55 rules, no SSH/MongoDB/Redis), **Extended** (full infrastructure audit via SSH, MongoDB, Redis, Kubernetes, and Gateways, ~122 rules), and **SaaS** (a single standalone Gateway — GW4 *or* GW5 — with no Platform/MongoDB/Redis at all). Switch Standard ⇄ Extended any time with `platform-atlas tier set`; SaaS is chosen per-environment at create time.
 - **Automated Data Collection** — Connects via SSH, MongoDB, Redis, and Platform OAuth to capture configuration data from all components of an IAP deployment. If passwordless sudo is available, Atlas will automatically use it to read configuration files that the SSH user cannot access directly.
 - **Optional WebUI** — Browser-based interface (`platform-atlas-webui` wheel) for managing sessions, running captures, streaming live job output, and browsing reports — no CLI knowledge required.
 - **Multiple Rulesets** — Select from versioned, JSON schema-validated rulesets tailored to specific platform versions (e.g., Platform 6)
 - **Ruleset Profiles** — Environment-specific overlays (standalone, HA2, dev, prod, gateway4, gateway5) that enable or disable rules from the master ruleset
-- **~108 Validation Rules (Extended) / ~55 (Standard)** — Covering Redis, MongoDB, Platform, Gateway4, and Gateway5 across critical, warning, and info severity levels
+- **~122 Validation Rules (Extended) / ~55 (Standard)** — Covering Platform, Gateway4, Gateway5, Redis, MongoDB, and Kubernetes across critical, warning, and info severity levels
 - **Extended Validation** — Decorator-based checks that run outside the standard ruleset structure for health, adapter, and version analysis
 - **Rule Chaining** — Rules can depend on other rules, so downstream checks are automatically skipped when a dependency fails
 - **Dynamic Rules** — Limited computed values inside rules for proper comparison against runtime configuration
@@ -49,25 +49,27 @@ Platform Atlas is a comprehensive CLI tool that captures configuration data from
 - **Session Diff Engine** — Compare two audit sessions side-by-side to track configuration drift, regressions, and fixes over time
 - **Session Management** — Organize captures, validations, and reports into named sessions with metadata tracking. Each session binds an environment, ruleset, tier, and profile at creation — switching sessions restores the full context automatically
 - **Guided Manual Collection** — Interactive fallback prompts for environments where automated capture cannot reach certain components. Supports batch directory import (`--import-dir`) for importing all pre-collected files at once without interactive prompts — re-runnable to incrementally add data.
-- **Multi-Tenant Mode** — Itential staff can import and manage capture data from multiple customer organizations in a single installation
 - **Named Environments** — Define multiple deployment targets (dev, staging, production) as independent environment files, each with its own organization name, connection details, topology, and scoped credentials
 - **Deployment Topology** — Models standalone, HA2, and custom deployment architectures with configurable capture scope
-- **Secure Credential Storage** — Sensitive credentials stored in the OS keyring (macOS Keychain, Windows Credential Locker, Linux Secret Service) or Hashicorp Vault, scoped per environment, never in config files
+- **Secure Credential Storage** — Three explicit backends chosen at setup: the OS keyring (macOS Keychain, Windows Credential Locker, Linux Secret Service), an encrypted local file (AES-256-GCM, for headless servers), or Hashicorp Vault — scoped per environment, never in config files
 - **Air-Gapped Support** — Operates entirely offline after installation; no internet access required for capture, validation, or reporting
 - **Multiple Export Formats** — HTML, CSV, and JSON report output with session export and redaction support
 - **Three-Report System** — `session run report` always generates all three HTML reports in a single pass: `03_report.html` (compliance), `04_operational.html` (logs + MongoDB pipelines), and `05_arch.html` (architecture & maintenance); all three share a header nav bar and the compliance report opens automatically in the browser
+- **Unified Report (preview)** — opt-in `session run report --unified` also writes a single standalone `unified_report.html` folding Compliance, Operational, and Architecture into one tabbed file; purely additive, never replaces the classic reports
 - **MongoDB Aggregation Pipelines** — After capture, Atlas prompts whether to run aggregation pipelines against the Platform's MongoDB database for the operational report; pipeline definitions are extensible via user-defined JSON files in `~/.atlas/pipelines/`
 
 ## Requirements
 
 - Python 3.11 or higher
 - Platform OAuth service account with read-only API access *(all tiers)*
-- OS keyring backend available (macOS Keychain, GNOME Keyring, KWallet, or Windows Credential Locker), or Hashicorp Vault with KV v2 secrets engine *(all tiers)*
+- A credential store: OS keyring (macOS Keychain, GNOME Keyring, KWallet, Windows Credential Locker), an encrypted local file (for headless servers with no keyring), or HashiCorp Vault with KV v2 *(all tiers)*
 - SSH access to target nodes (key-based authentication recommended) *(Extended tier only)*
 - MongoDB user with `clusterMonitor` (admin) + `read` on the Platform database *(Extended tier only)*
 - Read-only Redis user with limited ACL permissions *(Extended tier only)*
 
 ## Install and Setup
+
+Wheel packages for every release are available on the [GitHub releases page](https://github.com/itential/platform-atlas/releases).
 
 Platform Atlas is distributed as two Python wheel packages — the core CLI and an optional WebUI. Install inside a dedicated virtual environment on the workstation you use to access your IAP environment.
 
@@ -183,16 +185,18 @@ platform-atlas-webui
 
 This starts a local server and opens the interface in your browser. The WebUI shares the same `~/.atlas/` configuration directory as the CLI — no separate setup required.
 
-### Credential Storage (OS Keyring)
+### Credential Storage
 
-Platform Atlas stores sensitive credentials (MongoDB, Redis, Platform OAuth, SSH passphrases, Gateway passwords) in your operating system's secure credential store via the `keyring` library — never in config files on disk. Each environment's secrets are scoped under `platform-atlas/<env-name>` so production credentials are completely isolated from dev/staging credentials.
+Platform Atlas stores sensitive credentials (MongoDB, Redis, Platform OAuth, SSH passphrases, Gateway passwords) in one of three explicit backends you choose at setup — never in config files on disk. The **OS Keyring is the recommended default**; an **encrypted local file** and **HashiCorp Vault** are the other two. Atlas uses exactly the store you pick and never auto-switches between them.
 
-| Platform | Backend used |
+With the OS keyring, each environment's secrets are scoped under `platform-atlas/<env-name>` so production credentials are completely isolated from dev/staging credentials.
+
+| Platform | OS keyring backend used |
 |---|---|
 | macOS | Keychain (built-in) |
 | Windows | Credential Locker (built-in) |
 | Linux (desktop) | GNOME Keyring / KWallet via SecretService |
-| Linux (headless) | Encrypted file backend (configure manually — see below) |
+| Linux (headless) | No usable OS keyring — choose the encrypted local file store (see below) |
 
 **Reconfigure or rotate credentials at any time:**
 
@@ -203,17 +207,34 @@ platform-atlas config credentials
 This is the canonical command for adding, updating, or rotating any credential — Platform OAuth client secret, MongoDB/Redis URIs, SSH key passphrases, Gateway4 password, or Vault auth tokens. It writes to the active environment's keyring scope (or to your Vault backend, depending on `credential_backend`). Use it whenever:
 
 - A credential has been rotated upstream and Atlas connections start failing
-- You're switching backends (`keyring` ↔ `vault`)
+- You're switching backends (`keyring`, `file`, or `vault`)
 - You set up a new SSH key with a passphrase
 - You need to add a credential that wasn't collected during the original `env create` flow (e.g. retrofitting a Gateway4 password onto an existing environment)
 
 You do **not** need to recreate the environment to update credentials.
 
+### Encrypted Local File Backend
+
+The encrypted local file is a first-class backend you choose explicitly at setup — not an automatic fallback. Pick it on a headless Linux server with no D-Bus session, or anywhere you'd rather keep secrets off the OS keyring. Atlas stores credentials in a machine-bound file at `~/.atlas/credentials.enc`. When you choose Vault, this is also where Vault's own *connection settings* can live if you'd rather not keep them in the keyring.
+
+- **Encryption at rest:** AES-256-GCM with a key derived from this host and user plus a random per-install salt stored separately in `~/.atlas/.keysalt`. The file is non-portable (it won't decrypt on another host or user account) and a single leaked file is useless without the salt. Files are written `0o600`.
+- **Honest reporting:** preflight, `config doctor`, the banner, and `config credentials` all show when the file store is active — it's reported as a warning, never claimed to be an encrypted keyring.
+- **Atlas never auto-switches** — the store you choose at setup is the store it uses on every run. Switching later happens only when you run an explicit command (below); nothing migrates on its own.
+
+**Switch an existing environment's backend (deliberately):**
+
+```bash
+platform-atlas config credentials --use-file-store   # switch this environment to the encrypted file
+platform-atlas config credentials --use-keyring      # switch it back to the OS keyring
+```
+
+Switching re-enters the environment's secrets into the new store — nothing is silently copied between backends, so a credential is only ever where you put it.
+
 ### Credential Storage (Headless Servers)
 
-Platform Atlas is generally to be used on a Workstation PC, but if needed to install on a server this can be done. On headless Linux servers without a desktop environment, the default keyring backend has no encryption. Atlas will warn you about this during setup if it detects an insecure backend.
+Platform Atlas is generally used on a workstation PC, but it can be installed on a server. On headless Linux servers without a desktop environment, the OS keyring usually can't store secrets securely — so, as described above, you explicitly choose the **encrypted local file store** at setup (the wizard flags whether the keyring works on this host) and capture just works. No manual keyring configuration is required.
 
-To set up encrypted credential storage, install the following packages:
+If you would instead prefer an encrypted **OS keyring** on the server (rather than the local file store or Vault), you can configure one by hand. Install the following packages:
 
 ```bash
 pip3 install keyring keyrings.alt pycryptodome SecretStorage
@@ -263,7 +284,7 @@ Keep the same `export` set in the shell that runs `platform-atlas config credent
 
 Platform Atlas can use Hashicorp Vault as a read-only credential backend instead of the OS keyring. In this mode, Atlas reads credentials from a KV v2 secrets engine at runetime but never writes to Vault - secrets are managed externally through the Vault UI, CLI, or API calls outside of Atlas.
 
-Vault connection settings (URL, authe methd, token or AppRole credentials, mount path) are stored in the OS keyring under a `vault_` prefix, keeping them off disk entirely.
+Vault's own connection settings (URL, auth method, token or AppRole credentials, mount path) need a local home — Atlas asks where to keep them when you choose Vault, with the **OS keyring recommended** (stored under a `vault_` prefix, off disk). The encrypted local file is the alternative when the keyring isn't usable on the host.
 
 To configure Vault as the credential backend, run the setup wizard and select "vault" when prompted:
 ```bash
@@ -343,11 +364,12 @@ Global settings that apply across all environments are stored in `~/.atlas/confi
 {
     "organization_name": "Acme Corp",
     "active_environment": "production",
+    "tier": "standard",
     "verify_ssl": false,
     "dark_mode": true,
     "theme": "horizon-prism",
     "extended_validation_checks": true,
-    "multi_tenant_mode": false,
+    "credential_backend": "keyring",
     "debug": false
 }
 ```
@@ -462,17 +484,18 @@ The `capture_scope` setting controls how many nodes the capture engine connects 
 
 ## Tiers
 
-Starting in v1.7, Atlas operates in one of two modes:
+Atlas operates in one of three modes:
 
-| | Standard | Extended |
-|---|---|---|
-| **Collectors** | Platform OAuth, IAG4 API | All Standard + SSH, MongoDB, Redis, Kubernetes, Gateway5 |
-| **Rules** | ~55 | ~108 |
-| **SSH required** | No | Yes |
-| **MongoDB / Redis required** | No | Yes |
-| **Best for** | Application-layer audits, quick checks, restricted environments | Full infrastructure compliance audits |
+| | Standard | SaaS | Extended |
+|---|---|---|---|
+| **Audits** | Platform application layer | One standalone Gateway (GW4 *or* GW5) | Full Platform deployment |
+| **Collectors** | Platform OAuth, IAG4 API | Gateway API + gateway SSH (optional for GW4), or a local Compose/Helm file for GW5 | All Standard + SSH, MongoDB, Redis, Kubernetes, Gateway5 |
+| **Rules** | ~55 | Gateway categories only (~11 GW4 / ~27 GW5) | ~108 |
+| **SSH required** | No | As needed (GW4 API-only works) | Yes |
+| **Platform / MongoDB / Redis** | Platform only | **None** | Yes |
+| **Best for** | Application-layer audits, quick checks, restricted environments | SaaS/cloud customers running a standalone gateway | Full infrastructure compliance audits |
 
-Fresh installs default to **Standard**. Upgrades from 1.6.x default to **Extended** to preserve existing behavior.
+Fresh installs default to **Standard**. Upgrades from 1.6.x default to **Extended** to preserve existing behavior. **SaaS** is chosen per-environment at create time (`platform-atlas env create`) — it is never a global default, and a SaaS environment's tier and gateway kind are fixed for its lifetime. A SaaS audit produces a **single report file**: the compliance report with the Architecture Overview merged in.
 
 ### Tier Commands
 
@@ -490,7 +513,7 @@ Use the `--tier` flag to override the tier for a single command without changing
 platform-atlas --tier standard session run capture
 ```
 
-Sessions bind the active tier at creation time. The tier is displayed in session metadata and reports. Cross-tier diffs are flagged with a notice banner.
+Sessions bind the active tier at creation time. The tier is displayed in session metadata and reports. Cross-tier diffs are flagged with a notice banner. `tier upgrade`/`downgrade` apply to Standard ↔ Extended only — SaaS environments are created as SaaS and stay SaaS (create a new environment to change direction).
 
 ---
 
@@ -552,6 +575,19 @@ These fallbacks come from files and commands read directly inside the running po
 | Gateway Manager Version Check | `platform.application_status.results.GatewayManager.version` | `system.kubernetes.installed_services.app-ag_manager.version` | `cat .../services/app-ag_manager/package.json` |
 
 > **Debug logging:** When `--debug` is enabled (or `"debug": true` in `config.json`), Atlas logs every `kubectl` command it runs, the exit code, elapsed time, and any stderr output to `~/.atlas/atlas.log`. This makes it straightforward to verify which commands fired and whether they succeeded.
+
+---
+
+## Gateway 5 Configuration Sources
+
+When an environment includes an Automation Gateway 5, Atlas reads its `GATEWAY_*` settings from one of four sources, chosen during `env create` / `env edit`:
+
+- **SSH `printenv`** — live environment variables from the running gateway host (default).
+- **Docker Compose file** — parses the `environment:` block of a local compose file; no SSH needed for containerized gateways.
+- **Helm values file** — parses `env` / `extraEnv` and the IAG5 chart's `serverSettings` / `applicationSettings` / `runnerSettings`.
+- **Server `gateway.conf` over SSH** — reads the IAG5 server config file (INI); only a `server`-mode file is accepted.
+
+All four feed the same `gateway5.*` rules, so results are identical regardless of source. File and server-config sources are validated during preflight.
 
 ---
 
@@ -746,6 +782,8 @@ platform-atlas session run report --format json
 
 The compliance report opens automatically in your browser. All three reports share a header navigation bar linking to each other.
 
+> **Unified report (preview):** add `--unified` to also write a single standalone `unified_report.html` that folds all three into one tabbed page (additive — the classic `03/04/05` files are still written). A **SaaS** audit instead produces a single merged `03_report.html` (compliance + Architecture Overview).
+
 **MongoDB Aggregation Pipelines**
 
 After capture completes, Atlas prompts whether to run MongoDB aggregation pipelines for the operational report. These query live workflow and task data from the Platform database to produce execution statistics, top workflows, and runtime metrics. If you decline, the operational report still generates — it will contain log analysis only with a notice in the pipeline section.
@@ -787,7 +825,8 @@ The diff report classifies each rule as Fixed, Regressed, Unchanged, New, Remove
 | `session run capture --manual` | Interactive guided collection for air-gapped environments |
 | `session run capture --manual --import-dir <dir>` | Batch import capture files from a directory |
 | `session run report` | Generate all three HTML reports (compliance, operational, architecture) |
-| `session export [name]` | Package session for delivery (zip or tar.gz) |
+| `session run report --unified` | Also emit a single tabbed `unified_report.html` (preview; additive) |
+| `session export [name]` | Package the full report set + JSON + metadata into a delivery archive (`ATLAS-<org>-<session>-<date>`); `--include-debug` adds capture/logs |
 | `session delete <n>` | Permanently remove a session |
 | `session diff <baseline> <latest>` | Compare two sessions |
 | `session repair [name]` | Backfill missing metadata on pre-1.5 sessions |
@@ -803,6 +842,9 @@ The diff report classifies each rule as Fixed, Regressed, Unchanged, New, Remove
 | `ruleset active` | Show active ruleset |
 | `ruleset clear` | Deactivate current ruleset |
 | `ruleset rules [id]` | Display all rules in a ruleset |
+| `ruleset update` | Fetch and apply SHA-256-verified ruleset updates from the manifest |
+| `ruleset skip-rule <n> --reason` | Suppress a rule in the active environment (shown as Suppressed; reason required) |
+| `ruleset unskip-rule <n>` | Remove a per-environment rule suppression |
 | `ruleset profile list` | List available profiles |
 | `ruleset profile set <id>` | Set a profile overlay |
 | `ruleset profile active` | Show active profile |
@@ -814,9 +856,12 @@ The diff report classifies each rule as Fixed, Regressed, Unchanged, New, Remove
 |---|---|
 | `config init` | Run the interactive setup wizard |
 | `config show` | Display current configuration (redacted) |
-| `config credentials` | Manage keyring credentials |
+| `config edit` | Tune individual settings (input mode, log retention, timeouts) without hand-editing config.json |
+| `config credentials` | Add, rotate, or switch the backend for stored credentials |
 | `config deployment` | Reconfigure deployment topology |
 | `config theme` | Switch color theme |
+| `config doctor` | Run a one-shot configuration health check |
+| `config architecture` | Record/update infrastructure architecture info (alias of `env architecture`) |
 
 ### Environment Commands
 
@@ -828,6 +873,7 @@ The diff report classifies each rule as Fixed, Regressed, Unchanged, New, Remove
 | `env switch [name]` | Switch environment and offer to switch to a bound session |
 | `env show [name]` | Show environment details |
 | `env edit [name]` | Edit environment settings (org name, URIs, topology, etc.) |
+| `env architecture [name]` | Record/update architecture info for the report (browser or CLI form) |
 | `env remove <n>` | Delete an environment |
 
 ### Tier Commands
@@ -844,6 +890,9 @@ The diff report classifies each rule as Fixed, Regressed, Unchanged, New, Remove
 | Command | Description |
 |---|---|
 | `preflight` | Run connectivity checks against all configured services |
+| `support-bundle` | Collect a diagnostic ZIP (health endpoints, redacted config, Extended logs) for a support ticket |
+| `continuous-audit` | Schedule recurring audits with alerting and run history |
+| `fleet` | Multi-environment health summary (pass rate, drift, continuous-audit state) |
 | `guide` | View the built-in help guide |
 | `--version` | Display version |
 | `--debug` | Enable debug mode with verbose logging |
@@ -856,19 +905,20 @@ The diff report classifies each rule as Fixed, Regressed, Unchanged, New, Remove
 
 A ruleset is a versioned JSON file containing an array of validation rules. Each rule defines a target path in the captured data, a validation type and operator, an expected value, and pass/fail messages.
 
-Platform Atlas ships with the **Platform 6 Master Ruleset** (`p6-master-ruleset`) containing 105 rules across five categories:
+Platform Atlas ships with the **Platform 6 Master Ruleset** (`p6-master-ruleset`) containing 122 rules across six categories:
 
 | Category | Rules | Coverage |
 |---|---|---|
-| Platform | 47 | Application settings, adapters, services, properties |
-| Gateway5 | 23 | IAG5 configuration, health, version checks |
+| Platform | 49 | Application settings, adapters, services, properties |
+| Gateway5 | 25 | IAG5 configuration, health, version checks |
 | Redis | 16 | Server config, memory, persistence, replication, ACLs |
+| Kubernetes | 15 | Probes, resource requests/limits, HPA, restart counts |
 | Gateway4 | 11 | Venv packages, sync config, database settings |
-| MongoDB | 8 | Server status, version, replication, connection settings |
+| MongoDB | 6 | Server status, version, replication, connection settings |
 
-Severity breakdown: 15 critical, 61 warning, 29 info.
+Severity breakdown: 18 critical, 79 warning, 25 info.
 
-There is also an included **IAP 2023.x Master Ruleset** (`2023-master-ruleset`) in the configuration file for IAP 2023.x Support for Atlas. Please see `3. Load a Ruleset and Profile` for more information on using this if needed.
+There is also an included **IAP 2023.x Master Ruleset** (`20231-master-ruleset`) in the configuration file for IAP 2023.x Support for Atlas. Please see `3. Load a Ruleset and Profile` for more information on using this if needed.
 
 ### Profiles
 
@@ -887,29 +937,6 @@ Available profiles for Platform 6:
 | `p6-dev-standalone-gateway4` | Development standalone with Gateway4 |
 | `p6-dev-standalone-gateway5` | Development standalone with Gateway5 |
 | `p6-dev-standalone-no-gateway` | Development standalone without Gateway |
-
-## Multi-Tenant Mode
-
-Multi-tenant mode is designed for Itential Customer Success staff who manage capture data from multiple customer organizations. Enable it by setting `"multi_tenant_mode": true` in the configuration file.
-
-Customer data is organized under `~/.atlas/customer-data/<organization>/` with session-based directories for each capture.
-
-```bash
-# Import a customer's capture file
-platform-atlas customer import capture.json --organization "Acme Corp"
-
-# List all customer organizations
-platform-atlas customer list
-
-# List sessions for an organization
-platform-atlas customer sessions "Acme Corp"
-
-# Validate a customer session
-platform-atlas customer validate "Acme Corp" 2026-q1
-
-# Generate a report for a customer session
-platform-atlas customer report "Acme Corp" 2026-q1
-```
 
 ## Required Permissions
 
@@ -1110,17 +1137,19 @@ Both flows work identically in the WebUI — the env toggle is editable from the
 │       ├── 03_report.html          # Compliance report
 │       ├── 04_operational.html     # Operational report (logs + pipeline metrics)
 │       └── 05_arch.html            # Architecture & Maintenance report
-├── pipelines/                      # Operational report pipeline definitions
-│   └── topworkflows.json
-└── customer-data/                  # Multi-tenant customer data
-    └── acme-corp/
-        └── 2026-q1/
-            ├── 01_capture.json
-            ├── 02_validation.parquet
-            └── 03_report.html
+└── pipelines/                      # Operational report pipeline definitions
+    └── topworkflows.json
 ```
 
 ## Upgrading
+
+### From 1.x → 2.0
+
+- **Credentials are now an explicit choice** — OS keyring, encrypted local file, or Vault, selected at setup. Existing keyring and Vault installs keep working unchanged; nothing auto-switches.
+- **New SaaS tier** for single-gateway (GW4 *or* GW5) audits with no Platform/MongoDB/Redis — chosen per environment at create time.
+- **Multi-tenant mode and the `customer` command have been removed** — use named environments (one per customer) instead.
+
+All existing sessions, environments, and captures continue to work.
 
 ### From 1.6.x → 1.7
 
@@ -1152,6 +1181,6 @@ This project is licensed under the GNU General Public License v3.0. See the [LIC
 
 ---
 
-**Version:** 1.7.2
+**Version:** 2.0.0
 **Author:** Cody Rester
-**Last Updated:** May 2026
+**Last Updated:** June 2026

@@ -306,6 +306,142 @@ def _build_modules_standard(
     return modules, [], {}
 
 
+def _compute_expected_ssh_modules_saas(
+    ssh_needed: set[str],
+    kind: str,
+) -> list[str]:
+    """SaaS analogue of _compute_expected_ssh_modules — gateway-scoped.
+
+    Lists the modules that WOULD have registered had SSH connected, so a
+    failed gateway SSH still surfaces them as FAILED in the capture UI
+    instead of silently vanishing.
+    """
+    expected: list[str] = []
+    if "system" in ssh_needed:
+        expected.append("system")
+    if kind == "gateway4":
+        if "gateway4" in ssh_needed:
+            expected.extend(["gateway4", "gateway4_sync_config", "gateway4_db_config"])
+        if "filesystem" in ssh_needed:
+            expected.append("gateway4_db_sizes")
+    if kind == "gateway5":
+        if "gateway5" in ssh_needed:
+            expected.append("gateway5")
+        if "filesystem" in ssh_needed:
+            expected.append("iagctl_checks")
+    return expected
+
+
+def _build_modules_saas(
+    target: dict,
+) -> tuple[dict[str, Callable], list[str], dict[str, Callable]]:
+    """
+    SaaS-tier module builder — the audit revolves around one gateway.
+
+    Only the chosen gateway's collectors are constructed, narrowed by
+    ``saas_gateway_kind``:
+
+      gateway4 — ipsdk API (primary) + optional SSH supplement
+                 (pip list, sync-config, DB config/sizes, properties.yml
+                 fallback) + host facts
+      gateway5 — env vars via SSH printenv OR a local Compose/Helm file
+                 + iagctl checks + host facts (SSH source only)
+
+    Platform, Mongo, Redis, and Kubernetes collectors are never
+    constructed under any condition — defense 1 of the hard mode
+    boundary, mirroring _build_modules_standard.
+    """
+    collectors_requested = set(target.get("modules", []))
+    if not collectors_requested:
+        return {}, [], {}
+
+    config = ctx().config
+    kind = (config.saas_gateway_kind or "").strip().lower()
+    modules: dict[str, Callable] = {}
+    ssh_fallbacks: dict[str, Callable] = {}
+
+    # Narrow to the environment's gateway kind — a GW4 SaaS env never runs
+    # gateway5 modules and vice versa, even if a hand-edited node lists both.
+    if kind == "gateway4":
+        collectors_requested -= {"gateway5"}
+    elif kind == "gateway5":
+        collectors_requested -= {"gateway4", "gateway4_api"}
+
+    # Kubernetes targets are not honored in SaaS (matches Standard).
+    if target.get("transport") == "kubernetes":
+        logger.debug("SaaS does not run Kubernetes targets — skipping '%s'",
+                     target.get("name", "unknown"))
+        return {}, [], {}
+
+    # ── Gateway5 file source (Docker Compose / Helm values — no SSH) ──
+    if target.get("transport") == "gateway5_file":
+        if "gateway5" in collectors_requested and kind == "gateway5":
+            gw5 = Gateway5Collector(
+                source_path=target.get("gateway5_source_path", ""),
+            )
+            modules["gateway5"] = gw5.collect_from_file
+        return modules, [], ssh_fallbacks
+
+    # ── SSH-based collectors (share one transport) ──────────────
+    if target.get("transport") in ("ssh", "control_master"):
+        from platform_atlas.core.transport import transport_from_config
+
+        ssh_needed = collectors_requested & _SSH_COLLECTOR_KEYS
+        if ssh_needed:
+            try:
+                transport = transport_from_config(target)
+                logger.debug("SSH transport created for SaaS target '%s' → %s",
+                             target.get("name"), type(transport).__name__)
+
+                if "system" in ssh_needed:
+                    # Host facts of the gateway host — informational context
+                    # in SaaS (no platform gate, unlike the Extended flow).
+                    sys_collector = SystemInfoCollector(transport=transport)
+                    modules["system"] = sys_collector.get_system_info
+
+                if "filesystem" in ssh_needed:
+                    fs = FileSystemInfoCollector(transport=transport)
+                    if kind == "gateway4" and "gateway4" in collectors_requested:
+                        # properties.yml is the SSH fallback — ipsdk is primary.
+                        ssh_fallbacks["gateway4_conf"] = fs.get_gateway4_conf
+                        modules["gateway4_db_sizes"] = fs.check_gateway4_db_size
+                    if kind == "gateway5" and "gateway5" in collectors_requested:
+                        modules["iagctl_checks"] = fs.get_iagctl_checks
+
+                if kind == "gateway4" and "gateway4" in ssh_needed:
+                    gw = Gateway4Collector(transport=transport)
+                    modules["gateway4"] = gw.pip_list
+                    modules["gateway4_sync_config"] = gw.sync_config
+                    modules["gateway4_db_config"] = gw.get_config
+
+                if kind == "gateway5" and "gateway5" in ssh_needed:
+                    conf_path = target.get("gateway5_conf_path", "")
+                    gw5 = Gateway5Collector(transport=transport, conf_path=conf_path)
+                    modules["gateway5"] = (
+                        gw5.collect_from_ssh_conf if conf_path else gw5.collect_env
+                    )
+
+            except Exception as e:
+                ssh_error = str(e)
+                logger.info(
+                    "SSH transport failed for SaaS target '%s': %s — "
+                    "registering SSH modules as unavailable",
+                    target.get("name"), e,
+                )
+                for mod_name in _compute_expected_ssh_modules_saas(ssh_needed, kind):
+                    modules[mod_name] = _ssh_unavailable(mod_name, ssh_error)
+
+    # ── Gateway4 API (ipsdk) — primary source for GW4 config data ──
+    if kind == "gateway4" and (
+        "gateway4_api" in collectors_requested or "gateway4" in collectors_requested
+    ):
+        gw4_api = Gateway4ApiCollector.from_config()
+        if gw4_api is not None:
+            modules["gateway4_api"] = gw4_api.collect
+
+    return modules, [], ssh_fallbacks
+
+
 def build_modules_for_target(
     target: dict,
     log_since=None,
@@ -318,6 +454,8 @@ def build_modules_for_target(
     - In Standard mode, only Platform (OAuth) and Gateway4 API (ipsdk)
       are constructed; SSH and protocol-Extended collectors are pruned at
       this layer (defense 1 of the hard mode boundary).
+    - In SaaS mode, only the chosen gateway's collectors are constructed
+      (see _build_modules_saas) — never Platform/Mongo/Redis/Kubernetes.
     - In Extended mode (the existing flow):
       SSH-based collectors (system, filesystem, gateway4) share a single
       SSH transport to the target server. Protocol-based collectors
@@ -336,6 +474,8 @@ def build_modules_for_target(
     """
     if ctx().is_standard:
         return _build_modules_standard(target)
+    if ctx().is_saas:
+        return _build_modules_saas(target)
 
     from platform_atlas.core.transport import transport_from_config
 
@@ -409,6 +549,14 @@ def build_modules_for_target(
 
         # Protocol collectors work the same in K8s — register them below
         # (fall through to the protocol section)
+
+    # ── Gateway5 file source (Docker Compose / Helm values — no SSH) ──
+    elif target.get("transport") == "gateway5_file":
+        if "gateway5" in collectors_requested:
+            gw5 = Gateway5Collector(
+                source_path=target.get("gateway5_source_path", ""),
+            )
+            modules["gateway5"] = gw5.collect_from_file
 
     # ── SSH-based collectors (share one transport) ──────────────
     elif target.get("transport") != "kubernetes":
@@ -504,8 +652,11 @@ def build_modules_for_target(
                     modules["gateway4_db_config"] = gw.get_config
 
                 if "gateway5" in ssh_needed:
-                    gw5 = Gateway5Collector(transport=transport)
-                    modules["gateway5"] = gw5.collect_env
+                    conf_path = target.get("gateway5_conf_path", "")
+                    gw5 = Gateway5Collector(transport=transport, conf_path=conf_path)
+                    modules["gateway5"] = (
+                        gw5.collect_from_ssh_conf if conf_path else gw5.collect_env
+                    )
 
             except Exception as e:
                 ssh_error = str(e)
@@ -558,32 +709,46 @@ def build_preflight_checks(
 
     Tier-aware: Standard mode never builds SSH-dependent or
     Extended-only protocol checks (Mongo, Redis). Only Platform and
-    Gateway4 API preflights run in Standard.
+    Gateway4 API preflights run in Standard. SaaS builds only the chosen
+    gateway's SSH checks plus host facts, and the Gateway4 API connector
+    when the environment audits a GW4 — never Platform/Mongo/Redis.
     """
     if transport is None:
         transport = LocalTransport()
 
     checks: dict[str, Callable] = {}
     is_standard = ctx().is_standard
+    is_saas = ctx().is_saas
+    saas_kind = (ctx().config.saas_gateway_kind or "").strip().lower() if is_saas else ""
 
     # SSH-dependent collectors - only build when requested or unfiltered.
-    # Skipped entirely in Standard (no SSH preflight in Standard).
+    # Skipped entirely in Standard (no SSH preflight in Standard); scoped
+    # to the chosen gateway in SaaS.
     ssh_keys = {"gateway4", "gateway5", "filesystem", "system"}
+    if is_saas:
+        ssh_keys = {"system", "filesystem",
+                    "gateway4" if saas_kind == "gateway4" else "gateway5"}
     if not is_standard and (include is None or include & ssh_keys):
-        gateway4 = Gateway4Collector(transport=transport)
-        gateway5 = Gateway5Collector(transport=transport)
-        filesystem = FileSystemInfoCollector(transport=transport)
-        system = SystemInfoCollector(transport=transport)
-        checks["gateway4"] = gateway4.preflight
-        checks["gateway5"] = gateway5.preflight
-        checks["filesystem"] = filesystem.preflight
-        checks["system"] = system.preflight
+        if "gateway4" in ssh_keys:
+            checks["gateway4"] = Gateway4Collector(transport=transport).preflight
+        if "gateway5" in ssh_keys:
+            checks["gateway5"] = Gateway5Collector(transport=transport).preflight
+        if "filesystem" in ssh_keys:
+            checks["filesystem"] = FileSystemInfoCollector(transport=transport).preflight
+        if "system" in ssh_keys:
+            checks["system"] = SystemInfoCollector(transport=transport).preflight
 
     # Protocol-based collectors - static methods, no transport needed.
-    # Standard mode runs only platform + gateway4_api.
+    # Standard mode runs only platform + gateway4_api; SaaS runs only
+    # gateway4_api (and only for a GW4 environment).
     connector_keys = {"redis", "mongo", "platform", "gateway4_api"}
     standard_connector_keys = {"platform", "gateway4_api"}
-    allowed_connectors = standard_connector_keys if is_standard else connector_keys
+    if is_standard:
+        allowed_connectors = standard_connector_keys
+    elif is_saas:
+        allowed_connectors = {"gateway4_api"} if saas_kind == "gateway4" else set()
+    else:
+        allowed_connectors = connector_keys
     if include is None or include & allowed_connectors:
         if "platform" in allowed_connectors:
             checks["platform"] = PlatformCollector.preflight

@@ -21,7 +21,8 @@ import datetime
 import json
 
 from rich import box
-from rich.console import Console
+from rich.align import Align
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -270,20 +271,40 @@ def _build_banner() -> Panel:
                 _env_tint = getattr(_env_obj, "env_tint", None)
         except Exception:
             pass
-    _TINT_MAP = {"high": "#C5258F", "medium": "#FDD058", "low": "#99CA3C"}
-    banner_border = _TINT_MAP.get(_env_tint or "", theme.banner_rule)
+    tint_map = {"high": "#C5258F", "medium": "#FDD058", "low": "#99CA3C"}
+    banner_border = tint_map.get(_env_tint or "", theme.banner_rule)
 
     parts: list[str] = []
     if tier_name:
-        tier_color = theme.tier_standard if tier_name == "standard" else theme.tier_extended
+        tier_color = {
+            "standard": theme.tier_standard,
+            "saas": theme.tier_saas,
+        }.get(tier_name, theme.tier_extended)
+        # Proper brand casing — "SaaS", not .capitalize()'s "Saas" — and matches
+        # the Mode label used by the pipeline tracker below.
+        tier_label = {
+            "standard": "Standard",
+            "saas": "SaaS",
+        }.get(tier_name, "Extended")
         parts.append(
-            f"[{tier_color}]{tier_name.capitalize()}[/{tier_color}] "
+            f"[{tier_color}]{tier_label}[/{tier_color}] "
             f"[{theme.text_ghost}]mode[/{theme.text_ghost}]"
         )
     if env_name:
         parts.append(f"[{theme.primary}]{env_name}[/{theme.primary}] [{theme.text_ghost}]env[/{theme.text_ghost}]")
     else:
         parts.append(f"[{theme.text_ghost}]no environment[/{theme.text_ghost}]")
+
+    # Loud (but fully guarded) indicator when the encrypted local file credential
+    # store is active — so a support engineer sees at a glance that the keyring
+    # fallback engaged. active_secret_store() never connects to Vault, so this is
+    # safe to call during banner render.
+    try:
+        from platform_atlas.core.credentials import active_secret_store as _ass
+        if _ass().is_file:
+            parts.append(f"[#FF6633]local file store[/#FF6633] [{theme.text_ghost}]creds[/{theme.text_ghost}]")
+    except Exception:
+        pass
     if theme_id:
         parts.append(f"[{theme.text_dim}]{theme_id}[/{theme.text_dim}] [{theme.text_ghost}]theme[/{theme.text_ghost}]")
     parts.append(f"[{theme.text_dim}]{now}[/{theme.text_dim}]")
@@ -317,101 +338,238 @@ def _ctx_safe():
 
 
 # ══════════════════════════════════════════════════════════════════
-# ACTIVE SESSION HERO
+# ACTIVE SESSION — PIPELINE TRACKER
 # ══════════════════════════════════════════════════════════════════
+#
+# The active session renders as a horizontal Capture → Validate → Report
+# tracker: three stage cards joined by connectors that light green only when
+# both adjacent stages are complete, so a half-run pipeline reads at a glance.
+# Everything below is theme-driven (theme.* resolves to the active preset) and
+# guarded for sparse / mid-pipeline / failed sessions.
 
-def _build_hero(active_session) -> Panel:
-    """The hero card: full session context at a glance."""
-    meta = active_session.metadata
-    sc = _sc(str(meta.status))
+# done / current / pending / error  →  theme attribute names (never hardcoded
+# hex, so a theme switch re-skins the tracker for free).
+_STATE_COLOR = {
+    "done":    "success",
+    "current": "primary",
+    "pending": "text_ghost",
+    "error":   "error",
+}
+_STATE_TINT = {
+    "done":    "tint_success",
+    "current": "tint_primary",
+    "pending": "tint_neutral",
+    "error":   "tint_error",
+}
+_ERROR_STATUSES = {"failed", "aborted"}
+_STAGE_TITLES = ("CAPTURE", "VALIDATE", "REPORT")
 
-    details = Table(
-        box=None,
-        show_header=False,
-        padding=(0, 2),
+
+def _state_color(state: str) -> str:
+    return getattr(theme, _STATE_COLOR.get(state, "text_ghost"))
+
+
+def _state_tint(state: str) -> str:
+    return getattr(theme, _STATE_TINT.get(state, "tint_neutral"))
+
+
+def _stage_states(meta) -> list[str]:
+    """Resolve each pipeline stage to done / current / pending / error.
+
+    The first not-yet-complete stage is "current" — or "error" when the session
+    is failed/aborted (that's where it stopped). Stages after it are "pending".
+    Works for every status, including a fully-reported session (all "done") and
+    a brand-new "created" one (capture "current", the rest "pending").
+    """
+    done = [
+        bool(getattr(meta, "capture_completed", False)),
+        bool(getattr(meta, "validation_completed", False)),
+        bool(getattr(meta, "report_completed", False)),
+    ]
+    status = str(meta.status)
+    states: list[str] = []
+    marked_active = False
+    for is_done in done:
+        if is_done:
+            states.append("done")
+        elif not marked_active:
+            states.append("error" if status in _ERROR_STATUSES else "current")
+            marked_active = True
+        else:
+            states.append("pending")
+    return states
+
+
+def _node_glyph(state: str) -> str:
+    """Stage glyph, with plain-mode ASCII fallbacks (no Unicode under NO_COLOR
+    / compatibility mode)."""
+    from platform_atlas.core.ui import is_plain_mode
+    plain = is_plain_mode()
+    if state == "error":
+        return "x" if plain else "✗"
+    if state == "pending":
+        return "o" if plain else "◯"
+    if state == "current":
+        return ">" if plain else "◉"
+    return "*" if plain else "◉"  # done
+
+
+def _compliance_rate(meta) -> tuple[float | None, str]:
+    """(rate, color) for a validated session, or (None, ghost) when there's
+    nothing to rate yet. Guards the divide-by-zero when every rule skipped."""
+    evaluated = meta.pass_count + meta.fail_count
+    if not (meta.validation_completed and evaluated > 0):
+        return None, theme.text_ghost
+    rate = round(meta.pass_count / evaluated * 100, 1)
+    color = (
+        theme.success if rate >= 90
+        else theme.warning if rate >= 70
+        else theme.error
+    )
+    return rate, color
+
+
+def _stage_lines(meta, index: int, state: str) -> list[str]:
+    """The 1–3 sub-stat lines under a stage node. Every value comes from real
+    session metadata and is guarded for the not-run / empty / partial cases."""
+    status = str(meta.status)
+    if index == 0:  # Capture
+        if state == "done":
+            mods = list(getattr(meta, "modules_ran", None) or [])
+            head = f"{len(mods)} module{'s' if len(mods) != 1 else ''}" if mods else "captured"
+            return [head, "complete"]
+        if state == "error":
+            return ["did not finish"]
+        if state == "current":
+            return ["in progress" if status == "capturing" else "ready to run"]
+        return ["pending"]
+    if index == 1:  # Validate
+        if state == "done":
+            total = meta.total_rules or 0
+            if total > 0:
+                return [
+                    f"{meta.pass_count} pass · {meta.fail_count} fail",
+                    f"{meta.skip_count} skipped",
+                    f"of {total} rules",
+                ]
+            return ["validated", "complete"]
+        if state == "error":
+            return ["did not finish"]
+        if state == "current":
+            return ["in progress" if status == "validating" else "ready to run"]
+        return ["pending"]
+    # index == 2: Report
+    if state == "done":
+        lines = ["03_report.html"]
+        rate, _ = _compliance_rate(meta)
+        if rate is not None:
+            lines.append(f"{rate:.1f}% compliant")
+        lines.append("ready to export")
+        return lines
+    if state == "error":
+        return ["did not finish"]
+    if state == "current":
+        return ["ready to run"]
+    return ["pending"]
+
+
+def _stage_node(index: int, state: str, lines: list[str]) -> Panel:
+    """One stage of the pipeline tracker, rendered as a small centered card.
+
+    `lines` is pre-computed and pre-padded by the caller so all three cards
+    share a height and the row reads as a clean rectangle.
+    """
+    color = _state_color(state)
+    body = Text(justify="center")
+    body.append(_node_glyph(state), style=f"bold {color}")
+    body.append("\n")
+    body.append(_STAGE_TITLES[index], style=f"bold {color}")
+    for line in lines:
+        body.append("\n")
+        body.append(line, style=theme.text_dim)
+    return Panel(
+        body,
+        box=box.ROUNDED,
+        border_style=color,
+        style=f"on {_state_tint(state)}",
+        padding=(1, 1),
         expand=True,
     )
-    details.add_column("label", style=theme.text_ghost, min_width=14, no_wrap=True)
-    details.add_column("value", ratio=1)
 
-    # Status row — status text, then chained pipeline glyph
-    status_line = Text()
-    status_line.append(str(meta.status), style=f"bold {sc}")
-    status_line.append("    ")
-    status_line.append(_pipeline_chain(meta))
-    details.add_row("Status", status_line)
 
-    if meta.organization_name:
-        details.add_row(
-            "Organization",
-            Text(meta.organization_name, style="bold"),
-        )
+def _connector(linked: bool) -> Align:
+    """Arrow between two stage cards, vertically centered to sit level with the
+    glyphs. Green only when both adjacent stages are complete."""
+    from platform_atlas.core.ui import is_plain_mode
+    arrow = "-->" if is_plain_mode() else "━━▶"
+    color = theme.success if linked else theme.text_ghost
+    return Align.center(Text(arrow, style=f"bold {color}"), vertical="middle")
 
-    # Session tier — Standard (blue) vs Extended (orange).
-    # Pre-1.7 sessions don't carry a tier field — fall back to Extended.
+
+def _build_pipeline_tracker(active_session) -> Panel:
+    """The active session as a horizontal Capture → Validate → Report tracker,
+    with a context line above and the next actionable command below."""
+    meta = active_session.metadata
+    sc = _sc(str(meta.status))
+    states = _stage_states(meta)
+
+    # Context line — org · mode · env · ruleset (+ profile). Each part is added
+    # only when present, so a freshly-created session with nothing bound yet
+    # still renders cleanly (it falls back to just the Mode chip).
     session_tier = (getattr(meta, "tier", None) or "extended").lower()
-    if session_tier == "standard":
-        tier_label = "Standard"
-        tier_style = f"bold {theme.tier_standard}"
-    else:
-        tier_label = "Extended"
-        tier_style = f"bold {theme.tier_extended}"
-    details.add_row("Mode", Text(tier_label, style=tier_style))
+    tier_label, tier_color = {
+        "standard": ("Standard", theme.tier_standard),
+        "saas": ("SaaS", theme.tier_saas),
+    }.get(session_tier, ("Extended", theme.tier_extended))
 
+    parts: list[Text] = []
+    if meta.organization_name:
+        parts.append(Text(meta.organization_name, style="bold"))
+    parts.append(Text(tier_label, style=f"bold {tier_color}"))
     if meta.environment:
-        details.add_row(
-            "Environment",
-            Text(meta.environment, style=f"bold {theme.primary}"),
-        )
-
+        parts.append(Text(meta.environment, style=theme.primary))
     if meta.ruleset_id:
         rs = Text()
         rs.append(meta.ruleset_id, style=theme.secondary)
         if meta.ruleset_profile:
             rs.append("  +  ", style=theme.text_ghost)
             rs.append(meta.ruleset_profile, style=theme.warning)
-        details.add_row("Ruleset", rs)
+        parts.append(rs)
 
-    # Compliance bar — visceral pass/fail/skip distribution.
-    # Two-line layout so it never wraps: bar + percentage on row 1, counts on row 2.
-    if meta.validation_completed and meta.total_rules > 0:
-        evaluated = meta.pass_count + meta.fail_count
-        rate = round(meta.pass_count / evaluated * 100, 1) if evaluated else 0.0
-        rate_color = (
-            theme.success if rate >= 90
-            else theme.warning if rate >= 70
-            else theme.error
-        )
+    context_line = Text()
+    for i, part in enumerate(parts):
+        if i:
+            context_line.append("  ·  ", style=theme.text_ghost)
+        context_line.append(part)
 
-        compliance = Text()
-        compliance.append(_compliance_bar(meta.pass_count, meta.fail_count, meta.skip_count, width=24))
-        compliance.append("   ")
-        compliance.append(f"{rate:>5.1f}%", style=f"bold {rate_color}")
-        compliance.append("\n")
-        compliance.append(f"{meta.pass_count}", style=f"bold {theme.success}")
-        compliance.append(" pass", style=theme.text_dim)
-        compliance.append("  ·  ", style=theme.text_ghost)
-        compliance.append(f"{meta.fail_count}", style=f"bold {theme.error}")
-        compliance.append(" fail", style=theme.text_dim)
-        compliance.append("  ·  ", style=theme.text_ghost)
-        compliance.append(f"{meta.skip_count}", style=theme.text_ghost)
-        compliance.append(" skip", style=theme.text_dim)
-        details.add_row("Compliance", compliance)
+    # Pre-compute each node's sub-lines and pad them all to the tallest, so the
+    # three cards share a height and the row reads as a clean rectangle.
+    line_lists = [_stage_lines(meta, i, states[i]) for i in range(3)]
+    height = max(len(lst) for lst in line_lists)
+    line_lists = [lst + [""] * (height - len(lst)) for lst in line_lists]
 
-    # Spacer row before the next-step chip — gives the chip room to breathe
-    details.add_row("", "")
+    # The track: node ━▶ node ━▶ node. Nodes get the room (ratio 4), connectors
+    # a thin lane (ratio 1). Links mirror the chain semantics.
+    track = Table.grid(expand=True)
+    for ratio in (4, 1, 4, 1, 4):
+        track.add_column(ratio=ratio)
+    track.add_row(
+        _stage_node(0, states[0], line_lists[0]),
+        _connector(meta.capture_completed and meta.validation_completed),
+        _stage_node(1, states[1], line_lists[1]),
+        _connector(meta.validation_completed and meta.report_completed),
+        _stage_node(2, states[2], line_lists[2]),
+    )
 
-    # Next-step — description on one line, command on its own indented line
+    # Next step — the single command to run next.
     label, cmd = _next_step(meta)
     next_block = Text()
     next_block.append("→ ", style=f"bold {theme.accent}")
     next_block.append(label, style=theme.text_primary)
-    next_block.append("\n  ")
+    next_block.append("    ")
     next_block.append("▎ ", style=f"bold {theme.accent}")
     next_block.append(f"$ {cmd}", style=f"bold {theme.primary}")
-    details.add_row("Next", next_block)
 
-    # Title combines static label with session name + status pill
     title = Text()
     title.append(" ACTIVE SESSION ", style=f"bold {theme.bg_primary} on {theme.primary}")
     title.append("  ")
@@ -420,7 +578,7 @@ def _build_hero(active_session) -> Panel:
     title.append(f" {meta.status} ", style=f"bold {theme.bg_primary} on {sc}")
 
     return Panel(
-        details,
+        Group(context_line, Text(""), track, Text(""), next_block),
         title=title,
         title_align="left",
         border_style=theme.primary,
@@ -574,94 +732,93 @@ def _build_warnings(active_session) -> Panel | None:
 
 
 # ══════════════════════════════════════════════════════════════════
-# SESSIONS TABLE
+# RECENT ACTIVITY FEED
 # ══════════════════════════════════════════════════════════════════
 
-def _build_sessions_panel(all_sessions, active_name: str | None) -> Panel:
+def _trunc(value: str, width: int) -> str:
+    """Truncate to `width` cells with an ellipsis so the feed's columns stay
+    aligned even when a session name or environment is very long."""
+    s = str(value)
+    return s if len(s) <= width else s[: max(0, width - 1)] + "…"
+
+
+def _build_activity_feed(all_sessions, active_name: str | None) -> Panel:
+    """The 5 most-recent sessions as a vertical timeline — a status dot per
+    session on a connecting rail, with a pass/fail sub-line once validated.
+
+    Reads as "what's been happening" rather than a flat table, reinforcing the
+    pipeline metaphor. Fully guarded: long names truncate, a missing
+    environment shows a dash, an unparseable timestamp degrades to blank, and
+    an empty list prints a friendly placeholder.
+    """
+    from platform_atlas.core.ui import is_plain_mode
+    plain = is_plain_mode()
+
     recent = sorted(
         all_sessions,
         key=lambda s: s.metadata.updated_at,
         reverse=True,
     )[:5]
 
-    table = Table(
-        box=box.SIMPLE,
-        show_header=True,
-        header_style=f"bold {theme.text_dim}",
-        padding=(0, 1),
-        expand=True,
-        row_styles=["", f"on {theme.bg_secondary}"],
-    )
-    # 6 columns. Dropped Organization (in hero) and the standalone marker column —
-    # the active row's accent bar is rendered inline with the session name. Every
-    # column has a fixed width that fits its header at 80-col terminal widths.
-    table.add_column("Session", min_width=14, no_wrap=True)
-    table.add_column("Environment", min_width=11, no_wrap=True)
-    table.add_column("State", min_width=10, no_wrap=True)
-    table.add_column("Pipeline", justify="center", min_width=8, no_wrap=True)
-    table.add_column("Results", justify="right", min_width=8, no_wrap=True)
-    table.add_column("Last", justify="right", min_width=7, no_wrap=True)
+    feed = Text()
+    count = len(recent)
+    rail_char = "|" if plain else "│"
 
-    for sess in recent:
-        is_active = sess.name == active_name
+    for i, sess in enumerate(recent):
         m = sess.metadata
+        status = str(m.status)
+        color = _sc(status)
+        is_active = sess.name == active_name
+        validated = bool(m.validation_completed)
 
-        # Session — accent bar + name, bold + accent color when active
-        name_text = Text()
-        if is_active:
-            name_text.append("▎", style=f"bold {theme.accent}")
-            name_text.append(m.name, style=f"bold {theme.accent}")
-        else:
-            name_text.append(" ", style=theme.text_ghost)
-            name_text.append(m.name, style=theme.text_primary)
-
-        # Environment
-        env_text = (
-            Text(m.environment, style=theme.primary)
-            if m.environment
-            else Text("—", style=theme.text_ghost)
+        dot = ("*" if validated else "o") if plain else ("●" if validated else "○")
+        feed.append(f"  {dot}  ", style=f"bold {color}")
+        feed.append(
+            _trunc(m.name, 26).ljust(27),
+            style=f"bold {theme.accent}" if is_active else f"bold {theme.text_primary}",
         )
-
-        # State
-        sc = _sc(str(m.status))
-        status_text = Text(str(m.status), style=sc)
-
-        # Pipeline (compact chain)
-        pipe = _pipeline_compact(m)
-
-        # Results
-        if m.validation_completed:
-            results = Text()
-            results.append(f"{m.pass_count}", style=f"bold {theme.success}")
-            results.append("✓ ", style=theme.success)
-            results.append(f"{m.fail_count}", style=f"bold {theme.error}")
-            results.append("✗", style=theme.error)
+        feed.append(_trunc(status, 11).ljust(12), style=color)
+        if m.environment:
+            feed.append(_trunc(m.environment, 14).ljust(15), style=theme.primary)
         else:
-            results = Text("—", style=theme.text_ghost)
+            feed.append("—".ljust(15), style=theme.text_ghost)
+        try:
+            ago = _time_ago(m.updated_at)
+        except Exception:
+            ago = ""
+        feed.append(ago, style=theme.text_ghost)
+        feed.append("\n")
 
-        # Updated
-        updated = Text(_time_ago(m.updated_at), style=theme.text_ghost)
+        # Rail down to the next dot, plus the result sub-line once validated.
+        is_last = i == count - 1
+        rail = "     " if is_last else f"  {rail_char}  "
+        if validated:
+            feed.append(rail, style=theme.border_dim)
+            feed.append(f"{m.pass_count}", style=theme.success)
+            feed.append(" pass · ", style=theme.text_dim)
+            feed.append(f"{m.fail_count}", style=theme.error)
+            feed.append(" fail", style=theme.text_dim)
+            feed.append("\n")
+        elif not is_last:
+            feed.append(rail + "\n", style=theme.border_dim)
 
-        table.add_row(
-            name_text, env_text, status_text,
-            pipe, results, updated,
-        )
+    if count == 0:
+        feed.append("  No sessions yet — create one to get started.", style=theme.text_dim)
 
     total = len(all_sessions)
-
     title = Text()
-    title.append(" SESSIONS ", style=f"bold {theme.bg_primary} on {theme.text_secondary}")
+    title.append(" RECENT ACTIVITY ", style=f"bold {theme.bg_primary} on {theme.text_secondary}")
     if total > 5:
         title.append(f"   {total} total · 5 most recent", style=theme.text_ghost)
 
     return Panel(
-        table,
+        feed,
         title=title,
         title_align="left",
         box=box.ROUNDED,
         border_style=theme.border_dim,
         style=f"on {theme.tint_neutral}",
-        padding=(0, 1),
+        padding=(1, 1),
         expand=True,
     )
 
@@ -723,7 +880,7 @@ def show_dashboard():
         active_session = None
 
     if active_session:
-        console.print(_build_hero(active_session))
+        console.print(_build_pipeline_tracker(active_session))
         warning_panel = _build_warnings(active_session)
         if warning_panel is not None:
             console.print(warning_panel)
@@ -735,7 +892,7 @@ def show_dashboard():
     all_sessions = session_mgr.list()
     if all_sessions:
         active_name = session_mgr.get_active_session_name()
-        console.print(_build_sessions_panel(all_sessions, active_name))
+        console.print(_build_activity_feed(all_sessions, active_name))
 
     # Ruleset update notice (shown if user previously declined an available update)
     update_notice = _build_ruleset_update_notice()

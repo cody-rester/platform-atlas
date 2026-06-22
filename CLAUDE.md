@@ -77,24 +77,39 @@ bandit -r src/platform_atlas/ --skip B105,B106
 
 ### Core Concepts
 
-**Tiers** (1.7+) split Atlas into two productized modes:
+**Tiers** (three since 2.0; Standard/Extended split introduced in 1.7):
 
 - **Standard** — application-only audit via Platform OAuth + optional IAG4 API token.
-  ~54 rules across the `platform` and `gateway4` categories. No SSH, no MongoDB, no Redis.
-  Default for fresh 1.7 installs.
+  ~56 rules across the `platform` and `gateway4` categories. No SSH, no MongoDB, no Redis.
+  Default for fresh installs.
 - **Extended** — full infrastructure audit. Adds the SSH/Mongo/Redis/IAG/system/filesystem/
-  Kubernetes collectors. ~107 rules. Default for installs upgraded from 1.6.x (migration
+  Kubernetes collectors. ~122 rules. Default for installs upgraded from 1.6.x (migration
   shim preserves the existing experience).
+- **SaaS** (2.0+) — single-gateway audit: one GW4 *or* GW5 per environment
+  (`saas_gateway_kind`), SSH as needed, **no Platform/Mongo/Redis at all**. Gateway rule
+  categories only (per-rule `tier:"extended"` flags are INCLUDED — they mean "needs infra
+  access" and SaaS has gateway SSH). Uses the `gateway_only` deployment mode (or no
+  topology for an API-only GW4 → `synthesize_saas_targets`). Never a conversion target —
+  tier fixed at env create. A WebUI SaaS first-run *does* write `tier:"saas"` as the global
+  default so future envs default to SaaS (amended 2026-06-11); the CLI `tier set saas`
+  command stays blocked. Produces a single merged `03_report.html`
+  (compliance + Architecture Overview; no 04/05/AVC/arch-warnings).
 
-Three independent defenses enforce the Standard boundary:
+Three independent defenses enforce the tier boundaries:
 
 1. **Registry pruning** — `capture/modules_registry.py::_build_modules_standard` returns
-   only `platform` + `gateway4_api` modules.
-2. **`require_extended()` guards** — every Extended-only collector and `transport.py`'s SSH
-   branch call this in `__init__` / `from_config` so any accidental Standard invocation
-   raises `TierViolationError` before any network connection is attempted.
-3. **Tier-aware credential store** — `EXTENDED_ONLY_KEYS` in `credentials.py` are silently
-   `None` on read in Standard and raise on write.
+   only `platform` + `gateway4_api` modules; `_build_modules_saas` returns only the chosen
+   gateway's modules (kind-narrowed) and never Platform/Mongo/Redis/Kubernetes.
+2. **Guards** (`core/context.py`) — `require_extended()` is strict (raises unless tier is
+   Extended; used by mongo/redis/kubernetes collectors), `require_infra()` raises only in
+   Standard (used by `transport.py`'s SSH branch, system/filesystem/gateway collectors, and
+   the architecture-form launcher — SaaS passes), and `forbid_in_saas()` blocks the
+   Platform collector. All raise `TierViolationError` before any network connection.
+3. **Tier-aware credential store** — per-tier applicable sets in `credentials.py`
+   (`applicable_keys()`/`required_keys()`): keys outside the active tier's set are silently
+   `None` on read and raise on write. `PLATFORM_SECRET` is required only in the
+   platform-anchored tiers; under SaaS, `Config.platform_client_secret` resolves to `""`
+   instead of raising. `EXTENDED_ONLY_KEYS` remains as the Standard-hidden back-compat set.
 
 Rule filtering happens in `rules.py` before evaluation. Tier resolution order:
 `--tier` flag → `ATLAS_TIER` env var → environment overlay → config → default.
@@ -198,6 +213,21 @@ Rulesets are versioned JSON files in `rules/rulesets/`. Active ruleset and profi
 by `RulesetManager` (`core/ruleset_manager.py`). Profiles are JSON overlays in
 `rules/rulesets/profiles/` that enable/disable rules for specific environments.
 
+Ruleset/profile visibility is scoped two ways, filtered centrally in the manager's
+`discover_rulesets()`/`discover_profiles()` so every listing and picker (CLI + WebUI) inherits it:
+
+- **Tier:** a profile with `"tier": "saas"` in its JSON (the bundled
+  `saas-gateway4`/`saas-gateway5` pair — each keeps only its own gateway's `IAG-` rules
+  enabled) is listed ONLY under the SaaS tier, and the SaaS tier lists ONLY those
+  (ctx-resolved tier; `include_all_tiers=True` to bypass).
+- **Legacy:** 2023.x rulesets ("2023" in id/target_product) and 2023-prefixed profiles are
+  hidden unless the active environment carries a `legacy_profile` value (fails closed;
+  `include_legacy=True` to bypass for internal lookups of an already-active ruleset).
+
+`ensure_ruleset_allowed()`/`ensure_profile_allowed()` guard explicit activation
+(`ruleset load`, `ruleset profile set`, WebUI activate) — session switching bypasses the
+guards on purpose, because session bindings restore atomically with their own tier/env.
+
 Rules follow the schema in `rules.schema.json`. Each rule has a `path` (dot-notation into
 capture data), a `validation` block with `operator` and `expected`, and optional `alt_path`
 fallback.
@@ -213,7 +243,7 @@ fallback.
 CLI args are parsed in `core/cli.py` using `argparse` + `RichHelpFormatter`. `core/dispatch.py`
 routes commands via a registry (`core/registry.py`) to handler functions in `core/handlers/`.
 Handler files map 1:1 to command groups: `session.py`, `config.py`, `env.py`, `ruleset.py`,
-`preflight.py`, `customer.py`.
+`tier.py`, `preflight.py`, `guide.py`, `continuous.py`, `fleet.py`, `support_bundle.py`.
 
 ---
 
@@ -234,8 +264,8 @@ Handler files map 1:1 to command groups: `session.py`, `config.py`, `env.py`, `r
 | `reporting/report_renderer.py` | HTML report generation + theming |
 | `core/handlers/session.py` | Main session workflow logic (capture, validate, report, diff) |
 | `rules/rulesets/` | Versioned ruleset JSON files |
-| `rules/rulesets/p6-master-ruleset.json` | Primary ruleset (~103 rules, P6 only) |
-| `tests/conftest.py` | Shared pytest fixtures (`tmp_atlas_home`, `sample_config`, etc.) |
+| `rules/rulesets/p6-master-ruleset.json` | Primary ruleset (~122 rules, P6 only) |
+| `tests/conftest.py` | Shared pytest fixtures (`tmp_atlas_home`, `write_config`, `sample_environment`, `sample_ruleset`, etc.) |
 
 ---
 
