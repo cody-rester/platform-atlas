@@ -161,85 +161,21 @@ def parse_unformatted_config(text: str) -> dict[str, Any]:
     return config
 
 def _parse_gateway5_file(text: str) -> dict[str, Any] | None:
-    """Parse a docker-compose.yml or helm values.yaml for Gateway5 env vars"""
-    from platform_atlas.capture.collectors.gateway5 import _VAR_NAMES
+    """Parse a docker-compose.yml or helm values.yaml for Gateway5 env vars.
+
+    Thin wrapper over the shared :func:`parse_gateway5_yaml` so guided manual
+    collection understands the same Compose / raw-helm / structured-IAG5-chart
+    shapes as the SSH, file, and Kubernetes collectors. Returns ``None`` when
+    the text isn't a YAML mapping or yields no known variables.
+    """
+    from platform_atlas.capture.collectors.gateway5 import parse_gateway5_yaml
 
     data = _try_yaml(text)
     if data is None:
         return None
 
-    found: dict[str, str] = {}
-    source = "manual"
-
-    # Try docker-compose format: services.*.environment
-    services = data.get("services", {})
-    for svc_name, svc_def in services.items():
-        if not isinstance(svc_def, dict):
-            continue
-        env = svc_def.get("environment")
-        if env is None:
-            continue
-
-        source = f"docker-compose:{svc_name}"
-
-        if isinstance(env, dict):
-            for k, v in env.items():
-                if k in _VAR_NAMES and v is not None:
-                    found.setdefault(k, str(v))
-
-        elif isinstance(env, list):
-            for entry in env:
-                entry_str = str(entry)
-                if "=" in entry_str:
-                    k, _, v = entry_str.partition("=")
-                    k = k.strip()
-                    if k in _VAR_NAMES:
-                        found.setdefault(k, v.strip())
-
-    # Try helm format: gateway.env / gateway.extraEnv / etc
-    if not found:
-        source = "helm-values"
-        for top_key in ("gateway", "gateway5", "itential-gateway", "automation-gateway"):
-            section = data.get(top_key)
-            if not isinstance(section, dict):
-                continue
-            for env_key in ("env", "extraEnv", "environment"):
-                env_block = section.get(env_key)
-                if env_block is None:
-                    continue
-
-                if isinstance(env_block, dict):
-                    for k, v in env_block.items():
-                        if k in _VAR_NAMES and v is not None:
-                            found.setdefault(k, str(v))
-
-                elif isinstance(env_block, list):
-                    for item in env_block:
-                        if isinstance(item, dict) and "name" in item:
-                            k = item["name"]
-                            v = item.get("value", "")
-                            if k in _VAR_NAMES and v is not None:
-                                found.setdefault(k, str(v))
-
-    if not found:
-        return None
-
-    # Build the same structure as Gateway5Collector.collect_env()
-    variables = {name: found.get(name) for name in _VAR_NAMES}
-    sources = {k: source for k in found}
-    resolved = {k: v for k, v in variables.items() if v is not None}
-    unresolved = {k for k, v in variables.items() if v is None}
-
-    return {
-        "variables": variables,
-        "sources": sources,
-        "summary": {
-            "total": len(variables),
-            "resolved": len(resolved),
-            "unresolved": len(unresolved),
-            "unresolved_keys": unresolved,
-        }
-    }
+    collected = parse_gateway5_yaml(data)
+    return collected.to_dict() if collected.resolved else None
 
 @dataclass(frozen=True, slots=True)
 class FileStep:

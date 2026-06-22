@@ -138,6 +138,13 @@ class PlatformCollector:
             verify_ssl: bool = True,
             metrics_debug: bool = False,
     ) -> None:
+        # Belt-and-suspenders alongside registry pruning: a SaaS audit is
+        # gateway-only and must never construct a Platform client.
+        from platform_atlas.core.context import forbid_in_saas
+        forbid_in_saas(
+            "PlatformCollector",
+            hint="A SaaS audit is gateway-only — Platform collection never runs there.",
+        )
         if not verify_ssl:
             warnings.warn(
                 "SSL verification is disabled. This can be enabled in the configuration file if needed.",

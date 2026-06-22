@@ -450,6 +450,11 @@ class Session:
 class SessionManager:
     """Manages Platform Atlas audit sessions"""
 
+    # Subdirectory inside an exported archive that holds the report files.
+    # The archive's top level carries only the REPORT.html splash, so the
+    # report link in that splash must agree with this name.
+    EXPORT_SUBDIR = "session_files"
+
     def __init__(self):
         """Initialize session manager"""
         # Ensure sessions directory exists
@@ -767,70 +772,114 @@ class SessionManager:
         *,
         archive_format: str = "zip",
         include_debug: bool = False,
-        redact: bool = True
+        redact: bool = True,
+        report_json_path: Path | None = None,
+        arc_dir_name: str | None = None,
+        splash_path: Path | None = None,
     ) -> Path:
-        """Export session for delivery."""
+        """Export a session as a delivery archive.
+
+        The archive always carries the customer-facing deliverable set — the
+        compliance / operational / architecture reports, the machine-readable
+        ``report.json``, the session metadata, and a README. ``include_debug``
+        additionally bundles the execution log and raw capture for
+        Itential-side troubleshooting.
+
+        ``redact=False`` (the legacy ``--no-redact`` flag) is treated as an
+        alias for ``include_debug`` — raw capture is now gated by a single
+        switch.
+
+        Args:
+            report_json_path: Path to a caller-generated ``report.json`` (the
+                same structured export produced by ``report --format json``).
+                The handler generates this because JSON assembly needs pandas
+                and the reporting engine, which this module intentionally
+                avoids importing.
+            arc_dir_name: Name of the top-level folder inside the archive.
+                Defaults to the session name; the handler passes an
+                organization-aware name (``ATLAS-<org>-<session>-<date>``).
+            splash_path: Path to a caller-rendered splash / cover page. When
+                provided (and a compliance report is present to link to), it
+                is placed at the archive's top level as ``REPORT.html`` — the
+                single landing file. The reports themselves move into the
+                ``session_files/`` subdirectory.
+
+        Archive layout::
+
+            <folder_name>/
+                REPORT.html          # splash (only when a report is present)
+                session_files/
+                    03_report.html  04_operational.html  05_arch.html
+                    report.json  session.json  README.txt  [debug files]
+        """
         session = self.get(name)
 
-        # Create temp export directory
+        include_raw = include_debug or not redact
+        folder_name = arc_dir_name or name
+
+        # Candidate files in the order they should read in the README.
+        # (arcname, source path, description, debug_only)
+        candidates: list[tuple[str, Path | None, str, bool]] = [
+            ("03_report.html",      session.report_file,
+             "Compliance validation report (open in a browser)", False),
+            ("04_operational.html", session.operational_file,
+             "Operational report", False),
+            ("05_arch.html",        session.arch_file,
+             "Architecture & maintenance report", False),
+            ("report.json",         report_json_path,
+             "Machine-readable report (Customer360 / Salesforce ingestion)", False),
+            ("session.json",        session.metadata_file,
+             "Session metadata", False),
+            ("session.log",         session.log_file,
+             "Execution log", True),
+            ("01_capture.json",     session.capture_file,
+             "Raw captured configuration", True),
+            ("debug.log",           session.debug_log_file,
+             "Debug output", True),
+        ]
+
+        # Create temp export directory. The report files go into a
+        # session_files/ subdirectory; only the REPORT.html splash sits at the
+        # top level, so unzipping leaves one obvious file to open.
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
-            export_dir = Path(tmpdir) / name
-            export_dir.mkdir()
+            export_dir = Path(tmpdir) / folder_name
+            files_dir = export_dir / self.EXPORT_SUBDIR
+            files_dir.mkdir(parents=True)
 
-            # Copy essential files
-            files_to_copy = []
+            included: list[tuple[str, str]] = []  # (arcname, description) for README
+            for arcname, src, desc, debug_only in candidates:
+                if src is None:
+                    continue
+                if debug_only and not include_raw:
+                    continue
+                if Path(src).exists():
+                    shutil.copy2(src, files_dir / arcname)
+                    included.append((arcname, desc))
 
-            # Always include report if it exists
-            if session.report_file.exists():
-                files_to_copy.append(("03_report.html", session.report_file))
+            # Splash (REPORT.html) at the top level → links into the report
+            # under session_files/. Only added when that report exists, so a
+            # capture-only export never carries a dead "Enter Report" link.
+            report_present = any(arc == "03_report.html" for arc, _ in included)
+            has_splash = (
+                splash_path is not None
+                and Path(splash_path).exists()
+                and report_present
+            )
+            if has_splash:
+                shutil.copy2(splash_path, export_dir / "REPORT.html")
 
-            # Include capture summary (not full data)
-            if session.capture_file.exists() and not redact:
-                files_to_copy.append(("01_capture.json", session.capture_file))
-
-            # Include session metadata
-            files_to_copy.append(("session.json", session.metadata_file))
-
-            # Include debug logs if requested
-            if include_debug and session.debug_log_file.exists():
-                files_to_copy.append(("debug.log", session.debug_log_file))
-
-            # Copy files
-            for dest_name, src_path in files_to_copy:
-                shutil.copy2(src_path, export_dir / dest_name)
-
-            # Build org / env labels
-            org_label = session.metadata.organization_name or "Unknown"
-            env_label = session.metadata.environment or "Unknown"
-
-            # Create README
-            readme_content = f"""
-            Platform Atlas Audit Report
-            ============================
-
-            Organization: {org_label}
-            Session: {session.name}
-            Environment: {env_label}
-            Created: {session.metadata.created_at.strftime('%Y-%m-%d %H:%M UTC')}
-            Target: {session.metadata.target or 'Unknown'}
-            Ruleset: {session.metadata.ruleset_id} v{session.metadata.ruleset_version}
-            Profile: {session.metadata.ruleset_profile or 'None'}
-
-            Files Included:
-            - 03_report.html: Complete validation report
-            - session.json: Session metadata
-
-            Atlas Version: {session.metadata.atlas_version}
-            """.strip()
-
-            (export_dir / "README.txt").write_text(readme_content, encoding="utf-8")
+            # README lives beside the files it lists, inside session_files/.
+            readme_content = self._build_export_readme(
+                session, included, subdir=self.EXPORT_SUBDIR, has_splash=has_splash
+            )
+            (files_dir / "README.txt").write_text(readme_content, encoding="utf-8")
 
             # Create archive
             if archive_format == "zip":
                 import zipfile
                 with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    for file in export_dir.rglob('*'):
+                    for file in sorted(export_dir.rglob('*')):
                         if file.is_file():
                             arcname = file.relative_to(export_dir.parent)
                             zf.write(file, arcname)
@@ -838,13 +887,66 @@ class SessionManager:
             elif archive_format == "tar.gz":
                 import tarfile
                 with tarfile.open(output_path, 'w:gz') as tf:
-                    tf.add(export_dir, arcname=name)
+                    tf.add(export_dir, arcname=folder_name)
 
             else:
                 raise ValueError(f"Unsupported format: {archive_format}")
 
         logger.info("Exported session '%s' to %s", name, output_path)
         return output_path
+
+    @staticmethod
+    def _build_export_readme(
+        session: "Session",
+        included: list[tuple[str, str]],
+        *,
+        subdir: str = "session_files",
+        has_splash: bool = False,
+    ) -> str:
+        """Render the export README, listing exactly the bundled files.
+
+        The organization name is included up front so delivered archives stay
+        traceable to a customer even after they're detached from the filename.
+        The layout section reflects the on-disk structure: a REPORT.html splash
+        at the top level (when present) and the report files under ``subdir``.
+        """
+        meta = session.metadata
+        org_label = meta.organization_name or "Unknown"
+        env_label = meta.environment or "Unknown"
+        ruleset = f"{meta.ruleset_id} v{meta.ruleset_version}".strip()
+
+        lines = [
+            "Platform Atlas — Audit Export",
+            "=============================",
+            "",
+            f"Organization:   {org_label}",
+            f"Session:        {session.name}",
+            f"Environment:    {env_label}",
+            f"Created:        {meta.created_at.strftime('%Y-%m-%d %H:%M UTC')}",
+            f"Target:         {meta.target or 'Unknown'}",
+            f"Ruleset:        {ruleset}",
+            f"Profile:        {meta.ruleset_profile or 'None'}",
+            f"Atlas Version:  {meta.atlas_version}",
+            "",
+            "Layout",
+            "------",
+        ]
+        if has_splash:
+            lines.append("  REPORT.html             Start here — opens the audit report (in a browser).")
+            lines.append(f"  {subdir}/")
+        else:
+            lines.append(f"  {subdir}/               Report files:")
+        lines += [f"    - {arc:<20} {desc}" for arc, desc in included]
+        lines.append(f"    - {'README.txt':<20} This file")
+        lines += [
+            "",
+            "Next Steps",
+            "----------",
+            "Attach this archive to your Itential Enablement Request (ER) ticket so the",
+            "Itential team can review your audit results.",
+            "",
+        ]
+        return "\n".join(lines)
 
     def cleanup_old(self, days: int = 30) -> list[str]:
         """Delete sessions older than specified days."""

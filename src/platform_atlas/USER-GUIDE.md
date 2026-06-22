@@ -16,69 +16,51 @@ Each step builds on the previous one. Once you've completed the initial setup, d
 
 ---
 
-## What's New in v1.7.0
+## What's New in v2.0
 
-If you're upgrading from 1.6.x, here are the key changes in v1.7.0:
+Version 2.0 is a major release. The headline changes are below; each feature has its own section later in this guide.
 
-### Standard and Extended tiers
+### SaaS tier — single-gateway audits
 
-Atlas now ships with two distinct audit modes. **Standard** tier audits via Platform OAuth and the optional IAG4 API (~54 rules) and requires no SSH, MongoDB, or Redis access — ideal for quick application-layer audits or environments where infrastructure access is restricted. **Extended** tier adds the full infrastructure audit via SSH, MongoDB, Redis, Kubernetes, and Gateways (~107 rules).
+A third audit mode joins Standard and Extended. **SaaS** audits a single Automation Gateway — Gateway 4 *or* Gateway 5 — with **no Platform, MongoDB, or Redis** anywhere in the flow. You pick it per-environment at create time and answer only that gateway's questions; the audit produces one merged report. See the *Tiers* section.
 
-Fresh installs default to Standard. Upgrades from 1.6.x default to Extended so existing workflows are unchanged.
+### Explicit credential backends — no more auto-fallback
 
-Sessions now bind a tier at creation time alongside the environment, ruleset, and profile. Cross-tier session diffs are flagged with a notice banner in the diff report.
+Atlas now asks where each environment's secrets should live and uses exactly that store on every run: **OS Keyring**, an **Encrypted Local File**, or **HashiCorp Vault**. There is no probing and no silent fallback or switch. The encrypted local file is now a first-class choice (ideal for a headless Linux server with no keyring), not a hidden fallback. Switch later with `config credentials --use-keyring` or `--use-file-store`. See *Credential Storage*.
 
-```bash
-platform-atlas tier show                 # see current tier
-platform-atlas tier set standard         # switch to Standard
-platform-atlas tier set extended         # switch to Extended
-platform-atlas tier upgrade              # interactive upgrade wizard
-platform-atlas tier downgrade            # interactive downgrade wizard
-```
+> **Upgrading note:** the old automatic file-store fallback — and its `--auto` flag, the `ATLAS_USE_FILE_STORE` variable, and the `~/.atlas/.use_file_store` sentinel — has been removed. Existing keyring and Vault installs are unaffected; if you were relying on the fallback, pick the **Encrypted Local File** backend explicitly.
 
-Use `--tier standard` or `--tier extended` as a one-off override on any command without changing the persisted setting.
+### Record architecture details any time
 
-### Continuous Audit
+The new `env architecture` command opens the architecture form (browser or CLI prompts) for any environment, independent of capture — so capture no longer stops to ask. `config architecture` is kept as an alias.
 
-Schedule automatic drift monitoring that re-runs a Platform OAuth capture on a recurring schedule and surfaces rule changes as alerts. An OS-level schedule is installed on enable (systemd timer on Linux, launchd agent on macOS) so runs survive process restarts.
+### Gateway 5 config from a file
 
-```bash
-platform-atlas continuous-audit run-once    # required test before enabling
-platform-atlas continuous-audit enable      # install schedule and start monitoring
-platform-atlas continuous-audit status      # enabled state, last run, alert count
-platform-atlas continuous-audit alerts      # view unacknowledged alerts
-platform-atlas continuous-audit ack <id>    # acknowledge an alert
-platform-atlas continuous-audit ack-all     # acknowledge all
-platform-atlas continuous-audit disable     # stop monitoring
-platform-atlas continuous-audit notify add  # add Slack or webhook notification
-platform-atlas continuous-audit policy <any|regression>  # alert policy
-platform-atlas continuous-audit watch add|remove|list    # rule watchlist filter
-```
+Containerized Gateway 5 deployments no longer need SSH — point Atlas at a local Docker Compose file or Helm `values.yaml` and it reads the `GATEWAY_*` variables directly. Offered wherever you add a Gateway 5 (Extended and SaaS).
 
-Drift runs are written to `~/.atlas/continuous/<env>/runs/` as bare JSON. An append-only `events.ndjson` timeline and `alerts.json` aggregate state track transitions over time.
+### Legacy 2023.x rulesets hidden by default
 
-### Fleet dashboard
+2023.x rulesets and profiles stay bundled but are hidden from every listing and picker unless the active environment is explicitly marked legacy — so day-to-day lists show only P6 content.
 
-Multi-environment compliance overview from local cache — never triggers captures:
+### Credential redaction in capture files
 
-```bash
-platform-atlas fleet status              # overview of all environments
-platform-atlas fleet status --json       # machine-readable output
-```
+Inline-credential connection strings (most often a `mongo_url` like `mongodb://user:pass@host/...`) are now masked to `scheme://*****:*****@` before any capture file is written, so reports, exports, and support bundles never carry the secret.
 
-Shows per-environment tier, last session age, pass rate, continuous-audit state, and unacknowledged alert counts.
+### Earlier highlights (1.7.x – 1.8.x)
 
-### Outbound drift notifications
+If you're coming from 1.6.x, these arrived along the way — each has its own section below:
 
-Slack incoming webhooks and generic JSON webhooks (with optional HMAC-SHA256 signing). Channels are configured per environment and fire only on alert-state transitions — not on every drift cycle. Webhook URLs, HMAC secrets, and custom headers are stored in the OS keyring rather than the environment JSON file.
-
-### ControlMaster SSH transport
-
-New transport mode for CyberArk PSMP and other PAM-gateway environments where direct SSH key access is not available. The user opens one ControlMaster session per target node before running Atlas; Atlas multiplexes on those sessions with no credentials, no MFA interaction, and no knowledge of the PAM mechanism. Selected interactively during topology setup alongside the existing SSH and Local options.
+- **Standard / Extended tiers** and the `tier` commands (1.7) — see *Tiers*.
+- **Continuous Audit** drift monitoring and the **Fleet dashboard** (1.7) — see those sections.
+- **Outbound drift notifications** (Slack / webhooks) and **ControlMaster SSH transport** for CyberArk PSMP (1.7).
+- **`support-bundle`** diagnostic ZIPs and **`ruleset update`** (1.8) — see *Diagnostics & Support* and *Rulesets and Profiles*.
+- **Per-environment rule suppression** (`ruleset skip-rule`) and **resume-interrupted-capture** (1.8).
+- **`config edit`**, **`config doctor`**, **`config plain`**, **`session prune`**, and **`session repair`** (1.7.2 – 1.8.1).
+- **Windows 11 support** (1.8) — Atlas runs on Windows 11 workstations with no extra setup.
 
 ### Backward compatibility
 
-All existing sessions, environments, and configurations continue to work without changes. Existing installs upgraded from 1.6.x default to Extended tier so capture behavior is preserved exactly. Sessions created before v1.7 do not have a bound tier — they use the globally active tier.
+All existing sessions, environments, and configurations continue to work without changes. Installs upgraded from 1.6.x default to **Extended** tier so capture behavior is preserved exactly. Sessions created before tiers existed do not have a bound tier — they use the globally active tier.
 
 ---
 
@@ -91,7 +73,7 @@ Platform Atlas is distributed as a Python wheel file. You'll need Python 3.11 or
 Your team lead or Itential contact will provide you with a `.whl` file. Install it with pip:
 
 ```bash
-pip install platform_atlas-1.7.0-py3-none-any.whl
+pip install platform_atlas-<version>-py3-none-any.whl
 ```
 
 Once installed, the `platform-atlas` command is available in your terminal. Verify it works:
@@ -100,7 +82,7 @@ Once installed, the `platform-atlas` command is available in your terminal. Veri
 platform-atlas --version
 ```
 
-You should see something like `platform-atlas 1.7.0`.
+You should see something like `platform-atlas 2.0.0`.
 
 ### A note about your system
 
@@ -136,15 +118,19 @@ You'll be asked for a name, an organization name (defaults from global config), 
 
 #### Credential Storage
 
-Atlas needs to store sensitive values like your Platform client secret and database URIs. It never stores these in plain text on disk. Instead, it uses one of two backends:
+Atlas needs to store sensitive values like your Platform client secret and database URIs. It never stores these in plain text on disk. Instead, you choose one of **three credential backends** during setup — **OS Keyring**, an **Encrypted Local File**, or **HashiCorp Vault** — and Atlas uses exactly that store on every run. There is no probing and no automatic fallback or switch (this changed in v2.0): the setup wizard shows whether the OS keyring actually works on this host, so you can pick the right backend up front. Your choice is saved in the environment's `credential_backend` field.
 
-**OS Keyring** (default) — Uses your operating system's built-in credential store. Credentials are scoped per environment (stored under `platform-atlas/<env-name>` in the keyring), so each environment has fully isolated secrets.
+**OS Keyring** (recommended) — Uses your operating system's built-in credential store. Credentials are scoped per environment (stored under `platform-atlas/<env-name>` in the keyring), so each environment has fully isolated secrets.
 
 - macOS: Keychain (built-in, no extra setup)
 - Windows: Credential Locker (built-in, no extra setup)
-- Linux: Requires `gnome-keyring` with D-Bus, or the `keyrings.alt` package for headless/server environments
+- Linux: `gnome-keyring` / KWallet with a D-Bus session (desktop). On a headless server with no usable keyring, choose the **Encrypted Local File** backend instead — the wizard flags a broken keyring rather than letting you pick it.
 
-**HashiCorp Vault** — If your organization manages secrets in Vault, Atlas can read credentials from a KV v2 secrets engine. In this mode, Atlas only *reads* from Vault — it never writes secrets. Your Vault administrator manages the actual credentials. Atlas supports several authentication methods: a static token, AppRole (role_id + secret_id), and three automated options designed for environments where credentials rotate — see the *Vault Integration* section in the FAQ for details on choosing the right one.
+**Encrypted Local File** — A self-contained encrypted file at `~/.atlas/credentials.enc`, ideal for a headless Linux server with no keyring, or anywhere you'd rather keep secrets off the OS keyring. Encryption is AES-256-GCM with a key derived from this host and user plus a random per-install salt (`~/.atlas/.keysalt`), so the file won't decrypt if copied to another machine and a leaked file is useless without the salt. It is written with `0o600` permissions. Preflight, `config doctor`, and the banner report it honestly as an encrypted file (never as an "encrypted keyring"). If the file or salt is later deleted or corrupted, Atlas detects it and offers to recreate it and re-enter credentials, instead of a confusing "credential not found."
+
+**HashiCorp Vault** — If your organization manages secrets in Vault, Atlas can read credentials from a KV v2 secrets engine. In this mode, Atlas only *reads* from Vault — it never writes secrets. Your Vault administrator manages the actual credentials. Because Vault still needs a local home for its own connection settings (URL/token/AppRole), choosing Vault asks where those live — the OS keyring (recommended) or the encrypted file. Atlas supports several authentication methods: a static token, AppRole (role_id + secret_id), and three automated options designed for environments where credentials rotate — see the *Vault Integration* section in the FAQ for details on choosing the right one.
+
+> **Switching backends later:** run `platform-atlas config credentials --use-keyring` or `platform-atlas config credentials --use-file-store`. You re-enter the secrets for the new store — nothing is silently copied between backends.
 
 #### Connection Credentials
 
@@ -156,7 +142,7 @@ You'll be prompted for the credentials Atlas needs to connect to this environmen
 - **MongoDB URI** — The full connection string for your MongoDB instance. You can skip this if MongoDB auditing isn't needed.
 - **Redis URI** — The full connection string for your Redis instance. You can skip this if Redis auditing isn't needed.
 
-All of these are stored in your OS keyring (scoped to the environment name) or Vault — never in config files.
+All of these are stored in the credential backend you chose — the OS keyring (scoped to the environment name), the encrypted local file, or Vault — never in config files.
 
 #### Deployment Topology
 
@@ -175,6 +161,11 @@ For each server in your topology, you'll configure the transport method:
 - **SSH** (recommended) — Atlas SSHes into each server to read configuration files and run lightweight commands. The SSH user needs read access to config files in `/etc/` and `/opt/` — passwordless sudo is used as a fallback for root-owned files.
 - **ControlMaster** — For CyberArk PSMP and other PAM-gateway environments. You open one ControlMaster session per node before running Atlas; Atlas multiplexes on those sessions with no credentials.
 - **Local** — For the Platform (IAP) node only, when Atlas is installed on the same server. Reads config files and runs commands directly via the local filesystem. All other nodes remain SSH-connected.
+
+**Gateway 5 configuration source.** When you tell the wizard you have a Gateway 5, it asks how Atlas should read its `GATEWAY_*` configuration:
+
+- **SSH (`printenv`)** — read the environment variables from the running gateway server (for VM / bare-metal gateways). Uses the SSH transport above.
+- **Docker Compose file** or **Helm values.yaml** — for containerized gateways, point Atlas at a local file on your machine (for example `~/iag5-compose.yml`). Atlas parses the `GATEWAY_*` variables directly from the file's `environment` / `env` block — or from an IAG5 Helm chart's `serverSettings` / `applicationSettings` — so **no SSH access to the gateway host is needed**. The file you choose is authoritative (SSH is not attempted), preflight checks that it exists, parses, and contains recognized variables, and only the variables Atlas audits are read (everything else in the file is ignored).
 
 ### Creating Additional Environments
 
@@ -226,6 +217,12 @@ Preflight checks each service independently and reports results as pass, fail, w
 
 If anything fails, the output includes a description of what went wrong. Fix the issue and re-run preflight until everything passes. Common fixes include updating SSH keys, opening firewall ports, or correcting a URI in your credentials.
 
+---
+
+## Diagnostics & Support
+
+Beyond preflight's live-connectivity probes, Atlas includes a one-shot configuration health check and a diagnostic-bundle collector for when you need to share state with Itential support.
+
 ### Config doctor
 
 For a broader configuration health check that goes beyond live-connectivity probing, use:
@@ -234,19 +231,37 @@ For a broader configuration health check that goes beyond live-connectivity prob
 platform-atlas config doctor
 ```
 
-`config doctor` is a one-shot diagnostic that verifies, in a single pass:
+`config doctor` is a one-shot diagnostic that verifies the following in a single pass, grouped under four headings — Runtime, Environment & Tier, Credentials, and Connectivity & Rules:
 
 - **Config file** — Exists at `~/.atlas/config.json` and has secure permissions (chmod 600 on POSIX).
 - **Active environment** — The env file referenced by `active_environment` actually exists on disk.
-- **Tier** — Reports the active tier (Standard / Extended).
-- **Credential backend** — Confirms the keyring backend is functional and warns when it's unencrypted.
-- **Platform Client Secret** — Confirms the secret is present in the active credential store.
+- **Tier** — Reports the active tier (Standard / Extended / SaaS).
+- **Credential backend** — Confirms the configured backend (OS keyring, encrypted file, or Vault) is functional and warns when a keyring is unencrypted.
+- **Platform Client Secret** — Confirms the secret is present in the active credential store (skipped under SaaS, which has no Platform secret).
 - **Platform URL** — TCP-reaches the host:port from `platform_uri`.
 - **Gateway4 URL** — TCP-reaches the gateway URL when one is configured.
 - **Active ruleset** — Reports the active ruleset ID and rule count.
-- **SSH key path** (Extended only) — Confirms the key file exists, is readable, and isn't a `.pub` public key.
+- **SSH key path** (Extended / SaaS only) — Confirms the key file exists, is readable, and isn't a `.pub` public key.
 
-Each check prints a one-line status (`✓ OK`, `⚠ warning`, or `✘ error`) plus a specific fix-it suggestion when something's wrong. Run it after `config init`, after editing an environment, or any time a capture fails for an unclear reason. Exits 0 when everything passes, 1 on warnings, 2 on failures — so it can drive CI gates.
+Each check prints a one-line status (`✓ OK`, `⚠ warning`, or `✘ error`) plus a specific fix-it suggestion when something's wrong. Run it after `config init`, after editing an environment, or any time a capture fails for an unclear reason. Exits 0 when everything passes, 1 on warnings, 2 on failures — so it can drive CI gates. Add `--json` for machine-readable output, or `--no-url-probes` to skip the slower TCP reachability checks in CI/offline use.
+
+### Support bundles
+
+When you open a support case with Itential, `support-bundle` packages the diagnostics they typically ask for into a single ZIP, so you don't have to collect logs and config by hand:
+
+```bash
+platform-atlas support-bundle
+```
+
+An interactive wizard collects a ticket number, an optional description, and (Extended only) how many days of logs to include (1–30, default 7). Before gathering anything, Atlas verifies the active credential backend can actually produce the Platform OAuth secret both tiers depend on — if it can't (Vault unreachable, auth failed, or the secret missing), the bundle is aborted with a fix hint instead of written empty.
+
+What's collected depends on your tier:
+
+- **Standard** — five Platform health API endpoints plus a redacted copy of your Atlas config.
+- **Extended** — the above plus SSH-based platform / webserver / MongoDB logs and system info.
+- **SaaS** — a config-snapshot bundle labeled for the gateway audit.
+
+The output is `atlas-support-bundle-<timestamp>.zip` in the current directory (or `--output PATH`). Useful flags: `--log-days N` (Extended; overrides the prompt, clamped 1–30) and `--yes` to skip the confirmation prompt. Secrets are redacted from the bundled config, but review the ZIP before sharing if your environment is sensitive.
 
 ---
 
@@ -322,6 +337,48 @@ platform-atlas ruleset active
 platform-atlas ruleset info
 ```
 
+### Inspect individual rules
+
+To see the actual rules in a ruleset — useful when deciding what to suppress or which profile fits — list them in a table, optionally filtered:
+
+```bash
+platform-atlas ruleset rules                        # all rules in the active ruleset
+platform-atlas ruleset rules --category redis        # only Redis rules
+platform-atlas ruleset rules --severity critical     # only critical rules
+```
+
+### Suppress a rule for one environment
+
+Sometimes a rule doesn't apply to a particular deployment. Rather than disabling it everywhere, you can suppress it for the **active environment** only. A suppressed rule still runs, but appears as **Suppressed** (amber) in the report and ruleset table, so the intent stays visible — it isn't silently hidden:
+
+```bash
+platform-atlas ruleset skip-rule PLAT-001 --reason "Non-prod sandbox, control not required"
+platform-atlas ruleset unskip-rule PLAT-001          # restore it
+```
+
+A justification reason (minimum 10 characters) is required — pass `--reason` or you'll be prompted for one. The reason is stored with the suppression and shown inline in the compliance report (under the Suppressed badge and in the rule detail modal). Only rule numbers that exist in the active ruleset are accepted.
+
+### Update rulesets
+
+`ruleset update` checks for newer ruleset versions and downloads compatible ones:
+
+```bash
+platform-atlas ruleset update
+```
+
+It fetches a signed manifest from GitHub, compares available versions against what you have installed, and downloads only rulesets compatible with your Atlas version. Downloads are SHA-256 verified and written atomically. If you decline an available update, the CLI dashboard shows a slim notice until you apply it.
+
+### Sync bundled rulesets
+
+Every Atlas release bundles its own rulesets and profiles; on startup Atlas copies new and newer ones into `~/.atlas` automatically. To force that sync manually — for example after a reinstall — use:
+
+```bash
+platform-atlas ruleset sync                # version-aware copy (keeps locally-newer files)
+platform-atlas ruleset sync --force        # wipe local rulesets/profiles, then re-copy fresh
+```
+
+`--force` is destructive — it deletes **all** local rulesets and profiles first, including custom files and anything downloaded via `ruleset update`, takes no backup, and prompts to confirm unless `--yes` is given.
+
 ---
 
 ## Running an Audit
@@ -381,6 +438,10 @@ This connects to your deployment and collects configuration data. You'll see a l
 - Gateway packages and environment variables
 
 If a collector fails (for example, because a config file is missing), Atlas will offer to let you provide the data manually through a guided prompt. You can skip this with `--skip-guided`.
+
+#### Resuming an interrupted capture
+
+If a capture is interrupted partway through — a Ctrl-C, a dropped SSH connection, or a network blip — Atlas checkpoints each collector's result as it completes to `00_checkpoint.json` inside the session directory. Re-running `session run capture` detects the checkpoint and offers to resume from where it left off, so you don't re-collect everything. The checkpoint is cleared automatically once capture completes successfully.
 
 #### Manual capture with batch import
 
@@ -529,13 +590,15 @@ This creates an HTML comparison report highlighting rules that improved, regress
 
 ### Export a session
 
-To package a session for sharing (for example, sending a report to your team):
+To package a session as a complete delivery bundle (for example, to attach to an Itential Enablement Request, or to hand a report to your team):
 
 ```bash
 platform-atlas session export prod-q1-2026
 ```
 
-This creates a ZIP file containing the report, session metadata, and a README. By default, raw capture data is redacted from exports for security. If you need to include it, add `--no-redact`.
+Run with no name to confirm the active session or arrow-pick from the most recent ones. The ZIP is named `ATLAS-<org>-<session>-<date>` and bundles the full report set (`03_report.html`, `04_operational.html`, `05_arch.html` — a single merged report under SaaS), a fresh `report.json`, session metadata, and a README. A summary panel lists exactly what was packaged.
+
+By default, raw capture data is redacted from exports for security. Add `--include-debug` (alias `--no-redact`) to also include the troubleshooting files — `session.log`, `01_capture.json`, and `debug.log` — when Itential support asks for them. Embedded credentials inside capture files are masked regardless of this flag (see the credential-redaction note in *What's New*).
 
 ### Delete a session
 
@@ -544,6 +607,33 @@ platform-atlas session delete prod-q1-2026
 ```
 
 You'll be asked to confirm. To skip the confirmation prompt, add `--force`.
+
+### Prune old sessions
+
+Over time, audit sessions accumulate. `session prune` cleans them up by age, count, status, or environment — and is **dry-run by default**, so you always see what would be deleted before anything is removed:
+
+```bash
+platform-atlas session prune                                 # preview: sessions older than 30d
+platform-atlas session prune --older-than 7d                 # a different age cutoff (30d, 7d, 1w, 24h…)
+platform-atlas session prune --keep-last 10                  # keep the 10 newest, preview the rest
+platform-atlas session prune --status aborted                # only sessions with this final status
+platform-atlas session prune --env dev                       # only sessions bound to one environment
+platform-atlas session prune --older-than 30d --no-dry-run   # actually delete (asks to confirm)
+```
+
+All filter flags AND together. The active session is always excluded. Add `--yes` to skip the confirmation on a real (`--no-dry-run`) run.
+
+### Repair older sessions
+
+If you have sessions created before environment/ruleset bindings existed, `session repair` backfills their missing metadata (organization name, environment, ruleset, profile) from the capture data already on disk:
+
+```bash
+platform-atlas session repair                # repair all sessions
+platform-atlas session repair my-session     # repair one
+platform-atlas session repair --dry-run      # preview changes without writing
+```
+
+It's safe to run multiple times — it only fills in blanks and never overwrites existing values.
 
 ---
 
@@ -575,6 +665,7 @@ platform-atlas env create                           # Create a new environment
 platform-atlas env create staging --from production  # Copy and customize
 platform-atlas env show                             # Details of active environment
 platform-atlas env edit staging                     # Edit settings (org name, URIs, topology, etc.)
+platform-atlas env architecture staging             # Record/update architecture details (see below)
 platform-atlas env remove dev                       # Delete an environment
 ```
 
@@ -584,7 +675,7 @@ platform-atlas env remove dev                       # Delete an environment
 platform-atlas config credentials
 ```
 
-This shows the status of all stored credentials (stored or missing) for the active environment and lets you update or delete individual ones through an interactive menu.
+This shows the status of all stored credentials (stored or missing) for the active environment and lets you update or delete individual ones through an interactive menu. The list is tier-aware — it shows only the credentials your active tier actually uses. To change *where* this environment's secrets are stored, add `--use-keyring` or `--use-file-store` (you re-enter the secrets; see *Credential Storage*).
 
 ### Change your deployment topology
 
@@ -604,11 +695,44 @@ platform-atlas config theme
 
 Pick a theme from the interactive list. The change takes effect the next time you run a command.
 
+### Edit individual settings
+
+`config edit` tunes individual behavior and timeout settings without hand-editing `config.json`:
+
+```bash
+platform-atlas config edit
+```
+
+It presents a grouped menu: manual input mode (browser vs. terminal), log retention, validation depth, and connection/request timeouts — MongoDB aggregation, SSH connect, Platform API, and Redis. Timeouts pick from safe bounded sets. Every option defaults to current behavior, so nothing changes unless you opt in.
+
+### Plain / compatibility mode
+
+For terminals that don't render Rich formatting (no color, no Unicode box-drawing), turn on plain mode:
+
+```bash
+platform-atlas config plain         # toggle plain mode on/off
+platform-atlas --plain <command>    # one-off; passing it once also persists the setting
+```
+
+Plain mode disables ANSI colors, replaces Unicode borders and status glyphs with ASCII equivalents, and suppresses emoji and syntax highlighting.
+
+### Record or update architecture details
+
+The audit report includes an architecture overview (deployment layout, load balancer, monitoring, security posture). You can fill it in — or revisit it — any time, independent of a capture:
+
+```bash
+platform-atlas env architecture                 # active environment
+platform-atlas env architecture production       # a named environment
+platform-atlas env architecture --force          # re-walk every section, even answered ones
+```
+
+This opens the browser form (or CLI prompts if no browser is available) and saves answers per-environment at `~/.atlas/architecture/<env>.json`. Under SaaS, the form is scoped to the chosen gateway. Because you can manage it here, capture no longer interrupts to ask — it shows one notice if the form is unfinished and otherwise proceeds. (`config architecture` is a synonym.)
+
 ---
 
 ## Tiers
 
-Platform Atlas 1.7+ ships with two audit modes that control which collectors run, which rules are evaluated, and what credentials are required.
+Platform Atlas ships with three audit modes that control which collectors run, which rules are evaluated, and what credentials are required.
 
 ### Standard tier
 
@@ -616,6 +740,16 @@ Audits over Platform OAuth and the optional IAG4 API only (~54 rules). No SSH, M
 - Quick application-layer health checks
 - Environments where infrastructure access is restricted
 - Teams that only need Platform-level compliance data
+
+### SaaS tier
+
+Audits a **single standalone Automation Gateway** — Gateway 4 *or* Gateway 5 — with no Platform, MongoDB, or Redis anywhere in the flow. Chosen per-environment at create time (`platform-atlas env create`), where you pick the gateway kind once and answer only that gateway's questions:
+- **Gateway 4** — audited over its REST API (ipsdk), plus an optional SSH block for deeper config (properties.yml, venv Python version, DB sizes, host facts). Declining SSH gives an API-only audit where SSH-dependent rules simply SKIP.
+- **Gateway 5** — environment variables read over SSH `printenv`, or from a local Docker Compose / Helm values file (no SSH needed for containerized gateways).
+
+A SaaS audit evaluates only the chosen gateway's rule category and produces a **single report file** — the compliance report with the Architecture Overview merged in (no operational report, no separate architecture report). The architecture form is gateway-scoped: Platform/MongoDB/Redis sections never appear.
+
+SaaS is never the global default and a SaaS environment cannot be converted to another tier — its shape (one gateway, no Platform) is fixed at create time. Create a new environment for a different audit type.
 
 ### Extended tier
 
@@ -627,12 +761,14 @@ Full infrastructure audit (~107 rules). Adds SSH-based collectors for system inf
 ### Managing your tier
 
 ```bash
-platform-atlas tier show                 # current tier and where it was set
+platform-atlas tier show                 # current tier and what is enabled
 platform-atlas tier set standard         # switch to Standard
 platform-atlas tier set extended         # switch to Extended
 platform-atlas tier upgrade              # interactive upgrade (adds credential prompts)
 platform-atlas tier downgrade            # interactive downgrade
 ```
+
+`tier set`, `tier upgrade`, and `tier downgrade` move between Standard and Extended. SaaS is selected only when creating an environment.
 
 Tier resolution order: `--tier` flag → `ATLAS_TIER` env var → environment overlay → config → default.
 
@@ -735,7 +871,7 @@ No. Upgrades from 1.6.x default to **Extended** tier, which preserves the exact 
 
 **Q: Which tier should I use?**
 
-Start with **Standard** if you only have Platform credentials (client ID + secret) and don't have SSH access or MongoDB/Redis URIs. Use **Extended** if you want full infrastructure coverage and have the necessary access configured. You can upgrade at any time with `platform-atlas tier upgrade`.
+Start with **Standard** if you only have Platform credentials (client ID + secret) and don't have SSH access or MongoDB/Redis URIs. Use **Extended** if you want full infrastructure coverage and have the necessary access configured. You can upgrade at any time with `platform-atlas tier upgrade`. Use **SaaS** (chosen during `env create`) when you're auditing a standalone Gateway 4 or Gateway 5 with no Platform behind it.
 
 **Q: Can I mix tiers within the same environment?**
 
@@ -755,12 +891,13 @@ Make sure the session itself was created under Standard tier. The session's boun
 
 Make sure the Python `bin` or `Scripts` directory is in your system PATH. If you installed with `--user`, the location is typically `~/.local/bin` on Linux/macOS. Try running `python -m platform_atlas` as an alternative.
 
-**Q: The setup wizard says "Insecure keyring backend detected."**
+**Q: The setup wizard says my keyring is unavailable or unencrypted — or I'm on a headless server.**
 
-This happens on Linux servers without a graphical desktop environment. The `keyring` library can't find a secure credential store. You have two options:
+This happens on Linux servers without a graphical desktop, where the `keyring` library can't reach a secure credential store. As of v2.0 there is **no automatic fallback** — you choose a backend explicitly, and the setup wizard shows whether the keyring actually works on this host so you can pick the right one up front. Your options:
 
-1. Install the encrypted file backend: `pip install keyrings.alt` — this stores credentials in an encrypted file.
-2. Use HashiCorp Vault as your credential backend instead of the OS keyring.
+1. Choose the **Encrypted Local File** backend at setup (or switch later with `platform-atlas config credentials --use-file-store`). Secrets go in an encrypted, machine-bound file at `~/.atlas/credentials.enc` — see *Credential Storage*.
+2. Use **HashiCorp Vault** as your credential backend instead of the OS keyring.
+3. Configure an encrypted OS keyring by hand: `export PYTHON_KEYRING_BACKEND=keyrings.alt.file.EncryptedKeyring`, then pick the OS Keyring backend.
 
 **Q: Can I run Atlas on my laptop and connect to remote servers?**
 
@@ -975,9 +1112,13 @@ Everything lives under `~/.atlas/` in your home directory:
 
 - `config.json` — Global configuration (default org name, theme, debug settings — no secrets)
 - `settings.json` — Active ruleset and profile pointers
-- `environments/` — One file per named deployment target (production.json, dev.json, etc.), each with its own org name, credentials backend, and topology
+- `environments/` — One file per named deployment target (production.json, dev.json, etc.), each with its own org name, credential backend, and topology
 - `sessions/` — One folder per audit session containing capture data, validation results, reports, and a `session.json` with the session's bound environment, ruleset, tier, and profile
+- `architecture/` — Per-environment architecture form answers (`<env>.json`), included in the report
+- `rulesets/` — Bundled and downloaded rulesets and profiles (synced from the package on startup)
+- `pipelines/` — User-defined MongoDB aggregation pipeline definitions
 - `continuous/` — Continuous audit data per environment: runs, events timeline, alerts state, status
+- `credentials.enc` + `.keysalt` — Encrypted credential file and its salt (only when the Encrypted Local File backend is in use)
 - `atlas.log` — Application log (rotated at 5 MB)
 
 **Q: How do I get debug output for troubleshooting?**
@@ -989,6 +1130,10 @@ platform-atlas --debug session run capture
 ```
 
 This enables verbose logging to both the console and the log file at `~/.atlas/atlas.log`.
+
+**Q: How do I see all available commands?**
+
+Run `platform-atlas --help` for the top-level command list, or `platform-atlas <command> --help` (e.g. `platform-atlas session --help`) to drill into a command group and its flags. `platform-atlas guide` renders the project README in the terminal for a quick reference without leaving your shell.
 
 **Q: Is it safe to run Atlas against a production system?**
 
@@ -1008,4 +1153,4 @@ For environments where Atlas cannot connect directly, combine `--manual` with `-
 platform-atlas session run capture --manual --import-dir /data/atlas-capture/
 ```
 
-Make sure your credential store works in non-interactive environments. On Linux, this typically means using `keyrings.alt` (encrypted file backend) or Vault instead of `gnome-keyring`, which requires a D-Bus session.
+Make sure your credential store works in non-interactive environments. The OS keyring can fail silently under cron when no desktop session is present, so for scheduled runs choose a backend that doesn't need one: the **Encrypted Local File** backend (`platform-atlas config credentials --use-file-store`, secrets in `~/.atlas/credentials.enc`) or **HashiCorp Vault**. Either avoids the `gnome-keyring`/D-Bus dependency.

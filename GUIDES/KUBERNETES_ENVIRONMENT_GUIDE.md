@@ -13,9 +13,11 @@ If you are in a hurry:
 - **Platform OAuth** (client ID + secret) is required and covers the majority of the audit.
 - **MongoDB URI** and **Redis URI** are required the same as always — Atlas connects directly via `pymongo` and `redis-py`.
 - **`values.yaml`** is optional but strongly recommended — it fills in resource sizing, QoS class, and Kubernetes-specific metadata.
-- **`kubectl`** is optional — it adds live pod status and resource consumption, and serves as a last-resort fallback for platform config if the API is unavailable.
+- **`kubectl`** is optional — it adds live pod status, resource consumption, restart counts, HPA configuration, node details, and deployment kind, and serves as a last-resort fallback for platform config if the API is unavailable.
 
 You can run a meaningful Kubernetes audit with only OAuth + MongoDB URI + Redis URI. Everything else improves coverage.
+
+> **Credentials** are never stored in config files. At setup you choose one of three backends — **OS Keyring**, **Encrypted Local File**, or **HashiCorp Vault** — and Atlas retrieves secrets from there at runtime.
 
 ---
 
@@ -28,7 +30,7 @@ It is worth saying this up front, because it tends to surprise people:
 - Atlas does **not** need to read files off the container filesystem directly.
 - Atlas does **not** deploy anything into your cluster — no pods, no jobs, no sidecars.
 
-The audit is almost entirely API-driven. `kubectl` is used only for a small number of things the APIs genuinely cannot tell you (live scheduling state and resource consumption), and even then it is optional.
+The audit is almost entirely API-driven. `kubectl` is used only for things the APIs genuinely cannot tell you — live scheduling state and resource consumption, pod restart counts (KBS-013), horizontal pod autoscaler configuration (KBS-014/015), node count and instance types, and the deployment object kind — and even then it is optional.
 
 ---
 
@@ -81,6 +83,8 @@ Atlas identifies a file as an IAP values file by checking for an `env` block con
 | `resources.requests.memory` / `resources.limits.memory` | Memory allocation in bytes |
 | `replicaCount` | Number of IAP pod replicas |
 | `resources` (full block) | Full requests and limits for rule evaluation |
+| `resources.requests.cpu` / `.limits.cpu` | Booleans `cpu_requests_set` / `cpu_limits_set` — whether each is explicitly defined |
+| `resources.requests.memory` / `.limits.memory` | Booleans `memory_requests_set` / `memory_limits_set` — whether each is explicitly defined |
 
 **QoS class** — derived from the relationship between your requests and limits:
 
@@ -102,7 +106,10 @@ This matters because `BestEffort` pods are the first to be evicted under node me
 | `certManager.enabled` | Whether cert-manager is managing TLS |
 | `storageClass` | Persistent volume storage class |
 | `persistentVolumeClaims` | PVC configuration |
-| `livenessProbe.enabled` / `readinessProbe.enabled` | Probe configuration |
+| `livenessProbe.enabled` / `readinessProbe.enabled` / `startupProbe.enabled` | Whether each health probe is configured |
+| `livenessProbe.timeoutSeconds` / `readinessProbe.timeoutSeconds` / `startupProbe.timeoutSeconds` | Probe timeouts in seconds (K8s default is 1s when unset) |
+| `livenessProbe.initialDelaySeconds` / `readinessProbe.initialDelaySeconds` | Probe startup grace period in seconds |
+| `startupProbe.failureThreshold` | Allowed startup-probe failures before the pod is restarted |
 | `mountLogVolume` | Whether logs are persisted to a volume (false = logs lost on pod restart) |
 
 **Platform config fallback** — if for any reason the Platform OAuth `/server/config` response does not contain configuration data, Atlas translates the `ITENTIAL_*` keys in your `values.yaml` env block into platform properties:
@@ -131,10 +138,13 @@ When `use_kubectl` is enabled in your environment, Atlas uses `kubectl` for live
 
 | kubectl command | What Atlas captures |
 |---|---|
-| `kubectl get pods -o json` | Pod name, phase, restart count, node assignment, readiness — filtered to IAP pods |
+| `kubectl get pods -o json` | Pod name, phase, restart count, node assignment, readiness — filtered to IAP pods. Aggregated into `max_restart_count` (KBS-013) |
 | `kubectl top pods --no-headers` | Live CPU and memory consumption per pod |
+| `kubectl get hpa -o json` | Horizontal Pod Autoscaler presence and min/max replicas (KBS-014/015) |
+| `kubectl get nodes -o json` | Cluster node count and instance types |
+| `kubectl get deployment,statefulset -o json` | Deployment object kind (Deployment vs StatefulSet) |
 
-This is particularly useful for spotting pods in crash-loop restart cycles, identifying which node a pod landed on, or confirming that resource consumption matches your declared requests.
+This is particularly useful for spotting pods in crash-loop restart cycles, identifying which node a pod landed on, confirming that resource consumption matches your declared requests, or verifying that autoscaling is configured.
 
 **Platform config fallback via `kubectl exec printenv`** — this is only triggered if the Platform OAuth `/server/config` response does not contain configuration data, meaning the API is unhealthy or unreachable. Because the output of `printenv` contains credentials (MongoDB URI, Redis URI, client secret), Atlas will ask for your explicit confirmation before running this command. You are in control of whether that happens.
 
@@ -229,10 +239,10 @@ During capture, you will see progress for each data source as it completes. If `
 
 ## Tier Considerations
 
-Kubernetes environments can run in either **Standard** or **Extended** tier:
+Atlas has three tiers — **Standard**, **Extended**, and **SaaS**. Kubernetes capture and the Kubernetes (`KBS-*`) rules are **Extended-only**; the SaaS tier audits a single gateway and does not apply to Kubernetes deployments at all.
 
-- **Standard** — Platform OAuth + optional IAG4 API. No MongoDB, no Redis, no kubectl. Covers ~55 rules focused on application-layer settings. If your team only has API-level access and no database credentials, this is your path.
-- **Extended** — Full audit including MongoDB, Redis, kubectl, and values.yaml. Covers ~108 rules. This is the right choice for a complete Kubernetes deployment audit.
+- **Standard** — Platform OAuth + optional IAG4 API. No MongoDB, no Redis, no kubectl, no Kubernetes rules. Covers ~56 rules focused on application-layer settings. If your team only has API-level access and no database credentials, this is your path.
+- **Extended** — Full audit including MongoDB, Redis, kubectl, values.yaml, and the Kubernetes rules. Covers ~122 rules. This is the right choice for a complete Kubernetes deployment audit.
 
 To check your current tier:
 

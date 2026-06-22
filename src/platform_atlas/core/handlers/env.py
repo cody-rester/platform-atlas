@@ -255,6 +255,48 @@ def handle_env_show(args: Namespace) -> int:
     return 0
 
 
+@registry.register("env", "architecture",
+                   description="Collect or edit an environment's architecture information")
+def handle_env_architecture(args: Namespace) -> int:
+    """Open the architecture form (HTML or CLI prompts) for an environment.
+
+    Architecture answers are stored per-environment under
+    ``~/.atlas/architecture/<env>.json`` and feed the audit report. This is the
+    place to fill them in or update them outside of a capture run.
+    """
+    from platform_atlas.core.context import ctx
+    from platform_atlas.capture.collectors.manual import run_architecture_collection
+
+    mgr = get_environment_manager()
+    target = getattr(args, "env_name", None)
+    if target is None:
+        target = mgr.get_active_name() or ""
+
+    if target and not mgr.exists(target):
+        console.print(f"\n  [{theme.error}]Environment '{target}' not found[/{theme.error}]\n")
+        return 1
+
+    try:
+        if ctx().is_standard:
+            console.print(
+                f"\n  [{theme.warning}]Architecture review applies to the Extended tier "
+                f"only — nothing to collect in Standard.[/{theme.warning}]\n"
+            )
+            return 0
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+    console.print(
+        f"\n[{theme.primary}]Architecture information for "
+        f"[bold]{target or 'the active environment'}[/bold][/{theme.primary}]"
+    )
+    run_architecture_collection(
+        environment=target,
+        force=bool(getattr(args, "force", False)),
+    )
+    return 0
+
+
 @registry.register("env", "create", description="Create a new environment")
 def handle_env_create(args: Namespace) -> int:
     """Create a new environment via the interactive wizard."""
@@ -488,6 +530,19 @@ def handle_env_edit(args: Namespace) -> int:
 
         # Deployment topology — delegate to the existing wizard
         if selected == "_deployment":
+            # A SaaS env's shape (one gateway, gateway_only mode) is fixed at
+            # create time — the platform topology wizard would let it grow
+            # IAP/Mongo/Redis nodes it must never have.
+            if (getattr(env, "tier", None) or "") == "saas":
+                console.print(
+                    f"  [{theme.warning}]This is a SaaS (single-gateway) environment — its "
+                    f"topology is fixed at create time.[/{theme.warning}]\n"
+                    f"  [{theme.text_dim}]To point at a different gateway or change the GW5 "
+                    f"source, create a new environment with "
+                    f"[bold]platform-atlas env create[/bold].[/{theme.text_dim}]\n"
+                )
+                continue
+
             from platform_atlas.core.init_setup import ask_deployment, _display_topology_review
             from platform_atlas.core.topology import DeploymentTopology
 

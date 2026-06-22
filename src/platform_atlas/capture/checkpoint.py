@@ -22,6 +22,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from platform_atlas.core.utils import redact_capture_credentials
+
 logger = logging.getLogger(__name__)
 
 _CHECKPOINT_FILENAME = "00_checkpoint.json"
@@ -53,7 +55,14 @@ class CaptureCheckpoint:
         return [k for k, v in data.items() if v and not k.startswith("_")]
 
     def save(self, flat_results: dict) -> None:
-        """Atomically overwrite the checkpoint with the current flat results."""
+        """Atomically overwrite the checkpoint with the current flat results.
+
+        URI credentials are scrubbed before writing so an interrupted run never
+        leaves usernames/passwords visible in ``00_checkpoint.json``. The
+        in-memory ``flat_results`` is left untouched (the redactor returns a
+        copy), so resume-from-checkpoint still works and validation is
+        unaffected — only the ``scheme://user:pass@`` segment is masked.
+        """
         parent = self._path.parent
         parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(
@@ -65,7 +74,10 @@ class CaptureCheckpoint:
             if os.name == "posix":
                 os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(flat_results, fh, indent=2, default=str, ensure_ascii=False)
+                json.dump(
+                    redact_capture_credentials(flat_results),
+                    fh, indent=2, default=str, ensure_ascii=False,
+                )
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp, self._path)

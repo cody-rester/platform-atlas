@@ -5,6 +5,7 @@ Utilities for Core Functions
 
 import sys
 import os
+import re
 import tempfile
 import stat
 import json
@@ -22,6 +23,75 @@ from platform_atlas.core.exceptions import AtlasError, SecurityError
 
 theme = ui.theme
 console = Console()
+
+
+# ── Credential redaction ──────────────────────────────────────────────────
+# Scrub the userinfo (``username[:password]``) out of any ``scheme://...@host``
+# connection string before a capture artifact is written to disk. We mask ONLY
+# the credential segment, leaving scheme/host/port/path/query intact so the
+# value is still useful for validation and reporting. The captured URL is never
+# needed for connecting — Atlas authenticates from the keyring/Vault store.
+URI_CREDENTIAL_MASK = "*****"
+
+# Matches ``://`` followed by ``user``, an optional ``:password``, then ``@``.
+# ``[^:@/\s]`` keeps the match from spanning a host boundary or free-text space,
+# so a non-credential URL (``mongodb://host:27017/db``) never matches.
+_URI_CREDENTIALS_RE = re.compile(r"(://)([^:@/\s]*)(:[^@/\s]*)?@")
+
+# Guards the recursive walk against pathological/cyclic-looking nesting.
+_MAX_REDACT_DEPTH = 100
+
+
+def redact_uri_credentials(value: Any, mask: str = URI_CREDENTIAL_MASK) -> Any:
+    """Replace the userinfo in any ``scheme://user:pass@host`` URI with ``mask``.
+
+    Only the credential segment is touched — scheme, host, port, path, and
+    query string survive verbatim. Strings without an embedded ``user[:pass]@``
+    are returned unchanged, as are non-string inputs. Idempotent.
+
+        ``mongodb://itential:itential@h:27017/db?x=1``
+            → ``mongodb://*****:*****@h:27017/db?x=1``
+        ``redis://:secret@h:6379``  → ``redis://:*****@h:6379``
+        ``mongodb://h:27017/db``    → ``mongodb://h:27017/db``  (unchanged)
+    """
+    if not isinstance(value, str):
+        return value
+
+    def _replace(match: re.Match) -> str:
+        scheme_sep = match.group(1)        # "://"
+        user = match.group(2)              # username, possibly ""
+        password_part = match.group(3)     # ":password" or None
+        masked_user = mask if user else ""
+        masked_pass = f":{mask}" if password_part is not None else ""
+        return f"{scheme_sep}{masked_user}{masked_pass}@"
+
+    return _URI_CREDENTIALS_RE.sub(_replace, value)
+
+
+def redact_capture_credentials(
+        obj: Any,
+        mask: str = URI_CREDENTIAL_MASK,
+        _depth: int = 0,
+) -> Any:
+    """Recursively redact URI credentials throughout a captured data structure.
+
+    Walks dicts, lists, and tuples, applying :func:`redact_uri_credentials` to
+    every string leaf and returning a redacted copy of any container it visits.
+    Scalars (and strings with no credentials) are returned as-is. Pure — never
+    mutates the input, so it is safe to call on a live ``full_capture_json``.
+    """
+    if _depth > _MAX_REDACT_DEPTH:
+        return obj
+    if isinstance(obj, str):
+        return redact_uri_credentials(obj, mask)
+    if isinstance(obj, dict):
+        return {k: redact_capture_credentials(v, mask, _depth + 1) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact_capture_credentials(v, mask, _depth + 1) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(redact_capture_credentials(v, mask, _depth + 1) for v in obj)
+    return obj
+
 
 def handle_errors(
         exit_on_error: bool = True,

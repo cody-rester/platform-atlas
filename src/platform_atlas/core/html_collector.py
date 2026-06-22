@@ -138,8 +138,6 @@ def _persist(data: dict[str, Any], environment: str = "") -> None:
 def _form_url_for(html_path: Path, environment: str, organization: str = "") -> str:
     """Build the file:// URL with the env (and optional org) as query strings."""
     base = html_path.as_uri()
-    if not environment and not organization:
-        return base
     # The form reads URLSearchParams to display the env in its header and
     # pre-fill the company/organization field on first load.
     from urllib.parse import quote, urlencode
@@ -148,6 +146,18 @@ def _form_url_for(html_path: Path, environment: str, organization: str = "") -> 
         params.append(("env", environment))
     if organization:
         params.append(("org", organization))
+    # SaaS audits get a gateway-scoped form: given the tier and gateway
+    # kind, the page hides the Platform/MongoDB/Redis sections (and the
+    # other gateway's) from its markup, progress, and export.
+    try:
+        from platform_atlas.core.context import ctx
+        if ctx().is_saas:
+            params.append(("tier", "saas"))
+            params.append(("gw", (ctx().config.saas_gateway_kind or "").strip().lower()))
+    except Exception:
+        pass
+    if not params:
+        return base
     return f"{base}?{urlencode(params, quote_via=quote)}"
 
 
@@ -196,12 +206,13 @@ def launch_architecture_form(environment: str = "") -> dict[str, Any] | None:
         None  — user chose CLI fallback; caller should run CLI collector.
 
     Raises TierViolationError if invoked while the active tier is Standard —
-    architecture review is an Extended-only feature.
+    the architecture form is not part of the app-only Standard tier (it is
+    offered in Extended and, gateway-scoped, in SaaS).
     """
-    from platform_atlas.core.context import require_extended
-    require_extended(
+    from platform_atlas.core.context import require_infra
+    require_infra(
         "architecture form",
-        hint="Architecture & maintenance review is part of Extended Mode.",
+        hint="The architecture form is unavailable in Standard Mode.",
     )
 
     try:

@@ -70,6 +70,9 @@ class Environment:
     platform_uri: str = ""
     platform_client_id: str = ""
     credential_backend: str = "keyring"
+    # Vault backend only: where Vault's own connection settings live locally —
+    # "keyring" or "file" (None = keyring, the pre-2.0 default). Overlays config.
+    vault_secret_store: str | None = None
     deployment: dict | None = None
     legacy_profile: str | None = ""
     gateway4_uri: str = ""
@@ -78,6 +81,9 @@ class Environment:
     # Stored as None when not explicitly set so it stays out of the overlay
     # and the global default is preserved.
     tier: str | None = None
+    # SaaS tier only: which gateway this environment audits — "gateway4" or
+    # "gateway5". Strictly one per environment, fixed at create time.
+    saas_gateway_kind: str | None = None
     # SSH key path — applies to all SSH-connected nodes in this environment.
     # Stored here as a top-level convenience field; propagated into
     # deployment.ssh_defaults.key_path and each node's ssh_key when saved
@@ -149,6 +155,8 @@ class Environment:
             overlay["platform_client_id"] = self.platform_client_id
         if self.credential_backend:
             overlay["credential_backend"] = self.credential_backend
+        if self.vault_secret_store:
+            overlay["vault_secret_store"] = self.vault_secret_store
         if self.deployment is not None:
             overlay["deployment"] = self.deployment
         if self.legacy_profile is not None:
@@ -160,6 +168,8 @@ class Environment:
         # Tier — only overlay when explicitly set on the env file.
         if self.tier:
             overlay["tier"] = self.tier
+        if self.saas_gateway_kind:
+            overlay["saas_gateway_kind"] = self.saas_gateway_kind
         if self.log_path_override:
             overlay["log_path_override"] = self.log_path_override
         if self.webserver_log_path_override:
@@ -216,8 +226,8 @@ def propagate_ssh_key(deployment: dict, ssh_key: str) -> dict:
 
     # -- per-node values -------------------------------------------------------
     for node in deployment.get("nodes", []):
-        if node.get("transport") in ("kubernetes", "local", "control_master"):
-            continue  # K8s, local, and ControlMaster nodes don't use a SSH key path
+        if node.get("transport") in ("kubernetes", "local", "control_master", "gateway5_file"):
+            continue  # K8s, local, ControlMaster, and file-source nodes don't use a SSH key path
         if ssh_key:
             node["ssh_key"] = ssh_key
         else:

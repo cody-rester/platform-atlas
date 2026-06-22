@@ -35,11 +35,26 @@ STANDARD_MODULE_KEYS: frozenset[str] = frozenset({
 })
 
 # Module keys that require Extended Mode. Used only for documentation
-# and acceptance tests — the actual gate is `STANDARD_MODULE_KEYS`.
+# and acceptance tests — the actual gate is `allowed_modules`.
 EXTENDED_MODULE_KEYS: frozenset[str] = frozenset({
     "mongo", "redis", "system", "filesystem",
     "gateway4",   # SSH-based Gateway4 collector (NOT gateway4_api)
     "gateway5", "kubernetes", "kubernetes_helm",
+})
+
+# Module keys that may be registered while tier=saas: the gateway the
+# environment audits (API + SSH collectors), host facts, and the manual
+# architecture form. Notably absent — platform/platform_conf (a SaaS audit
+# has no Platform anchor), mongo, redis, kubernetes. Which gateway's
+# modules actually register is narrowed further by ``saas_gateway_kind``
+# in the modules registry.
+SAAS_MODULE_KEYS: frozenset[str] = frozenset({
+    "gateway4_api",   # ipsdk — Gateway4 runtime via HTTPS
+    "gateway4",       # SSH-based Gateway4 collector
+    "gateway5",       # Gateway5 env vars via SSH printenv or Compose/Helm file
+    "system",         # Host facts — informational context in SaaS
+    "filesystem",     # Config-file presence/permissions on the gateway host
+    "manual",         # User-supplied self-report; tier-agnostic
 })
 
 class ContextNotInitializedError(AtlasError):
@@ -120,7 +135,7 @@ class AtlasContext:
     # ── Tier ───────────────────────────────────────────────────────
     @property
     def tier(self) -> Tier:
-        """The active tier ("standard" or "extended"). See core/config.py."""
+        """The active tier ("standard", "extended", or "saas"). See core/config.py."""
         return self.config.tier
 
     @property
@@ -134,6 +149,16 @@ class AtlasContext:
         return self.config.tier == "extended"
 
     @property
+    def is_saas(self) -> bool:
+        """True if the active tier is SaaS (single-gateway audit)."""
+        return self.config.tier == "saas"
+
+    @property
+    def saas_gateway_kind(self) -> str | None:
+        """The SaaS environment's gateway kind ("gateway4"/"gateway5"), or None."""
+        return self.config.saas_gateway_kind
+
+    @property
     def allowed_modules(self) -> frozenset[str]:
         """
         Module keys that may be registered for the current tier.
@@ -144,6 +169,8 @@ class AtlasContext:
         """
         if self.config.tier == "standard":
             return STANDARD_MODULE_KEYS
+        if self.config.tier == "saas":
+            return SAAS_MODULE_KEYS
         return STANDARD_MODULE_KEYS | EXTENDED_MODULE_KEYS
 
     def is_module_allowed(self, module_key: str) -> bool:
@@ -155,12 +182,13 @@ def require_extended(component: str, *, hint: str = "") -> None:
     """
     Guard helper. Call at the top of any Extended-only entry point.
 
-    Raises ``TierViolationError`` if the active tier is Standard. This is
-    defense 2 of the hard mode boundary (alongside registry pruning and the
-    tier-aware credential store) — Extended-only collectors and transports
-    invoke this in their __init__ / from_config / connect paths so any
-    accidental call from Standard fails fast, *before* a network connection
-    is attempted.
+    Raises ``TierViolationError`` unless the active tier is Extended — the
+    platform-infrastructure collectors (Mongo, Redis, Kubernetes) have no
+    place in either a Standard (app-only) or a SaaS (single-gateway) audit.
+    This is defense 2 of the hard mode boundary (alongside registry pruning
+    and the tier-aware credential store) — gated collectors invoke this in
+    their __init__ / from_config / connect paths so any accidental call
+    fails fast, *before* a network connection is attempted.
 
     If the context is not yet initialized (early-startup paths, tests that
     run without init_context), this is a no-op — the guard only activates
@@ -168,7 +196,38 @@ def require_extended(component: str, *, hint: str = "") -> None:
     """
     if _ctx is None:
         return
+    if _ctx.config.tier != "extended":
+        raise TierViolationError(component, hint=hint)
+
+
+def require_infra(component: str, *, hint: str = "") -> None:
+    """
+    Guard helper for components that need infrastructure access — SSH and
+    the collectors built on it (system, filesystem, the SSH gateway
+    collectors). Available in Extended AND SaaS (a SaaS audit reaches its
+    gateway over SSH as needed), never in Standard.
+
+    Raises ``TierViolationError`` if the active tier is Standard. No-op
+    when the context is not initialized, mirroring ``require_extended``.
+    """
+    if _ctx is None:
+        return
     if _ctx.config.tier == "standard":
+        raise TierViolationError(component, hint=hint)
+
+
+def forbid_in_saas(component: str, *, hint: str = "") -> None:
+    """
+    Guard helper for platform-anchored components that must never run in a
+    SaaS (single-gateway) audit. Belt-and-suspenders alongside registry
+    pruning, which already never registers them under SaaS.
+
+    Raises ``TierViolationError`` if the active tier is SaaS. No-op when
+    the context is not initialized.
+    """
+    if _ctx is None:
+        return
+    if _ctx.config.tier == "saas":
         raise TierViolationError(component, hint=hint)
 
 

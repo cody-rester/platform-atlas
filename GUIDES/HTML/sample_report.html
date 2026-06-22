@@ -2,7 +2,7 @@
   Platform Atlas — Report Template
 -->
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -10,7 +10,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23101625'/><path d='M16 6L6 26h20L16 6z' fill='none' stroke='%231B93D2' stroke-width='2.5' stroke-linejoin='round'/><circle cx='16' cy='19' r='2' fill='%231B93D2'/></svg>">
 
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&family=Open+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@300;400;500;600;700;800&family=Sora:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
     :root {
       /* Itential Brand */
@@ -31,32 +31,36 @@
       --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
       /* Type */
-      --font-display: "Montserrat", system-ui, sans-serif;
-      --font-body: "Open Sans", system-ui, sans-serif;
+      --font-display: "Sora", system-ui, sans-serif;
+      --font-body: "Hanken Grotesk", system-ui, sans-serif;
       --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", monospace;
+
+      /* Cover band gradient (Atlas 2.0) */
+      --band: linear-gradient(135deg, #0c1220 0%, #14223d 46%, #1b4d76 122%);
+      --band-glow: radial-gradient(circle, rgba(197,37,143,0.42), transparent 62%);
 
       /* Radius */
       --r-xs: 4px;
-      --r-sm: 6px;
-      --r-md: 10px;
-      --r-lg: 14px;
-      --r-xl: 20px;
+      --r-sm: 8px;
+      --r-md: 12px;
+      --r-lg: 18px;
+      --r-xl: 24px;
       --r-pill: 100px;
     }
 
     /* ── Dark Theme ── */
     [data-theme="dark"] {
-      --bg-base: #101625;
-      --bg-surface: #161d30;
-      --bg-elevated: #1a2340;
-      --bg-overlay: #1e2848;
+      --bg-base: #0a0f1e;
+      --bg-surface: #121a30;
+      --bg-elevated: #1a2440;
+      --bg-overlay: #202c4d;
       --bg-input: rgba(255,255,255,0.04);
-      --bg-glass: rgba(16,22,37,0.85);
+      --bg-glass: rgba(10,15,30,0.85);
 
-      --text-primary: #f0f4f8;
-      --text-secondary: #a8bdd0;
-      --text-muted: #607590;
-      --text-ghost: rgba(96,117,144,0.5);
+      --text-primary: #eef3fb;
+      --text-secondary: #9fb0cc;
+      --text-muted: #6a7a98;
+      --text-ghost: rgba(106,122,152,0.5);
 
       --accent: var(--itl-blue);
       --accent-hover: #2ca3e2;
@@ -73,16 +77,27 @@
       --status-info-bg: rgba(27,147,210,0.08);
       --status-skip: #5a6577;
       --status-skip-bg: rgba(90,101,119,0.10);
+      --status-suppress: #b36b00;
+      --status-suppress-bg: rgba(255,153,0,0.10);
       --status-error: #C5258F;
       --status-error-bg: rgba(197,37,143,0.08);
 
-      --border-subtle: rgba(27,147,210,0.06);
-      --border-default: rgba(27,147,210,0.10);
-      --border-strong: rgba(27,147,210,0.18);
+      /* Skip-reason families — muted tints, distinct from pass/fail/warn so a
+         skipped rule's *why* reads at a glance without colliding with status. */
+      --skip-unreachable: #caa23f;            /* bronze — couldn't reach / collect */
+      --skip-unreachable-bg: rgba(202,162,63,0.12);
+      --skip-nodata: #8a97ad;                 /* slate — collected but nothing found */
+      --skip-nodata-bg: rgba(138,151,173,0.12);
+      --skip-conditional: #7e93d6;            /* periwinkle — skipped by rule logic */
+      --skip-conditional-bg: rgba(126,147,214,0.12);
+
+      --border-subtle: rgba(255,255,255,0.06);
+      --border-default: rgba(255,255,255,0.10);
+      --border-strong: rgba(255,255,255,0.16);
 
       --shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
-      --shadow-md: 0 4px 16px rgba(0,0,0,0.4);
-      --shadow-lg: 0 12px 40px rgba(0,0,0,0.5);
+      --shadow-md: 0 8px 30px -10px rgba(0,0,0,0.6);
+      --shadow-lg: 0 24px 60px -24px rgba(0,0,0,0.7);
       --shadow-glow: 0 0 30px rgba(27,147,210,0.15);
 
       --chart-grid: rgba(255,255,255,0.04);
@@ -92,57 +107,108 @@
       --gradient-surface: linear-gradient(180deg, var(--bg-surface), var(--bg-base));
     }
 
-    /* ── Light Theme ── */
+    /* ── Light Theme ──
+       Tokens here mirror the WebUI's Itential theme so opening a report from
+       inside the WebUI feels like a continuation of the same surface. The
+       palette comes straight from atlas.css's :root[data-theme="itential"]
+       block (white content, navy text #101625, Itential blue accent #1B93D2).
+       Status colors are also pinned to the WebUI's --ok / --warn / --bad
+       so pass/fail badges read identically across the two surfaces. The
+       header itself flips to a navy band via overrides further down — see
+       the [data-theme="light"] .header { ... } rule. */
     [data-theme="light"] {
-      --bg-base: #f4f6f9;
+      --bg-base: #f3f1ec;
       --bg-surface: #ffffff;
-      --bg-elevated: #f8f9fb;
-      --bg-overlay: #eef1f5;
-      --bg-input: rgba(0,0,0,0.03);
+      --bg-elevated: #f4f1ea;
+      --bg-overlay: #ece8e0;
+      --bg-input: rgba(22,20,31,0.04);
       --bg-glass: rgba(255,255,255,0.88);
 
-      --text-primary: #101625;
-      --text-secondary: #4a5568;
-      --text-muted: #8494a7;
-      --text-ghost: rgba(132,148,167,0.5);
+      --text-primary: #16141f;
+      --text-secondary: #4b4758;
+      --text-muted: #87828f;
+      --text-ghost: rgba(135,130,143,0.55);
 
-      --accent: #0e7bb5;
-      --accent-hover: #0c6a9e;
-      --accent-ghost: rgba(14,123,181,0.06);
-      --accent-glow: rgba(14,123,181,0.12);
+      --accent: #1b93d2;
+      --accent-hover: #1782bc;
+      --accent-ghost: rgba(27,147,210,0.12);
+      --accent-glow: rgba(27,147,210,0.18);
 
-      --status-pass: #5fa822;
-      --status-pass-bg: rgba(95,168,34,0.08);
-      --status-fail: #d94a1f;
-      --status-fail-bg: rgba(217,74,31,0.06);
-      --status-warn: #b8860b;
-      --status-warn-bg: rgba(184,134,11,0.06);
-      --status-info: #0e7bb5;
-      --status-info-bg: rgba(14,123,181,0.06);
-      --status-skip: #8494a7;
-      --status-skip-bg: rgba(132,148,167,0.06);
+      --status-pass: #6fa22c;
+      --status-pass-bg: rgba(111,162,44,0.10);
+      --status-fail: #c0392b;
+      --status-fail-bg: rgba(192,57,43,0.08);
+      --status-warn: #e55a2a;
+      --status-warn-bg: rgba(229,90,42,0.08);
+      --status-info: #1b93d2;
+      --status-info-bg: rgba(27,147,210,0.10);
+      --status-skip: #6b7280;
+      --status-skip-bg: rgba(107,114,128,0.08);
+      --status-suppress: #9a5200;
+      --status-suppress-bg: rgba(255,153,0,0.10);
       --status-error: #a01d72;
       --status-error-bg: rgba(160,29,114,0.06);
 
-      --border-subtle: rgba(0,0,0,0.05);
-      --border-default: rgba(0,0,0,0.08);
-      --border-strong: rgba(0,0,0,0.14);
-      --border-sep: rgba(0,0,0,0.2);
+      /* Skip-reason families — light theme (deeper inks for white surfaces) */
+      --skip-unreachable: #9a7714;
+      --skip-unreachable-bg: rgba(154,119,20,0.10);
+      --skip-nodata: #6b7280;
+      --skip-nodata-bg: rgba(107,114,128,0.10);
+      --skip-conditional: #4f63b0;
+      --skip-conditional-bg: rgba(79,99,176,0.10);
 
-      --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
-      --shadow-md: 0 4px 16px rgba(0,0,0,0.06);
-      --shadow-lg: 0 12px 40px rgba(0,0,0,0.08);
-      --shadow-glow: 0 0 30px rgba(14,123,181,0.08);
+      --border-subtle: rgba(22,20,31,0.07);
+      --border-default: rgba(22,20,31,0.11);
+      --border-strong: rgba(22,20,31,0.20);
+      --border-sep: rgba(22,20,31,0.20);
 
-      --chart-grid: rgba(0,0,0,0.05);
+      --shadow-sm: 0 1px 3px rgba(22,20,31,0.05);
+      --shadow-md: 0 6px 24px -8px rgba(22,20,31,0.12);
+      --shadow-lg: 0 24px 60px -28px rgba(22,20,31,0.28);
+      --shadow-glow: 0 0 30px rgba(27,147,210,0.10);
+
+      --chart-grid: rgba(16,22,37,0.06);
       --chart-label: var(--text-muted);
 
-      --gradient-brand: linear-gradient(135deg, #0e7bb5, #a01d72);
+      --gradient-brand: linear-gradient(135deg, #1b93d2, #c5258f);
       --gradient-surface: linear-gradient(180deg, var(--bg-surface), var(--bg-base));
     }
 
+    /* Light-mode header — navy band that mirrors the WebUI's Itential
+       sidebar. Re-declares tokens at the .header scope so every descendant
+       (brand, nav links, theme-toggle, print-btn) flips to the
+       white-on-navy palette automatically. Identical pattern to atlas.css's
+       :root[data-theme="itential"] .side rule. Dark mode is unaffected
+       because these selectors are scoped to [data-theme="light"]. */
+    [data-theme="light"] .header {
+      --bg-glass: #101625;
+      --bg-input: rgba(255,255,255,0.04);
+      --text-primary: #ffffff;
+      --text-secondary: #bfcbdd;
+      --text-muted: #8595ac;
+      --text-ghost: rgba(133,149,172,0.5);
+      --border-subtle: rgba(255,255,255,0.06);
+      --border-default: rgba(255,255,255,0.10);
+      --border-strong: rgba(255,255,255,0.20);
+      --accent-ghost: rgba(27,147,210,0.22);
+      box-shadow: 0 1px 0 rgba(0,0,0,0.10), 0 4px 16px rgba(16,22,37,0.06);
+    }
+    [data-theme="light"] .header.scrolled {
+      box-shadow: 0 2px 0 rgba(0,0,0,0.12), 0 6px 20px rgba(16,22,37,0.10);
+    }
+    /* Active nav pill in the navy header — bump contrast a notch above
+       the inherited accent-ghost so the indicator pops on dark navy. */
+    [data-theme="light"] .header-nav a.active {
+      color: #ffffff;
+      background: rgba(27,147,210,0.28);
+    }
+    [data-theme="light"] .header-nav a:hover {
+      color: #ffffff;
+      background: rgba(255,255,255,0.06);
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html { font-size: 17px; scroll-behavior: smooth; }
+    html { font-size: 17px; scroll-behavior: smooth; overflow-x: hidden; }
 
     body {
       font-family: var(--font-body);
@@ -191,13 +257,13 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      height: 52px;
-      padding: 0 24px;
+      height: 58px;
+      padding: 0 32px;
       background: var(--bg-glass);
       backdrop-filter: blur(20px) saturate(140%);
       -webkit-backdrop-filter: blur(20px) saturate(140%);
-      border-bottom: 1px solid var(--border-default);
-      box-shadow: var(--shadow-sm);
+      border-bottom: 1px solid transparent;
+      box-shadow: none;
       transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
     }
     .header.scrolled {
@@ -218,25 +284,25 @@
 
     .brand {
       font-family: var(--font-display);
-      font-size: 1.15rem;
+      font-size: 1.18rem;
       font-weight: 600;
-      letter-spacing: -0.03em;
+      letter-spacing: -0.035em;
       color: var(--text-primary);
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 1px;
     }
     .brand span { color: var(--accent); font-weight: 700; }
 
     /* Itential Link */
     .brand-link {
-      font-size: 0.7rem;
-      font-weight: 600;
-      letter-spacing: 0.06em;
+      font-size: 0.66rem;
+      font-weight: 700;
+      letter-spacing: 0.2em;
       text-transform: uppercase;
       color: var(--text-muted);
       text-decoration: none;
-      opacity: 0.7;
+      opacity: 0.85;
       transition: opacity 0.2s;
     }
     .brand-link:hover { opacity: 1; }
@@ -253,7 +319,12 @@
       gap: 4px;
       margin-right: 12px;
     }
-    .header-nav a {
+    /* Apply pill chrome to both anchors AND the disabled <span> the
+       renderer emits in Standard tier — without this the disabled
+       Operational pill renders without uppercase / padding / border-radius
+       and looks like raw text dropped between the other buttons. */
+    .header-nav a,
+    .header-nav span.op-link {
       font-family: var(--font-display);
       font-size: 0.72rem;
       font-weight: 600;
@@ -264,15 +335,35 @@
       padding: 5px 12px;
       border-radius: var(--r-pill);
       transition: all 0.2s var(--ease-out-expo);
+      display: inline-flex;
+      align-items: center;
     }
     .header-nav a:hover { color: var(--text-secondary); background: var(--accent-ghost); }
     .header-nav a.active { color: var(--accent); background: var(--accent-ghost); }
-    .header-nav a.op-link {
+    .header-nav a.op-link, .header-nav span.op-link {
       color: var(--itl-green);
       border: 1px solid var(--itl-green);
       opacity: 0.7;
     }
     .header-nav a.op-link:hover { opacity: 1; background: rgba(153,202,60,0.08); }
+    /* Disabled Operational pill — both modes render the header on a navy
+       surface (light has solid #101625, dark has the translucent bg-glass),
+       so faded-white reads correctly in either mode. The previous
+       opacity:.35 + var(--text-muted) made the pill effectively invisible
+       on navy, which is why users couldn't tell it was a button at all. */
+    .header-nav span.op-link--disabled {
+      color: rgba(255,255,255,0.55);
+      border: 1px solid rgba(255,255,255,0.30);
+      opacity: 1;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+    .header-nav a.arch-link, .header-nav span.arch-link {
+      color: var(--itl-orange);
+      border: 1px solid var(--itl-orange);
+      opacity: 0.7;
+    }
+    .header-nav a.arch-link:hover { opacity: 1; background: rgba(255,102,51,0.08); }
 
     /* Theme Toggle */
     .theme-toggle {
@@ -322,96 +413,93 @@
       margin-bottom: 28px;
     }
 
+    /* ── Atlas 2.0 Cover Band ── full-bleed navy banner carrying the title */
     .hero {
-      text-align: center;
-      padding: 56px 32px 44px;
       position: relative;
-      border-bottom: 1px solid var(--border-subtle);
+      margin: 0 calc(50% - 50vw);
+      padding: 64px 0 134px;
+      background: var(--band);
+      color: #fff;
       overflow: hidden;
+      border-bottom: none;
     }
-
     .hero::before {
       content: "";
       position: absolute;
-      inset: 0;
-      background: url("data:image/svg+xml,%3Csvg width='60' height='60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30 0L60 30L30 60L0 30z' fill='none' stroke='%231B93D2' stroke-width='0.3' opacity='0.05'/%3E%3C/svg%3E") repeat;
+      right: -120px; top: -200px;
+      width: 580px; height: 580px;
+      background: var(--band-glow);
       pointer-events: none;
     }
-
-    .hero-org {
-      font-family: var(--font-display);
-      font-size: 0.82rem;
-      font-weight: 700;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      background: var(--accent);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-      margin-bottom: 10px;
-    }
-
-    .hero-title {
-      font-family: var(--font-display);
-      font-size: clamp(2rem, 5vw, 3rem);
-      font-weight: 700;
-      letter-spacing: -0.04em;
-      line-height: 1.1;
-      margin-bottom: 8px;
-    }
-
-    .hero-subtitle {
-      font-size: 0.92rem;
-      color: var(--text-muted);
-      letter-spacing: -0.01em;
-    }
-
-    /* Hero quick-stat pills */
-    .hero-pills {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      margin-top: 24px;
-      padding: 14px 32px;
-      background: var(--bg-base);
-      border: 2px solid transparent;
-      border-radius: var(--r-pill);
-      background-clip: padding-box;
-      position: relative;
-      font-size: 0.82rem;
-      font-weight: 600;
-      color: var(--text-primary);
-      letter-spacing: 0.01em;
-    }
-    .hero-pills::before {
+    .hero::after {
       content: "";
       position: absolute;
-      inset: -2px;
-      border-radius: var(--r-pill);
-      padding: 2px;
-      background: linear-gradient(135deg, var(--itl-blue) 0%, var(--itl-pink) 100%);
-      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-      -webkit-mask-composite: xor;
-      mask-composite: exclude;
+      inset: 0;
+      background: url("data:image/svg+xml,%3Csvg width='64' height='64' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M32 0L64 32L32 64L0 32z' fill='none' stroke='%23ffffff' stroke-width='0.5' opacity='0.04'/%3E%3C/svg%3E") repeat;
       pointer-events: none;
     }
-    .hero-pills .sep { color: var(--border-sep); font-weight: 300; opacity: 0.8; }
-    .hero-pills .hero-label {
-      font-family: var(--font-display);
-      font-size: 0.78rem;
+    /* Animated constellation backdrop — sits above the band/glow, below the
+       z-index:1 hero content. pointer-events:none so it never blocks clicks.
+       Hidden (and the JS no-ops) under reduced-motion, and not drawn in print. */
+    .hero-canvas {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+    }
+    @media (prefers-reduced-motion: reduce) { .hero-canvas { display: none; } }
+    @media print { .hero-canvas { display: none; } }
+    .hero-inner {
+      position: relative;
+      z-index: 1;
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+    .hero-org {
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
       font-weight: 500;
-      color: var(--text-muted);
-      letter-spacing: 0.02em;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: #6dc5f0;
+      -webkit-text-fill-color: currentColor;
+      margin-bottom: 18px;
     }
-    .hero-pills .hero-value {
-      color: var(--accent);
-      font-weight: 700;
+    .hero-title {
       font-family: var(--font-display);
+      font-size: clamp(2.6rem, 5.4vw, 4.25rem);
+      font-weight: 700;
+      letter-spacing: -0.045em;
+      line-height: 0.99;
+      color: #fff;
+      max-width: 18ch;
+      margin: 0;
     }
-    [data-theme="dark"] .hero-pills .hero-value {
-      text-shadow: 0 0 20px rgba(27,147,210,0.3);
+    .hero-subtitle { font-size: 0.92rem; color: rgba(255,255,255,0.7); letter-spacing: -0.01em; }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px 44px;
+      margin-top: 34px;
     }
+    .hero-meta .hm-item { display: flex; flex-direction: column; gap: 7px; }
+    .hero-meta .hm-label {
+      font-family: var(--font-display);
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.5);
+    }
+    .hero-meta .hm-value {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: #fff;
+    }
+    .hero-meta .hm-value.mode { align-self: flex-start; }
 
     .anim-in {
       opacity: 0;
@@ -465,9 +553,12 @@
 
     .dashboard {
       display: grid;
-      grid-template-columns: 260px 1fr;
-      gap: 16px;
+      grid-template-columns: 300px 1fr;
+      gap: 18px;
+      margin-top: -94px;
       margin-bottom: 28px;
+      position: relative;
+      z-index: 3;
     }
 
     .dashboard-right {
@@ -605,6 +696,7 @@
     .stat-card.pass::before { background: var(--status-pass); }
     .stat-card.fail::before { background: var(--status-fail); }
     .stat-card.skip::before { background: var(--status-skip); }
+    .stat-card.suppress::before { background: var(--status-suppress); }
     .stat-card.error::before { background: var(--status-error); }
 
     .stat-label {
@@ -626,6 +718,7 @@
     .stat-card.pass .stat-value { color: var(--status-pass); }
     .stat-card.fail .stat-value { color: var(--status-fail); }
     .stat-card.skip .stat-value { color: var(--status-skip); }
+    .stat-card.suppress .stat-value { color: var(--status-suppress); }
     .stat-card.error .stat-value { color: var(--status-error); }
 
     .stat-detail {
@@ -1003,6 +1096,7 @@
     .filter-pill.active.f-fail { background: var(--status-fail-bg); border-color: var(--status-fail); color: var(--status-fail); }
     .filter-pill.active.f-warn { background: var(--status-warn-bg); border-color: var(--status-warn); color: var(--status-warn); }
     .filter-pill.active.f-skip { background: var(--status-skip-bg); border-color: var(--status-skip); color: var(--status-skip); }
+    .filter-pill.active.f-suppress { background: var(--status-suppress-bg); border-color: var(--status-suppress); color: var(--status-suppress); }
     .filter-pill.active.f-error { background: var(--status-error-bg); border-color: var(--status-error); color: var(--status-error); }
     .filter-pill.active.f-info { background: var(--status-info-bg); border-color: var(--status-info); color: var(--status-info); }
 
@@ -1073,7 +1167,11 @@
 
     table.dataframe thead th {
       position: sticky;
-      top: 52px;
+      /* top: 0 because ``.table-wrap`` has overflow:auto and is the sticky
+         scroll container — not the page. Setting top:52px here pushed the
+         thead down 52px inside the wrap when the table was short, hiding
+         the first body row behind it. */
+      top: 0;
       z-index: 20;
       background: var(--bg-elevated);
       font-family: var(--font-display);
@@ -1140,7 +1238,8 @@
     [data-theme="light"] th.col-pinned { background: #e2eaf4; }
     th.col-pinned {
       position: sticky !important;
-      top: 52px !important;
+      /* Match the regular thead — sticky inside ``.table-wrap``, not the page. */
+      top: 0 !important;
       left: 0 !important;
       z-index: 35 !important;
     }
@@ -1194,6 +1293,7 @@
     .pill.error { background: var(--status-error-bg); color: var(--status-error); }
     .pill.info { background: var(--status-info-bg); color: var(--status-info); }
     .pill.skip, .pill.na { background: var(--status-skip-bg); color: var(--status-skip); }
+    .pill.suppress { background: var(--status-suppress-bg); color: var(--status-suppress); }
 
     /* Severity inline */
     .sev-critical {
@@ -1581,6 +1681,87 @@
       padding: 0 4px;
     }
 
+    .tier-footer-note {
+      margin-top: 10px;
+      padding: 10px 14px;
+      border-left: 3px solid #1B93D2;
+      background: rgba(27, 147, 210, 0.06);
+      font-size: 0.78rem;
+      line-height: 1.55;
+      color: var(--text-muted);
+    }
+    .tier-footer-note code {
+      background: rgba(27, 147, 210, 0.14);
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 0.75rem;
+      color: var(--text-primary);
+    }
+    .tier-notice {
+      margin: 24px 0;
+      padding: 20px 24px;
+      border-left: 4px solid #1B93D2;
+      background: rgba(27, 147, 210, 0.06);
+      border-radius: 4px;
+      color: var(--text-primary);
+    }
+    .tier-notice p { margin: 6px 0; line-height: 1.55; }
+    .tier-notice code {
+      background: rgba(27, 147, 210, 0.14);
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 0.85rem;
+    }
+
+    .resources-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 16px;
+      padding: 14px 20px;
+      margin-top: 32px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .resources-bar-label {
+      font-family: var(--font-display);
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      white-space: nowrap;
+      margin-right: 4px;
+    }
+    .resources-bar-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 4px;
+      align-items: center;
+    }
+    .resources-bar-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-family: var(--font-body);
+      font-size: 0.75rem;
+      color: var(--accent);
+      text-decoration: none;
+      padding: 3px 8px;
+      border-radius: var(--r-pill);
+      border: 1px solid var(--border-subtle);
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .resources-bar-link:hover {
+      background: var(--accent-ghost);
+      border-color: var(--accent);
+      color: var(--accent-hover);
+    }
+    .resources-bar-link svg {
+      flex-shrink: 0;
+      opacity: 0.65;
+    }
+
     /* ═══════════════════════════════════════════════════
        EXTENDED VALIDATION ANALYTICS
        ═══════════════════════════════════════════════════ */
@@ -1769,11 +1950,12 @@
       * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
       html[data-theme="dark"] { --bg-base: #fff; --bg-surface: #fff; --bg-elevated: #f5f5f5; --text-primary: #111; --text-secondary: #444; --text-muted: #888; --border-subtle: #e0e0e0; --border-default: #d0d0d0; --accent-ghost: rgba(27,147,210,0.06); }
       body { background: #fff; }
-      .header, .scroll-progress, .theme-toggle, .print-btn, .table-toolbar, .rule-detail-modal, .back-to-top { display: none !important; }
+      .header, .scroll-progress, .theme-toggle, .print-btn, .table-toolbar, .rule-detail-modal, .back-to-top, .resources-bar { display: none !important; }
       .content { max-width: 100%; padding: 0; }
-      .hero { padding: 24px 0; break-after: avoid; }
+      .hero { padding: 28px 0 30px; break-after: avoid; }
+      .hero::before, .hero::after { display: none !important; }
       .card { box-shadow: none; border: 1px solid #ddd; break-inside: avoid; }
-      .dashboard { grid-template-columns: 200px 1fr; }
+      .dashboard { grid-template-columns: 200px 1fr; margin-top: 0; }
       table.dataframe thead th { position: static; }
       th.col-pinned, td.col-pinned { position: static; background: #f0f3f7 !important; }
       .collapsible-section.collapsed .collapsible-content { display: block !important; }
@@ -2157,6 +2339,54 @@
       background: var(--status-skip-bg);
     }
 
+    /* ── Skipped-rule callout (color-coded by reason) ── */
+    .rule-detail-skip {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin: 12px 24px 0;
+      padding: 12px 14px;
+      border-radius: var(--r-sm);
+      border-left: 3px solid var(--status-skip);
+      background: var(--status-skip-bg);
+    }
+    .rule-detail-skip .skip-dot {
+      width: 9px; height: 9px; border-radius: 50%;
+      margin-top: 4px; flex: 0 0 auto;
+      background: var(--status-skip);
+    }
+    .rule-detail-skip-title {
+      font-family: var(--font-display);
+      font-size: 0.78rem; font-weight: 700;
+      letter-spacing: 0.02em;
+      color: var(--status-skip);
+      margin-bottom: 2px;
+    }
+    .rule-detail-skip-text {
+      font-size: 0.85rem; line-height: 1.45;
+      color: var(--text-secondary);
+      word-break: break-word;
+    }
+    .rule-detail-skip.skip-unreachable { border-left-color: var(--skip-unreachable); background: var(--skip-unreachable-bg); }
+    .rule-detail-skip.skip-unreachable .skip-dot,
+    .rule-detail-skip.skip-unreachable .rule-detail-skip-title { color: var(--skip-unreachable); background: none; }
+    .rule-detail-skip.skip-unreachable .skip-dot { background: var(--skip-unreachable); }
+    .rule-detail-skip.skip-no_data { border-left-color: var(--skip-nodata); background: var(--skip-nodata-bg); }
+    .rule-detail-skip.skip-no_data .rule-detail-skip-title { color: var(--skip-nodata); }
+    .rule-detail-skip.skip-no_data .skip-dot { background: var(--skip-nodata); }
+    .rule-detail-skip.skip-conditional { border-left-color: var(--skip-conditional); background: var(--skip-conditional-bg); }
+    .rule-detail-skip.skip-conditional .rule-detail-skip-title { color: var(--skip-conditional); }
+    .rule-detail-skip.skip-conditional .skip-dot { background: var(--skip-conditional); }
+
+    /* Table card cue: tint the SKIP status pill + a leading dot, by reason */
+    .pill.skip .skip-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      flex: 0 0 auto; background: currentColor;
+    }
+    .pill.skip.skip-unreachable { color: var(--skip-unreachable); background: var(--skip-unreachable-bg); }
+    .pill.skip.skip-no_data { color: var(--skip-nodata); background: var(--skip-nodata-bg); }
+    .pill.skip.skip-conditional { color: var(--skip-conditional); background: var(--skip-conditional-bg); }
+
     .rule-detail-header {
       display: flex;
       align-items: flex-start;
@@ -2411,12 +2641,9 @@
         <a href="#section-analytics" data-section="analytics">Analytics</a>
         <a href="#section-results" data-section="results">Results</a>
         <a href="#section-details" data-section="details">Details</a>
-        <a href="04_operational.html" id="opReportLink" class="op-link">Operational Report</a>
+        <a href="04_operational.html" class="op-link">Operational</a>
+        <a href="05_arch.html" class="op-link arch-link">Architecture</a>
       </nav>
-      <button class="theme-toggle" id="themeToggle" title="Toggle theme">
-        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-      </button>
       <button class="print-btn" onclick="window.print()" title="Print report">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
       </button>
@@ -2425,16 +2652,18 @@
 
   <main class="content">
 
-    <!-- ═══ HERO ═══ -->
+    <!-- ═══ HERO / COVER BAND ═══ -->
     <div class="hero" id="section-overview">
-      <div class="hero-org">Test Organization</div>
-      <h1 class="hero-title">Platform Health Report</h1>
-      <div class="hero-pills">
-        <span class="hero-label">Session:</span>
-        <span class="hero-value">LocalP6_003</span>
-        <span class="sep">|</span>
-        <span class="hero-label">Generated:</span>
-        <span class="hero-value">2026-04-17 12:47:11 UTC</span>
+      <canvas class="hero-canvas" id="heroCanvas" aria-hidden="true"></canvas>
+      <div class="hero-inner">
+        <div class="hero-org">Test Organization</div>
+        <h1 class="hero-title">Platform Health Report</h1>
+        <div class="hero-meta">
+          <div class="hm-item"><span class="hm-label">Mode</span><span class="hm-value mode" style="background:#FF6633;color:#fff;padding:3px 11px;border-radius:6px;font-family:var(--font-display);font-weight:700;letter-spacing:0.04em;font-size:0.72rem;">EXTENDED</span></div>
+          <div class="hm-item"><span class="hm-label">Audit</span><span class="hm-value">Infrastructure Audit</span></div>
+          <div class="hm-item"><span class="hm-label">Session</span><span class="hm-value">example-session</span></div>
+          <div class="hm-item"><span class="hm-label">Generated</span><span class="hm-value">2026-06-18 17:56:46 UTC</span></div>
+        </div>
       </div>
     </div>
 
@@ -2462,7 +2691,7 @@
             <circle class="score-ring-progress" cx="80" cy="80" r="65" id="scoreRingProgress"/>
           </svg>
           <div class="score-value-overlay">
-            <div class="score-number" id="scoreNumber">76<span class="score-obelisk"></span></div>
+            <div class="score-number" id="scoreNumber">73<span class="score-obelisk"></span></div>
             <div class="score-pct"></div>
           </div>
         </div>
@@ -2470,8 +2699,8 @@
         <div class="score-rating" id="scoreRating">Needs Attention</div>
 
         <div class="system-info">
-          <div>Total Rules: 69</div>
-          <div>Evaluated: 59</div>
+          <div>Total Rules: 71</div>
+          <div>Evaluated: 61</div>
           <div>Skipped: 10</div>
         </div>
       </div>
@@ -2487,13 +2716,18 @@
           </div>
           <div class="card stat-card fail anim-in">
             <div class="stat-label">Non-Compliant</div>
-            <div class="stat-value" data-count="14">14</div>
+            <div class="stat-value" data-count="16">16</div>
             <div class="stat-detail">need attention</div>
           </div>
           <div class="card stat-card skip anim-in">
             <div class="stat-label">Skipped</div>
             <div class="stat-value" data-count="10">10</div>
             <div class="stat-detail">not evaluated</div>
+          </div>
+          <div class="card stat-card suppress anim-in" id="suppressCard">
+            <div class="stat-label">Suppressed</div>
+            <div class="stat-value" data-count="0">0</div>
+            <div class="stat-detail">hidden by user</div>
           </div>
           <div class="card stat-card error anim-in">
             <div class="stat-label">Errors</div>
@@ -2578,7 +2812,7 @@
           <div class="donut-svg-wrap">
             <svg viewBox="0 0 160 160" id="categoryDonut"></svg>
             <div class="donut-center-label">
-              <div class="num">69</div>
+              <div class="num">71</div>
               <div class="lbl">Rules</div>
             </div>
           </div>
@@ -2612,7 +2846,7 @@
     <div class="card table-card section" id="section-results">
       <div class="card-header">
         <h2 class="card-title">Validation Results</h2>
-        <span class="card-badge">69 rules</span>
+        <span class="card-badge">71 rules</span>
       </div>
       <div class="subsystem-tabs" id="subsystemTabs"></div>
       <div class="table-toolbar">
@@ -2776,7 +3010,7 @@
       <td>Compliant</td>
       <td>gateway4.db_sizes.gateway4_exec_history_db_size</td>
       <td>1073741824</td>
-      <td>2691072</td>
+      <td>74461184</td>
       <td>lte</td>
       <td>The Gateway 4 execution history database is within the recommended size limit of 1 GB</td>
     </tr>
@@ -2908,7 +3142,7 @@
       <td>Compliant</td>
       <td>platform.config.service_launch_delay.value</td>
       <td>5</td>
-      <td>1</td>
+      <td>0</td>
       <td>lte</td>
       <td>Service launch delay is 5 seconds or less, which keeps startup times efficient</td>
     </tr>
@@ -2944,7 +3178,7 @@
       <td>Compliant</td>
       <td>platform.health_server.version</td>
       <td>['6.0', '6.9']</td>
-      <td>6.3.4</td>
+      <td>6.4.1</td>
       <td>in_range</td>
       <td>Platform is running a current version within the supported 6.x release range</td>
     </tr>
@@ -2956,7 +3190,7 @@
       <td>Compliant</td>
       <td>platform.health_server.versions.node</td>
       <td>['20.0.0', '21.0.0']</td>
-      <td>20.19.5</td>
+      <td>20.20.2</td>
       <td>in_range</td>
       <td>Node.js version is within the supported range for Platform 6 (v20.x)</td>
     </tr>
@@ -3016,7 +3250,7 @@
       <td>Compliant</td>
       <td>platform.config.log_max_file_size.value</td>
       <td>1048576</td>
-      <td>1048576</td>
+      <td>99999999</td>
       <td>gte</td>
       <td>Individual log files can grow to at least 1 MB before rotation, which is sufficient for most environments</td>
     </tr>
@@ -3142,15 +3376,15 @@
     </tr>
     <tr>
       <td>PLAT-027</td>
-      <td>Mongo URL</td>
+      <td>MongoDB URL Arguments</td>
       <td>platform</td>
-      <td>warning</td>
-      <td>Compliant</td>
+      <td>info</td>
+      <td>Non-Compliant</td>
       <td>platform.config_file.mongo_url.value</td>
       <td>?</td>
       <td>mongodb://******:******@localhost:27017/pronghorn?connectTimeoutMS=30000</td>
-      <td>contains</td>
-      <td>MongoDB connection URL includes query parameters for connection tuning (e.g., replica set name, timeouts)</td>
+      <td>not_contains</td>
+      <td>The MongoDB connection URL includes query-string arguments (everything after the '?') — double-check that you're not using any incorrect or unintended MongoDB connection options here</td>
     </tr>
     <tr>
       <td>PLAT-028</td>
@@ -3282,7 +3516,7 @@
       <td></td>
       <td></td>
       <td>lte</td>
-      <td>Rule skipped because "Platform Version" reported version 6.3.4 (≥ 6.1.2) — this check only applies to versions below 6.1.2</td>
+      <td>Rule skipped because "Platform Version" reported version 6.4.1 (≥ 6.1.2) — this check only applies to versions below 6.1.2</td>
     </tr>
     <tr>
       <td>PLAT-039</td>
@@ -3381,6 +3615,30 @@
       <td>TLS is not configured for Redis connections — database traffic is unencrypted, which is a security risk in production</td>
     </tr>
     <tr>
+      <td>PLAT-048</td>
+      <td>Template Builder Execution Timeout</td>
+      <td>platform</td>
+      <td>warning</td>
+      <td>Non-Compliant</td>
+      <td>platform.application_props.results.TemplateBuilder.properties.templateExecutionTimeout</td>
+      <td>10000</td>
+      <td>30000</td>
+      <td>lte</td>
+      <td>Template Builder execution timeout exceeds 10000ms — high values can cause long-running template executions that degrade platform performance</td>
+    </tr>
+    <tr>
+      <td>PLAT-049</td>
+      <td>Platform JSON Logging</td>
+      <td>platform</td>
+      <td>info</td>
+      <td>Compliant</td>
+      <td>platform.config.console_format_json.value</td>
+      <td>True</td>
+      <td>true</td>
+      <td>eq</td>
+      <td>JSON Logging is enabled in the Platform</td>
+    </tr>
+    <tr>
       <td>RDS-001</td>
       <td>Redis Configuration File</td>
       <td>redis</td>
@@ -3435,10 +3693,10 @@
       <td>critical</td>
       <td>Compliant</td>
       <td>redis.info.redis_version</td>
-      <td>7.4.0</td>
+      <td>['7.0.0', '7.4.9999']</td>
       <td>7.4.6</td>
-      <td>gte</td>
-      <td>Redis is running a supported version with current security patches</td>
+      <td>in_range</td>
+      <td>Redis is running a supported version within the 7.0.x–7.4.x range</td>
     </tr>
     <tr>
       <td>RDS-006</td>
@@ -3447,10 +3705,10 @@
       <td>warning</td>
       <td>Compliant</td>
       <td>redis.runtime_config.tcp-keepalive</td>
-      <td>[60, 120]</td>
+      <td>[60, 300]</td>
       <td>100</td>
       <td>in_range</td>
-      <td>TCP keepalive is set between 60 and 120 seconds, which reliably detects dead connections without excessive overhead</td>
+      <td>TCP keepalive is set between 60 and 300 seconds, which reliably detects dead connections without excessive overhead</td>
     </tr>
     <tr>
       <td>RDS-012</td>
@@ -3480,225 +3738,14 @@
 </table>
       </div>
       <div class="card-footer">
-        <span>Generated 2026-04-17 12:47:11 UTC • 69 rules evaluated</span>
+        <span>Generated 2026-06-18 17:56:46 UTC • 71 rules evaluated</span>
       </div>
     </div>
 
-    <!-- ═══ EXTENDED / DETAILS ═══ -->
-    <div id="section-details">
-      <div class="extended-section">
-<h2>Additional Validation</h2>
-<p class="section-desc">Additional automated checks</p>
-
-        <div class="collapsible-section">
-            <div class="collapsible-header">
-                <h3>
-                    <span>Version</span>
-                    <span class="count-badge">1</span>
-                </h3>
-                <svg class="toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="6 9 12 15 18 9"></polyline>
-                </svg>
-            </div>
-            <div class="collapsible-content">
-                <div class="extended-checks">
-        
-<div class="extended-check fail">
-<div class="check-header">
-<span class="check-status-dot fail"></span>
-<span class="check-name">Adapter Version Check</span>
-</div>
-<p class="check-message">10 adapter(s) outdated</p>
-<div class="check-details">
-<strong>Outdated Items:</strong><ul><li><strong>• adapter-aruba_central_enhanced</strong> <span class="version-old">0.3.2</span> → <span class="version-new">1.0.0</span></li><li><strong>• adapter-email</strong> <span class="version-old">4.9.8</span> → <span class="version-new">5.0.0</span></li><li><strong>• adapter-moogsoft</strong> <span class="version-old">0.6.2</span> → <span class="version-new">1.0.0</span></li><li><strong>• adapter-iap</strong> <span class="version-old">0.12.3</span> → <span class="version-new">1.0.0</span></li><li><strong>• adapter-cisco_ise_ers</strong> <span class="version-old">0.11.0</span> → <span class="version-new">1.0.0</span></li><li><strong>• adapter-db_mongo</strong> <span class="version-old">0.9.5</span> → <span class="version-new">1.0.0</span></li><li><strong>• adapter-viptela</strong> <span class="version-old">0.19.0</span> → <span class="version-new">1.0.0</span></li><li><strong>• adapter-phpipam</strong> <span class="version-old">2.7.0</span> → <span class="version-new">3.0.0</span></li><li><strong>• adapter-nautobot</strong> <span class="version-old">0.6.2</span> → <span class="version-new">1.0.0</span></li><li><strong>• adapter-netbox_v33</strong> <span class="version-old">2.7.4</span> → <span class="version-new">3.0.0</span></li></ul><p class="check-info">✓ 0 up-to-date</p>
-</div>
-<div class="remediation"><strong>Suggestion:</strong> Update outdated adapters to the latest versions</div>
-</div>
-</div>
-</div>
-</div>
-
-        <div class="collapsible-section">
-            <div class="collapsible-header">
-                <h3>
-                    <span>Configuration</span>
-                    <span class="count-badge">4</span>
-                </h3>
-                <svg class="toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="6 9 12 15 18 9"></polyline>
-                </svg>
-            </div>
-            <div class="collapsible-content">
-                <div class="extended-checks">
-        
-<div class="extended-check warn">
-<div class="check-header">
-<span class="check-status-dot warn"></span>
-<span class="check-name">Adapter Logger Levels</span>
-</div>
-<p class="check-message">11 adapter(s) using verbose logging</p>
-<div class="check-details">
-<ul><li><strong>• Adapter-Aruba Central Enhanced:</strong> <code>debug, debug</code></li><li><strong>• Adapter-Cisco Ise Ers:</strong> <code>debug, debug</code></li><li><strong>• Adapter-Viptela:</strong> <code>debug, debug</code></li><li><strong>• Adapter-Db Mongo:</strong> <code>debug, debug</code></li><li><strong>• Adapter-Email:</strong> <code>debug, debug</code></li><li><strong>• Adapter-Iap:</strong> <code>debug</code></li><li><strong>• Adapter-Moogsoft:</strong> <code>debug, debug</code></li><li><strong>• Adapter-Nautobot:</strong> <code>debug, debug</code></li><li><strong>• Adapter-Netbox V33:</strong> <code>debug, debug</code></li><li><strong>• Adapter-Netbox2:</strong> <code>debug, debug</code></li><li><strong>• Adapter-Phpipam:</strong> <code>debug, debug</code></li></ul>
-</div>
-<div class="remediation"><strong>Suggestion:</strong> Verbose logging (debug/trace) can significantly impact performance and disk space in Production.</div>
-</div>
-<div class="extended-check warn">
-<div class="check-header">
-<span class="check-status-dot warn"></span>
-<span class="check-name">Adapter File Data</span>
-</div>
-<p class="check-message">3 adapter(s) with log file issues</p>
-<div class="check-details">
-<ul><li><strong>• Adapter-Db Mongo:</strong> <code>Duplicate filename &#x27;Moogsoft.log&#x27; (shared with: adapter-moogsoft)</code></li><li><strong>• Adapter-Moogsoft:</strong> <code>Duplicate filename &#x27;Moogsoft.log&#x27; (shared with: adapter-db_mongo)</code></li><li><strong>• Adapter-Phpipam:</strong> <code>Log size 104,857 bytes is below expected 1,048,576</code></li></ul>
-</div>
-<div class="remediation"><strong>Suggestion:</strong> Duplicate log filenames can cause adapters to overwrite each other&#x27;s logs. Undersized log files may indicate the log rotation size is set too low, which can result in lost diagnostic data.</div>
-</div>
-<div class="extended-check warn">
-<div class="check-header">
-<span class="check-status-dot warn"></span>
-<span class="check-name">Adapter Limit Errors</span>
-</div>
-<p class="check-message">4 adapter(s) have incorrect settings for limit_retry_error</p>
-<div class="check-details">
-<ul><li><strong>• Adapter-Cisco Ise Ers:</strong> <code>Adapter adapter-cisco_ise_ers is missing required values: 500-599, 409, 408, 418 (has: [&#x27;0&#x27;])</code></li><li><strong>• Adapter-Iap:</strong> <code>Adapter adapter-iap is missing required values: 500-599, 409, 408, 418 (has: [&#x27;401&#x27;])</code></li><li><strong>• Adapter-Phpipam:</strong> <code>Adapter adapter-phpipam is missing required values: 500-599, 409, 408, 418 (has: [&#x27;0&#x27;])</code></li><li><strong>• Adapter-Automation Gateway:</strong> <code>Adapter adapter-automation_gateway is missing required values: 500-599, 409, 408, 418 (has: [&#x27;0&#x27;])</code></li></ul>
-</div>
-<div class="remediation"><strong>Suggestion:</strong> Adapters should re-attempt connections for some errors.</div>
-</div>
-<div class="extended-check pass">
-<div class="check-header">
-<span class="check-status-dot pass"></span>
-<span class="check-name">IAG4 Default Paths</span>
-</div>
-<p class="check-message">✓ All default paths present across 3 categories</p>
-<div class="check-details">
-<strong>Present:</strong><ul><li><strong>Module Path:</strong> <code>[&#x27;/usr/local/lib/python3.9/site-packages/ansible/modules/network&#x27;, &#x27;/usr/local/lib/python3.9/site-packages/ansible_collections&#x27;, &#x27;/home/itential/.local/lib/python3.9/site-packages/ansible/modules/network&#x27;, &#x27;/home/itential/.local/lib/python3.9/site-packages/ansible_collections&#x27;, &#x27;/home/itential/automation-gateway/lib/python3.9/site-packages/ansible/modules/network&#x27;, &#x27;/home/itential/automation-gateway/lib/python3.9/site-packages/ansible_collections&#x27;, &#x27;/usr/share/automation-gateway/ansible/modules&#x27;]</code></li><li><strong>Collection Path:</strong> <code>[&#x27;/opt/automation-gateway/.ansible/collections&#x27;, &#x27;/usr/share/automation-gateway/ansible/collections&#x27;]</code></li><li><strong>Role Path:</strong> <code>[&#x27;/opt/automation-gateway/.ansible/roles&#x27;, &#x27;/usr/share/automation-gateway/ansible/roles&#x27;]</code></li></ul>
-</div>
-</div>
-</div>
-</div>
-</div>
-
-        <div class="collapsible-section">
-            <div class="collapsible-header">
-                <h3>
-                    <span>Health</span>
-                    <span class="count-badge">4</span>
-                </h3>
-                <svg class="toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="6 9 12 15 18 9"></polyline>
-                </svg>
-            </div>
-            <div class="collapsible-content">
-                <div class="extended-checks">
-        
-<div class="extended-check warn">
-<div class="check-header">
-<span class="check-status-dot warn"></span>
-<span class="check-name">Adapter States</span>
-</div>
-<p class="check-message">3 adapter(s) stopped or offline</p>
-<div class="check-details">
-<ul><li><strong>• Adapter-Email:</strong> <code>OFFLINE</code></li><li><strong>• Adapter-Netbox V33:</strong> <code>OFFLINE</code></li><li><strong>• Adapter-Netbox2:</strong> <code>OFFLINE</code></li></ul>
-</div>
-<div class="remediation"><strong>Suggestion:</strong> Review stopped and offline adapters in the platform</div>
-</div>
-<div class="extended-check pass">
-<div class="check-header">
-<span class="check-status-dot pass"></span>
-<span class="check-name">Application States</span>
-</div>
-<p class="check-message">✓ All applications running and online</p>
-</div>
-<div class="extended-check warn">
-<div class="check-header">
-<span class="check-status-dot warn"></span>
-<span class="check-name">Adapter Health Data</span>
-</div>
-<p class="check-message">5 adapter(s) with healthcheck issues</p>
-<div class="check-details">
-<ul><li><strong>• Adapter-Aruba Central Enhanced:</strong> <code>Healthcheck is disabled</code></li><li><strong>• Adapter-Cisco Ise Ers:</strong> <code>Healthcheck is disabled</code></li><li><strong>• Adapter-Moogsoft:</strong> <code>Healthcheck is disabled</code></li><li><strong>• Adapter-Nautobot:</strong> <code>Healthcheck frequency 90,000ms is too low (minimum: 600,000ms / 10 min)</code></li><li><strong>• Adapter-Phpipam:</strong> <code>Healthcheck is disabled</code></li></ul>
-</div>
-<div class="remediation"><strong>Suggestion:</strong> Adapters with healthchecks disabled will not be monitored for connectivity issues. Intermittent healthcheck frequency should be between 10 and 30 minutes (600000-1800000ms) to balance monitoring coverage with system resource usage.</div>
-</div>
-<div class="extended-check pass">
-<div class="check-header">
-<span class="check-status-dot pass"></span>
-<span class="check-name">Database Index Status</span>
-</div>
-<p class="check-message">✓ All database collections are properly indexed</p>
-</div>
-</div>
-</div>
-</div>
-
-        <div class="collapsible-section">
-            <div class="collapsible-header">
-                <h3>
-                    <span>Authentication</span>
-                    <span class="count-badge">2</span>
-                </h3>
-                <svg class="toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="6 9 12 15 18 9"></polyline>
-                </svg>
-            </div>
-            <div class="collapsible-content">
-                <div class="extended-checks">
-        
-<div class="extended-check pass">
-<div class="check-header">
-<span class="check-status-dot pass"></span>
-<span class="check-name">Adapter Brokers</span>
-</div>
-<p class="check-message">✓ No LocalAAA authentication being used</p>
-</div>
-<div class="extended-check skip">
-<div class="check-header">
-<span class="check-status-dot skip"></span>
-<span class="check-name">Redis ACL</span>
-</div>
-<p class="check-message">No redis acl info data found in capture data</p>
-</div>
-</div>
-</div>
-</div>
-
-        <div class="collapsible-section">
-            <div class="collapsible-header">
-                <h3>
-                    <span>Performance</span>
-                    <span class="count-badge">2</span>
-                </h3>
-                <svg class="toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="6 9 12 15 18 9"></polyline>
-                </svg>
-            </div>
-            <div class="collapsible-content">
-                <div class="extended-checks">
-        
-<div class="extended-check pass">
-<div class="check-header">
-<span class="check-status-dot pass"></span>
-<span class="check-name">Adapter Throttling</span>
-</div>
-<p class="check-message">✓ No Adapter Throttling is being used</p>
-</div>
-<div class="extended-check warn">
-<div class="check-header">
-<span class="check-status-dot warn"></span>
-<span class="check-name">Adapter Timeouts</span>
-</div>
-<p class="check-message">2 adapter(s) have attempt_timeouts lower than 5 seconds</p>
-<div class="check-details">
-<ul><li><strong>• Adapter-Iap:</strong> <code>Adapter &#x27;adapter-iap&#x27; has an attempt_timeout value of 5 seconds or less</code></li><li><strong>• Adapter-Phpipam:</strong> <code>Adapter &#x27;adapter-phpipam&#x27; has an attempt_timeout value of 5 seconds or less</code></li></ul>
-</div>
-<div class="remediation"><strong>Suggestion:</strong> Low attempt_timeout values can cause issues with adapters not returning data and causing frequent timeout issues. Please consider raising this value.</div>
-</div>
-</div>
-</div>
-</div>
-</div>
-      
-    </div>
+    <!-- ═══ EXTENDED / DETAILS — moved to 05_arch.html ═══ -->
+    <!-- SaaS reports merge the Architecture Overview here instead of
+         emitting a separate 05_arch.html; empty in Standard/Extended. -->
+    <div id="section-details"></div>
 
     <!-- ═══ INFO BAR ═══ -->
     <div class="info-bar">
@@ -3708,11 +3755,11 @@
       </div>
       <div class="info-item">
         <span class="label">Report Generated</span>
-        <span class="value">2026-04-17 12:47:11 UTC</span>
+        <span class="value">2026-06-18 17:56:46 UTC</span>
       </div>
       <div class="info-item">
         <span class="label">Ruleset Version</span>
-        <span class="value">1.0.0 (p6-prod-standalone-gateway4)</span>
+        <span class="value">1.0.4 (p6-prod-standalone-gateway4)</span>
       </div>
       <div class="info-item">
         <span class="label">Target System</span>
@@ -3720,7 +3767,7 @@
       </div>
       <div class="info-item">
         <span class="label">Atlas Version</span>
-        <span class="value">1.6.2</span>
+        <span class="value">2.0.0</span>
       </div>
       <div class="info-item">
         <span class="label">Data Collection</span>
@@ -3729,7 +3776,31 @@
     </div>
 
     <div class="footnotes">
-      † Score based on partial data collection (Modules: All default modules collected)
+      
+      
+    </div>
+
+    <!-- ═══ RESOURCES BAR ═══ -->
+    <div class="resources-bar">
+      <span class="resources-bar-label">Resources</span>
+      <div class="resources-bar-links">
+        <a class="resources-bar-link" href="https://docs.itential.com/" target="_blank" rel="noopener noreferrer">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+          Itential Documentation
+        </a>
+        <a class="resources-bar-link" href="https://github.com/itential/platform-atlas/tree/main/GUIDES" target="_blank" rel="noopener noreferrer">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+          Platform Atlas Guides
+        </a>
+        <a class="resources-bar-link" href="https://github.com/itential/itential.deployer" target="_blank" rel="noopener noreferrer">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          Itential Deployer
+        </a>
+        <a class="resources-bar-link" href="https://docs.itential.com/docs/troubleshooting" target="_blank" rel="noopener noreferrer">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          Troubleshooting Guides
+        </a>
+      </div>
     </div>
   </main>
 
@@ -3752,8 +3823,19 @@
         </button>
       </div>
       <div class="rule-detail-meta" id="ruleDetailMeta"></div>
+      <div class="rule-detail-suppression" id="ruleDetailSuppression" style="display:none;margin:0.5rem 1.25rem 0;">
+        <div style="font-size:0.7rem;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--status-suppress);margin-bottom:0.2rem;">Suppression Reason</div>
+        <div id="ruleDetailSuppressionText" style="font-size:0.85rem;font-style:italic;color:var(--text-secondary);line-height:1.4;"></div>
+      </div>
+      <div class="rule-detail-skip" id="ruleDetailSkip" style="display:none;">
+        <span class="skip-dot"></span>
+        <div>
+          <div class="rule-detail-skip-title" id="ruleDetailSkipTitle"></div>
+          <div class="rule-detail-skip-text" id="ruleDetailSkipText"></div>
+        </div>
+      </div>
       <div class="rule-detail-body">
-        <div class="rule-detail-label">Recommendation</div>
+        <div class="rule-detail-label" id="ruleDetailRecLabel">Recommendation</div>
         <div class="rule-detail-text" id="ruleDetailText"></div>
         <div class="rule-detail-expected-actual" id="ruleDetailExpActual">
           <div>
@@ -3791,6 +3873,73 @@
       </div>
     </div>
   </div>
+
+  <!-- 0. Hero Constellation Backdrop (animated background points, ported from whats-new-2.0) -->
+  <script>
+  (function() {
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var canvas = document.getElementById('heroCanvas');
+    if (!canvas || !canvas.getContext || reduce) return;
+    var ctx = canvas.getContext('2d');
+    var hero = canvas.parentElement;
+    var dots = [], W = 0, H = 0, mx = 0, my = 0;
+    function build() {
+      W = canvas.width = hero.offsetWidth;
+      H = canvas.height = hero.offsetHeight;
+      var n = Math.max(18, Math.min(60, Math.floor(W / 24)));
+      dots = [];
+      for (var i = 0; i < n; i++) {
+        dots.push({
+          x: Math.random() * W, y: Math.random() * H,
+          vx: (Math.random() - 0.5) * 0.28, vy: (Math.random() - 0.5) * 0.28,
+          r: Math.random() * 1.8 + 1, a: Math.random() * 0.4 + 0.18
+        });
+      }
+    }
+    function frame() {
+      ctx.clearRect(0, 0, W, H);
+      var i, j, p, q;
+      for (i = 0; i < dots.length; i++) {
+        p = dots[i];
+        p.x += p.vx; p.y += p.vy;
+        if (p.x < -20) p.x = W + 20; if (p.x > W + 20) p.x = -20;
+        if (p.y < -20) p.y = H + 20; if (p.y > H + 20) p.y = -20;
+      }
+      for (i = 0; i < dots.length; i++) {
+        p = dots[i];
+        for (j = i + 1; j < dots.length; j++) {
+          q = dots[j];
+          var dx = p.x - q.x, dy = p.y - q.y, d = Math.sqrt(dx * dx + dy * dy);
+          if (d < 124) {
+            ctx.strokeStyle = "rgba(109,197,240," + (0.12 * (1 - d / 124)) + ")";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(p.x + mx * p.a, p.y + my * p.a);
+            ctx.lineTo(q.x + mx * q.a, q.y + my * q.a);
+            ctx.stroke();
+          }
+        }
+      }
+      for (i = 0; i < dots.length; i++) {
+        p = dots[i];
+        ctx.fillStyle = "rgba(190,224,255," + p.a + ")";
+        ctx.beginPath();
+        ctx.arc(p.x + mx * p.a, p.y + my * p.a, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      requestAnimationFrame(frame);
+    }
+    hero.addEventListener("mousemove", function (e) {
+      var r = hero.getBoundingClientRect();
+      mx = ((e.clientX - r.left) / r.width - 0.5) * 28;
+      my = ((e.clientY - r.top) / r.height - 0.5) * 28;
+    });
+    var rt = null;
+    window.addEventListener("resize", function () { clearTimeout(rt); rt = setTimeout(build, 150); });
+    build();
+    frame();
+  })();
+  </script>
 
   <!-- 1. Score Ring Animation + Color -->
   <script>
@@ -3944,7 +4093,7 @@
   <!-- 7. Status Pill Colorizer -->
   <script>
   (function() {
-    const statusMap = {"PASS":"ok","OK":"ok","COMPLIANT":"ok","SUCCESS":"ok","FAIL":"bad","NON-COMPLIANT":"bad","ERROR":"error","CRITICAL":"bad","WARN":"warn","WARNING":"warn","INFO":"info","DEBUG":"info","TRUE":"ok","FALSE":"bad","N/A":"na","NA":"na","NONE":"na","SKIP":"skip","SKIPPED":"skip"};
+    const statusMap = {"PASS":"ok","OK":"ok","COMPLIANT":"ok","SUCCESS":"ok","FAIL":"bad","NON-COMPLIANT":"bad","ERROR":"error","CRITICAL":"bad","WARN":"warn","WARNING":"warn","INFO":"info","DEBUG":"info","TRUE":"ok","FALSE":"bad","N/A":"na","NA":"na","NONE":"na","SKIP":"skip","SKIPPED":"skip","SUPPRESS":"suppress","SUPPRESSED":"suppress"};
     const severityMap = {"CRITICAL":"sev-critical","WARNING":"sev-warning","INFO":"sev-info"};
     const headers = Array.from(document.querySelectorAll("table thead th")).map(th => th.textContent.trim().toLowerCase());
     const skipHeaders = ["expected","actual","path","message","description"];
@@ -3990,7 +4139,21 @@
   </script>
 
   <!-- 8c. Fixes Knowledgebase (enabled by default, --no-fixes to disable) -->
-  <script type="application/json" id="atlasFixesKB">{"IAG-006": {"title": "Ansible Debug", "purpose": "Validates that the Ansible Debug log setting is not too verbose.", "how_to_fix": "1. Open the Automation Gateway `properties.yml` file.\n2. Set `ansible_debug` to `False`.\n3. Save file and restart Automation Gateway."}, "IAG-007": {"title": "Gateway4 LDAP Enabled", "purpose": "Checks if LDAP is being used for Automation Gateway for better login security.", "how_to_fix": "1. Log into Automation Gateway.\n2. Go to the `Configuration>LDAP` page and fill out your LDAP connection settings.\n1. Open the Automation Gateway `properties.yml` file.\n2. Set `ldap_secure_enabled` to `True`.\n3. Save file and restart Automation Gateway."}, "PLAT-021": {"title": "Webserver HTTP Enabled", "purpose": "If true, allows the webserver to respond to insecure HTTP requests.", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate or add the option named `webserver_http_enabled`.\n3. Set the value to `false`.\n4. Restart the platform for the change to take effect."}, "IAG-003": {"title": "HTTP Server Threads", "purpose": "Validates that the HTTP Server Threads for Automation Gateway is 3x the number of CPU cores.", "how_to_fix": "1. Open the Automation Gateway `properties.yml` file.\n2. Calculate 3x the number of CPU cores on your server.\n3. Set `http_server_threads` to the 3x CPU core value (ie: *16-cores x 3 = 48*)\n4. Save file and restart Automation Gateway."}, "RDS-003": {"title": "Redis Default User", "purpose": "Validates that the Redis built-in `default` user has been removed or disabled from the ACL\nuser list. The default user has full permissions with no password by default, which is a\nsignificant security risk in production environments.", "how_to_fix": "1. Open the Redis configuration file at `/etc/redis/redis.conf`.\n2. Disable the default user by adding or updating the ACL entry:\n   ```\n   user default off nopass nocommands nokeys\n   ```\n3. Create a dedicated named user with a strong password and only the required permissions:\n   ```\n   user itential on >StrongPassword ~* +@all\n   ```\n4. Update the Itential Platform `platform.properties` file to use the new named user credentials\n   in the Redis connection string.\n5. Restart Redis to apply: `sudo systemctl restart redis`."}, "PLAT-002": {"title": "Platform Core Logging Level", "purpose": "Ensures that the core logging level is not set to DEBUG, which can potentially cause un-needed\nperformance overhead on Production systems, as well as logging un-needed data which could more\nusage on the server.", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate or add both options named `log_level` and `log_level_console`.\n3. Set these both to either `info` or `warn`.\n4. Restart the platform for the change to take effect.\n\n---"}, "IAG-008": {"title": "Gateway4 Sync Config", "purpose": "Checks if Sync Config is enabled in the systemd service file for Gateway 4. This flag will\nautomatically sync settings from `properties.yml` into Gateway4 on restart.", "how_to_fix": "1. Edit the Automation Gateway 4 systemd service file with `systemctl edit automation-gateway`\n2. Add or remove the flag `--sync-config` from the ExecStart line\n3. Reload systemd with the command `systemctl daemon-reload`\n3. Restart Automation Gateway."}, "PLAT-028": {"title": "Mongo TLS Enabled", "purpose": "Instruct the MongoDB driver to use TLS protocols when connecting to the database.", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate or add the option named `mongo_tls_enabled`.\n3. Set the value to `true`.\n4. Restart the platform for the change to take effect."}, "PLAT-047": {"title": "Redis TLS Enabled", "purpose": "Validates if TLS is enabled for Redis", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate or add the option named `redis_tls`.\n3. Set the value to an empty object of `{}`.\n4. Restart the platform for the change to take effect."}, "PLAT-026": {"title": "MongoDB Bypass Version Check", "purpose": "If true, the server will not check if it is connecting to a compatible MongoDB version.", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate or add the option named `mongo_bypass_version_check`.\n3. Set the value to `false`.\n4. Restart the platform for the change to take effect."}, "PLAT-001": {"title": "Platform Default User", "purpose": "Validates that the default user is disabled in Platform 6 Production Environments.\nFor Production we recommend using more a more secure login system such as LDAP or SAML SSO.", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate the `default_user_enabled` option.\n3. Set it `false` or comment the line out.\n4. Restart the platform for the change to take effect.\n\n---"}, "RDS-004": {"title": "Redis Network Binding", "purpose": "Validates that Redis is not bound to `0.0.0.0`, which would expose the Redis port on all\nnetwork interfaces. Redis should be bound only to the specific IP addresses required for\ncommunication with Itential Platform nodes to reduce the attack surface.", "how_to_fix": "1. Open the Redis configuration file at `/etc/redis/redis.conf`.\n2. Locate the `bind` directive and replace the wildcard address with specific interface IPs:\n   ```\n   bind 127.0.0.1 <platform-server-ip>\n   ```\n3. Only include IP addresses for interfaces that Itential Platform nodes need to connect on.\n4. Restart Redis to apply: `sudo systemctl restart redis`.\n5. Verify the binding with: `ss -tlnp | grep 6379`."}, "PLAT-024": {"title": "Mongo Auth Enabled", "purpose": "Instructs the MongoDB driver to use the configured username/password when connecting to MongoDB.", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate or add the option named `mongo_auth_enabled`.\n3. Set the value to `true`.\n4. Restart the platform for the change to take effect."}, "RDS-012": {"title": "No appendfsync on rewrite", "purpose": "Validates that the `no-appendfsync-on-rewrite` option is enabled (`yes`). When Redis rewrites\nthe AOF file in the background, having this disabled causes `fsync()` to be called during the\nrewrite, which can cause significant latency. Enabling this option defers fsync during rewrites\nfor better write performance.", "how_to_fix": "1. Open the Redis configuration file at `/etc/redis/redis.conf`.\n2. Locate or add the `no-appendfsync-on-rewrite` directive and enable it:\n   ```\n   no-appendfsync-on-rewrite yes\n   ```\n3. Restart Redis to apply: `sudo systemctl restart redis`.\n4. Verify with: `redis-cli CONFIG GET no-appendfsync-on-rewrite`."}}</script>
+  <script type="application/json" id="atlasFixesKB">{"PLAT-027": {"title": "Mongo URL", "purpose": "The MongoDB connection string. For a replica set this will include all members of the\nreplica set. For Mongo Atlas this will be the SRV connection format. This checks if URL\ncontains properties like connectionTimeout or read or write concern values.\nRemove any unwanted properties.", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate or add the option named `mongo_url`.\n3. Check for any additional properties after the `?` if they are needed.\n4. Restart the platform for the change to take effect."}, "IAG-003": {"title": "HTTP Server Threads", "purpose": "Validates that the HTTP Server Threads for Automation Gateway is 3x the number of CPU cores.", "how_to_fix": "1. Open the Automation Gateway `properties.yml` file.\n2. Calculate 3x the number of CPU cores on your server.\n3. Set `http_server_threads` to the 3x CPU core value (ie: *16-cores x 3 = 48*)\n4. Save file and restart Automation Gateway."}, "PLAT-002": {"title": "Platform Core Logging Level", "purpose": "Ensures that the core logging level is not set to DEBUG, which can potentially cause un-needed\nperformance overhead on Production systems, as well as logging un-needed data which could more\nusage on the server.", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate or add both options named `log_level` and `log_level_console`.\n3. Set these both to either `info` or `warn`.\n4. Restart the platform for the change to take effect.\n\n---"}, "RDS-003": {"title": "Redis Default User", "purpose": "Validates that the Redis built-in `default` user has been removed or disabled from the ACL\nuser list. The default user has full permissions with no password by default, which is a\nsignificant security risk in production environments.", "how_to_fix": "1. Open the Redis configuration file at `/etc/redis/redis.conf`.\n2. Disable the default user by adding or updating the ACL entry:\n   ```\n   user default off nopass nocommands nokeys\n   ```\n3. Create a dedicated named user with a strong password and only the required permissions:\n   ```\n   user itential on >StrongPassword ~* +@all\n   ```\n4. Update the Itential Platform `platform.properties` file to use the new named user credentials\n   in the Redis connection string.\n5. Restart Redis to apply: `sudo systemctl restart redis`."}, "IAG-007": {"title": "Gateway4 LDAP Enabled", "purpose": "Checks if LDAP is being used for Automation Gateway for better login security.", "how_to_fix": "1. Log into Automation Gateway.\n2. Go to the `Configuration>LDAP` page and fill out your LDAP connection settings.\n1. Open the Automation Gateway `properties.yml` file.\n2. Set `ldap_secure_enabled` to `True`.\n3. Save file and restart Automation Gateway."}, "IAG-008": {"title": "Gateway4 Sync Config", "purpose": "Checks if Sync Config is enabled in the systemd service file for Gateway 4. This flag will\nautomatically sync settings from `properties.yml` into Gateway4 on restart.", "how_to_fix": "1. Edit the Automation Gateway 4 systemd service file with `systemctl edit automation-gateway`\n2. Add or remove the flag `--sync-config` from the ExecStart line\n3. Reload systemd with the command `systemctl daemon-reload`\n3. Restart Automation Gateway."}, "PLAT-047": {"title": "Redis TLS Enabled", "purpose": "Validates if TLS is enabled for Redis", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate or add the option named `redis_tls`.\n3. Set the value to an empty object of `{}`.\n4. Restart the platform for the change to take effect."}, "PLAT-028": {"title": "Mongo TLS Enabled", "purpose": "Instruct the MongoDB driver to use TLS protocols when connecting to the database.", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate or add the option named `mongo_tls_enabled`.\n3. Set the value to `true`.\n4. Restart the platform for the change to take effect."}, "RDS-004": {"title": "Redis Network Binding", "purpose": "Validates that Redis is not bound to `0.0.0.0`, which would expose the Redis port on all\nnetwork interfaces. Redis should be bound only to the specific IP addresses required for\ncommunication with Itential Platform nodes to reduce the attack surface.", "how_to_fix": "1. Open the Redis configuration file at `/etc/redis/redis.conf`.\n2. Locate the `bind` directive and replace the wildcard address with specific interface IPs:\n   ```\n   bind 127.0.0.1 <platform-server-ip>\n   ```\n3. Only include IP addresses for interfaces that Itential Platform nodes need to connect on.\n4. Restart Redis to apply: `sudo systemctl restart redis`.\n5. Verify the binding with: `ss -tlnp | grep 6379`."}, "PLAT-026": {"title": "MongoDB Bypass Version Check", "purpose": "If true, the server will not check if it is connecting to a compatible MongoDB version.", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate or add the option named `mongo_bypass_version_check`.\n3. Set the value to `false`.\n4. Restart the platform for the change to take effect."}, "PLAT-024": {"title": "Mongo Auth Enabled", "purpose": "Instructs the MongoDB driver to use the configured username/password when connecting to MongoDB.", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate or add the option named `mongo_auth_enabled`.\n3. Set the value to `true`.\n4. Restart the platform for the change to take effect."}, "PLAT-021": {"title": "Webserver HTTP Enabled", "purpose": "If true, allows the webserver to respond to insecure HTTP requests.", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate or add the option named `webserver_http_enabled`.\n3. Set the value to `false`.\n4. Restart the platform for the change to take effect."}, "RDS-012": {"title": "No appendfsync on rewrite", "purpose": "Validates that the `no-appendfsync-on-rewrite` option is enabled (`yes`). When Redis rewrites\nthe AOF file in the background, having this disabled causes `fsync()` to be called during the\nrewrite, which can cause significant latency. Enabling this option defers fsync during rewrites\nfor better write performance.", "how_to_fix": "1. Open the Redis configuration file at `/etc/redis/redis.conf`.\n2. Locate or add the `no-appendfsync-on-rewrite` directive and enable it:\n   ```\n   no-appendfsync-on-rewrite yes\n   ```\n3. Restart Redis to apply: `sudo systemctl restart redis`.\n4. Verify with: `redis-cli CONFIG GET no-appendfsync-on-rewrite`."}, "PLAT-048": {"title": "Template Builder Execution Timeout", "purpose": "Validate Template Builder execution timeout is not set too high", "how_to_fix": "1. In Admin Essentials, open the Application settings for Template Builder\n2. Locate the setting for `templateExecutionTimeout`\n3. Either remove this setting completely, or adjust it to 10 seconds or less.\n4. Restart the Template Builder Application for the change to take effect."}, "PLAT-001": {"title": "Platform Default User", "purpose": "Validates that the default user is disabled in Platform 6 Production Environments.\nFor Production we recommend using more a more secure login system such as LDAP or SAML SSO.", "how_to_fix": "1. Open the platform's `platform.properties` file.\n2. Locate the `default_user_enabled` option.\n3. Set it `false` or comment the line out.\n4. Restart the platform for the change to take effect.\n\n---"}, "IAG-006": {"title": "Ansible Debug", "purpose": "Validates that the Ansible Debug log setting is not too verbose.", "how_to_fix": "1. Open the Automation Gateway `properties.yml` file.\n2. Set `ansible_debug` to `False`.\n3. Save file and restart Automation Gateway."}}</script>
+
+  <!-- User-suppressed rules — {rule_number: reason} dict from environment skip_rules -->
+  <script type="application/json" id="atlasSuppressedRules">{}</script>
+
+  <!-- Skipped rules — {rule_number: skip_kind} so the modal/table color-code WHY a rule was skipped -->
+  <script type="application/json" id="atlasSkipInfo">{"MDB-003": "no_data", "MDB-004": "no_data", "PLAT-033": "no_data", "PLAT-034": "no_data", "PLAT-035": "no_data", "PLAT-046": "no_data", "PLAT-004": "conditional", "PLAT-005": "conditional", "PLAT-038": "conditional", "RDS-013": "conditional"}</script>
+  <script>
+  (function() {
+    var suppressCard = document.getElementById('suppressCard');
+    if (suppressCard && parseInt(suppressCard.querySelector('[data-count]')?.dataset.count || '0', 10) === 0) {
+      suppressCard.style.display = 'none';
+    }
+  })();
+  </script>
 
   <!-- 8d. Rule Detail Modal — replace recommendations column with View button -->
   <script>
@@ -4009,8 +4172,16 @@
     const elFix      = document.getElementById('ruleDetailFix');
     const elFixSteps = document.getElementById('ruleDetailFixSteps');
     const elEmpty    = document.getElementById('ruleDetailEmptyState');
+    const elSuppression     = document.getElementById('ruleDetailSuppression');
+    const elSuppressionText = document.getElementById('ruleDetailSuppressionText');
+    const elSkip      = document.getElementById('ruleDetailSkip');
+    const elSkipTitle = document.getElementById('ruleDetailSkipTitle');
+    const elSkipText  = document.getElementById('ruleDetailSkipText');
+    const elRecLabel  = document.getElementById('ruleDetailRecLabel');
     const elPrev     = document.getElementById('ruleDetailPrev');
     const elNext     = document.getElementById('ruleDetailNext');
+    const suppressedMap = JSON.parse(document.getElementById('atlasSuppressedRules')?.textContent || '{}');
+    const skipInfoMap   = JSON.parse(document.getElementById('atlasSkipInfo')?.textContent || '{}');
     const elNavPos   = document.getElementById('ruleDetailNavPos');
     const fixesKB    = JSON.parse(document.getElementById('atlasFixesKB')?.textContent || '{}');
     if (!modal) return;
@@ -4033,6 +4204,18 @@
       'CRITICAL': 'Immediate attention required — may impact platform stability or security',
       'WARNING':  'Should be addressed soon — may cause degraded performance or reliability',
       'INFO':     'Best practice recommendation — no immediate impact if unresolved'
+    };
+
+    /* ── Skip-reason families (color-coded) ── */
+    var SKIP_KIND_TITLES = {
+      'unreachable': "Couldn't reach this system",
+      'no_data':     'No data collected for this check',
+      'conditional': 'Conditional check — not applicable'
+    };
+    var SKIP_KIND_LABELS = {
+      'unreachable': 'Skipped — Atlas could not reach or collect this data',
+      'no_data':     'Skipped — this setting was not present in the collected data',
+      'conditional': 'Skipped — depends on another check or a version that does not apply'
     };
 
     /* Helper: read cell text safely */
@@ -4076,15 +4259,31 @@
       var operator  = cellText(row, opIdx);
 
       /* Store data on the row for modal retrieval */
-      row.dataset.recText   = fullText;
-      row.dataset.ruleName  = ruleName;
-      row.dataset.ruleId    = ruleId;
-      row.dataset.status    = status;
-      row.dataset.expected  = expected;
-      row.dataset.actual    = actual;
-      row.dataset.severity  = severity;
-      row.dataset.category  = category;
-      row.dataset.operator  = operator;
+      row.dataset.recText          = fullText;
+      row.dataset.ruleName         = ruleName;
+      row.dataset.ruleId           = ruleId;
+      row.dataset.status           = status;
+      row.dataset.expected         = expected;
+      row.dataset.actual           = actual;
+      row.dataset.severity         = severity;
+      row.dataset.category         = category;
+      row.dataset.operator         = operator;
+      row.dataset.suppressionReason = suppressedMap[ruleId] || '';
+      row.dataset.skipKind          = skipInfoMap[ruleId] || '';
+
+      /* Card cue: tint the SKIP pill by reason + prepend a colored dot so the
+         "why" is identifiable in the table without opening the card. */
+      var skipKind = row.dataset.skipKind;
+      if (skipKind && statusIdx >= 0 && row.cells[statusIdx]) {
+        var skipPill = row.cells[statusIdx].querySelector('.pill.skip');
+        if (skipPill && !skipPill.querySelector('.skip-dot')) {
+          skipPill.classList.add('skip-' + skipKind);
+          var sdot = document.createElement('span');
+          sdot.className = 'skip-dot';
+          skipPill.insertBefore(sdot, skipPill.firstChild);
+          skipPill.title = SKIP_KIND_LABELS[skipKind] || 'Skipped';
+        }
+      }
 
       /* Track row in navigation list */
       navRows.push(row);
@@ -4211,7 +4410,33 @@
       if (['COMPLIANT','PASS','OK','SUCCESS','TRUE'].indexOf(rawStatus) >= 0) statusKey = 'pass';
       else if (['NON-COMPLIANT','FAIL','FALSE','CRITICAL'].indexOf(rawStatus) >= 0) statusKey = 'fail';
       else if (['SKIP','SKIPPED','N/A','NA','NONE'].indexOf(rawStatus) >= 0) statusKey = 'skip';
+      else if (['SUPPRESSED','SUPPRESS'].indexOf(rawStatus) >= 0) statusKey = 'suppress';
       modal.setAttribute('data-status', statusKey);
+
+      /* ── Suppression reason ── */
+      var suppressionReason = row.dataset.suppressionReason || '';
+      if (suppressionReason && elSuppression && elSuppressionText) {
+        elSuppressionText.textContent = suppressionReason;
+        elSuppression.style.display = '';
+      } else if (elSuppression) {
+        elSuppression.style.display = 'none';
+      }
+
+      /* ── Skip reason (color-coded callout) ── */
+      var skipKind = row.dataset.skipKind || '';
+      var showSkipCallout = (statusKey === 'skip' && skipKind && elSkip);
+      if (showSkipCallout) {
+        elSkip.className = 'rule-detail-skip skip-' + skipKind;
+        if (elSkipTitle) elSkipTitle.textContent = SKIP_KIND_TITLES[skipKind] || 'Skipped';
+        if (elSkipText)  elSkipText.textContent  = row.dataset.recText || '';
+        elSkip.style.display = '';
+      } else if (elSkip) {
+        elSkip.style.display = 'none';
+      }
+      /* The callout carries the skip reason, so hide the duplicate generic
+         "Recommendation" block when it's shown. */
+      if (elRecLabel) elRecLabel.style.display = showSkipCallout ? 'none' : '';
+      if (elText)     elText.style.display     = showSkipCallout ? 'none' : '';
 
       /* ── Remediation steps (--no-fixes to disable) ── */
       var fixRuleId = row.dataset.ruleId || '';
@@ -4387,20 +4612,57 @@
       if (['INFO','DEBUG'].includes(u)) return 'INFO';
       return u;
     };
-    const bucketClass = {'PASS':'f-pass','FAIL':'f-fail','WARN':'f-warn','SKIP':'f-skip','ERROR':'f-error','INFO':'f-info'};
+    const bucketClass = {'PASS':'f-pass','FAIL':'f-fail','WARN':'f-warn','SKIP':'f-skip','SUPPRESS':'f-suppress','ERROR':'f-error','INFO':'f-info'};
 
-    // Status filter pills
+    // Single source of truth for status counting. Used for the filter pill
+    // counts AND the subsystem tab stats strip — having two diverging
+    // implementations was the root cause of the "pill says 3, table shows
+    // 2" mismatch (uncategorized rows previously hit the pill count but
+    // not the catStats sum).
+    function countBuckets(rows) {
+      const counts = { PASS: 0, FAIL: 0, WARN: 0, SKIP: 0, ERROR: 0, INFO: 0 };
+      rows.forEach(row => {
+        const b = statusBucket(getRowStatus(row));
+        if (b in counts) counts[b]++;
+      });
+      return counts;
+    }
+
+    // Status filter pills — the pill count reflects the rows the active
+    // subsystem tab will actually surface, so what you see on the pill is
+    // exactly what would appear after toggling it. Subsystem tab handler
+    // calls back into ``refreshFilterPillCounts`` whenever the active tab
+    // changes.
+    const filterPills = {};
+    function refreshFilterPillCounts() {
+      const activeTab = window._atlasActiveTab;
+      const scoped = activeTab
+        ? getDataRows().filter(
+            row => getRowCategory(row).toLowerCase() === activeTab.toLowerCase()
+          )
+        : getDataRows();
+      const counts = countBuckets(scoped);
+      Object.keys(filterPills).forEach(bucket => {
+        const pill = filterPills[bucket];
+        const cnt = counts[bucket] || 0;
+        const span = pill.querySelector('.filter-pill-count');
+        if (span) span.textContent = String(cnt);
+        // Hide the pill when the active scope has zero rows of that
+        // bucket — otherwise the pill claims a count of 0 which looks
+        // broken next to the visible-rows summary.
+        pill.style.display = cnt > 0 ? '' : 'none';
+      });
+    }
     if (statusCol >= 0 && statusFiltersWrap) {
-      const counts = {};
-      getDataRows().forEach(row => { const b = statusBucket(getRowStatus(row)); if (b) counts[b] = (counts[b] || 0) + 1; });
+      const initialCounts = countBuckets(getDataRows());
       ['PASS','FAIL','WARN','ERROR','INFO','SKIP'].forEach(b => {
-        if (!counts[b]) return;
+        if (!initialCounts[b]) return;
         const pill = document.createElement('button');
         pill.className = 'filter-pill active ' + (bucketClass[b] || '');
         activeFilters.add(b);
         pill.dataset.status = b;
         const labels = {'PASS':'Compliant','FAIL':'Non-Compliant','SKIP':'Skipped'};
-        pill.innerHTML = (labels[b] || b.charAt(0) + b.slice(1).toLowerCase()) + ' <span class="filter-pill-count">' + counts[b] + '</span>';
+        pill.innerHTML = (labels[b] || b.charAt(0) + b.slice(1).toLowerCase()) + ' <span class="filter-pill-count">' + initialCounts[b] + '</span>';
         pill.addEventListener('click', () => {
           if (pill.classList.contains('active') && activeFilters.size === 1) return;
           pill.classList.toggle('active');
@@ -4408,6 +4670,7 @@
           applyFilters();
         });
         statusFiltersWrap.appendChild(pill);
+        filterPills[b] = pill;
       });
     }
 
@@ -4428,7 +4691,7 @@
         const label = document.createElement('label');
         const cb = document.createElement('input');
         cb.type = 'checkbox';
-        cb.checked = !['severity', 'expected', 'actual', 'operator', 'path', 'recommendations'].includes(name.toLowerCase());
+        cb.checked = !['severity', 'expected', 'actual', 'operator', 'path', 'recommendations', 'suppression_reason'].includes(name.toLowerCase());
         cb.dataset.colIdx = idx;
         cb.addEventListener('change', () => toggleColumn(idx, cb.checked));
         if (!cb.checked) toggleColumn(idx, false);
@@ -4507,15 +4770,17 @@
     window._atlasStatusBucket = statusBucket;
     window._atlasGetRowStatus = getRowStatus;
     window._atlasGetDataRows = getDataRows;
+    window._atlasCountBuckets = countBuckets;
+    window._atlasRefreshFilterPills = refreshFilterPillCounts;
 
     insertGroupRows();
   })();
   </script>
 
   <!-- Chart data islands (valid HTML — editors won't flag these) -->
-  <script type="application/json" id="categoryChartData">[{"name": "gateway4", "pass": 7, "fail": 4, "skip": 0, "total": 11}, {"name": "mongo", "pass": 2, "fail": 0, "skip": 2, "total": 4}, {"name": "platform", "pass": 32, "fail": 7, "skip": 7, "total": 46}, {"name": "redis", "pass": 4, "fail": 3, "skip": 1, "total": 8}]</script>
-  <script type="application/json" id="severityChartData">[{"severity": "critical", "pass": 6, "fail": 7, "total": 13}, {"severity": "warning", "pass": 32, "fail": 14, "total": 46}, {"severity": "info", "pass": 7, "fail": 3, "total": 10}]</script>
-  <script type="application/json" id="extendedChartData">{"checks": [{"id": "adapter_versions", "name": "Adapter Version Check", "category": "version", "status": "FAIL"}, {"id": "adapter_logger_levels", "name": "Adapter Logger Levels", "category": "configuration", "status": "WARN"}, {"id": "adapter_states", "name": "Adapter States", "category": "health", "status": "WARN"}, {"id": "application_states", "name": "Application States", "category": "health", "status": "PASS"}, {"id": "adapter_file_data", "name": "Adapter File Data", "category": "configuration", "status": "WARN"}, {"id": "adapter_health_data", "name": "Adapter Health Data", "category": "health", "status": "WARN"}, {"id": "adapter_brokers", "name": "Adapter Brokers", "category": "authentication", "status": "PASS"}, {"id": "adapter_throttling", "name": "Adapter Throttling", "category": "performance", "status": "PASS"}, {"id": "adapter_timeouts", "name": "Adapter Timeouts", "category": "performance", "status": "WARN"}, {"id": "adapter_limit_errors", "name": "Adapter Limit Errors", "category": "configuration", "status": "WARN"}, {"id": "redis_acl", "name": "Redis ACL", "category": "authentication", "status": "SKIP"}, {"id": "indexes_status", "name": "Database Index Status", "category": "health", "status": "PASS"}, {"id": "iag4_default_paths", "name": "IAG4 Default Paths", "category": "configuration", "status": "PASS"}], "by_status": {"FAIL": 1, "WARN": 6, "PASS": 5, "SKIP": 1}, "by_category": [{"name": "configuration", "checks": 4, "PASS": 1, "WARN": 3, "FAIL": 0, "INFO": 0, "SKIP": 0}, {"name": "health", "checks": 4, "PASS": 2, "WARN": 2, "FAIL": 0, "INFO": 0, "SKIP": 0}, {"name": "authentication", "checks": 2, "PASS": 1, "WARN": 0, "FAIL": 0, "INFO": 0, "SKIP": 1}, {"name": "performance", "checks": 2, "PASS": 1, "WARN": 1, "FAIL": 0, "INFO": 0, "SKIP": 0}, {"name": "version", "checks": 1, "PASS": 0, "WARN": 0, "FAIL": 1, "INFO": 0, "SKIP": 0}]}</script>
+  <script type="application/json" id="categoryChartData">[{"name": "gateway4", "pass": 7, "fail": 4, "skip": 0, "total": 11}, {"name": "mongo", "pass": 2, "fail": 0, "skip": 2, "total": 4}, {"name": "platform", "pass": 32, "fail": 9, "skip": 7, "total": 48}, {"name": "redis", "pass": 4, "fail": 3, "skip": 1, "total": 8}]</script>
+  <script type="application/json" id="severityChartData">[{"severity": "critical", "pass": 6, "fail": 7, "total": 13}, {"severity": "warning", "pass": 31, "fail": 15, "total": 46}, {"severity": "info", "pass": 8, "fail": 4, "total": 12}]</script>
+  <script type="application/json" id="extendedChartData">{"checks": [{"id": "adapter_versions", "name": "Adapter Version Check", "category": "version", "status": "FAIL"}, {"id": "adapter_logger_levels", "name": "Adapter Logger Levels", "category": "configuration", "status": "WARN"}, {"id": "adapter_states", "name": "Adapter States", "category": "health", "status": "WARN"}, {"id": "application_states", "name": "Application States", "category": "health", "status": "PASS"}, {"id": "adapter_file_data", "name": "Adapter File Data", "category": "configuration", "status": "WARN"}, {"id": "adapter_health_data", "name": "Adapter Health Data", "category": "health", "status": "WARN"}, {"id": "adapter_brokers", "name": "Adapter Brokers", "category": "authentication", "status": "PASS"}, {"id": "adapter_throttling", "name": "Adapter Throttling", "category": "performance", "status": "PASS"}, {"id": "adapter_timeouts", "name": "Adapter Timeouts", "category": "performance", "status": "WARN"}, {"id": "adapter_limit_errors", "name": "Adapter Limit Errors", "category": "configuration", "status": "WARN"}, {"id": "redis_acl", "name": "Redis ACL", "category": "authentication", "status": "SKIP"}, {"id": "indexes_status", "name": "Database Index Status", "category": "health", "status": "PASS"}, {"id": "iag4_default_paths", "name": "IAG4 Default Paths", "category": "configuration", "status": "PASS"}, {"id": "platform_log_analysis", "name": "Platform Log Analysis", "category": "logs", "status": "FAIL"}, {"id": "webserver_log_analysis", "name": "Webserver Log Analysis", "category": "logs", "status": "PASS"}, {"id": "mongo_log_analysis", "name": "MongoDB Log Analysis", "category": "logs", "status": "SKIP"}], "by_status": {"FAIL": 2, "WARN": 6, "PASS": 6, "SKIP": 2}, "by_category": [{"name": "configuration", "checks": 4, "PASS": 1, "WARN": 3, "FAIL": 0, "INFO": 0, "SKIP": 0}, {"name": "health", "checks": 4, "PASS": 2, "WARN": 2, "FAIL": 0, "INFO": 0, "SKIP": 0}, {"name": "logs", "checks": 3, "PASS": 1, "WARN": 0, "FAIL": 1, "INFO": 0, "SKIP": 1}, {"name": "authentication", "checks": 2, "PASS": 1, "WARN": 0, "FAIL": 0, "INFO": 0, "SKIP": 1}, {"name": "performance", "checks": 2, "PASS": 1, "WARN": 1, "FAIL": 0, "INFO": 0, "SKIP": 0}, {"name": "version", "checks": 1, "PASS": 0, "WARN": 0, "FAIL": 1, "INFO": 0, "SKIP": 0}]}</script>
 
   <!-- 12. Category Donut Chart (built from table data) -->
   <script>
@@ -4730,17 +4995,27 @@
     };
     const CATEGORY_ORDER = ['platform', 'mongo', 'redis', 'gateway4', 'gateway5'];
 
-    /* Gather data */
+    /* Gather data. Use the shared bucket counter so the per-tab numbers
+       agree with the status filter pills exactly — previously the
+       subsystem stats summed over per-category buckets and silently
+       dropped uncategorized rows, leaving the "All" pill count higher
+       than the visible-after-filter row count. */
     const allRows = getDataRows();
     const catCounts = {};
     const catStats = {};
+    const _catBuckets = {};
 
     allRows.forEach(row => {
       const cat = getRowCategory(row).toLowerCase();
       if (!cat) return;
-      if (!catCounts[cat]) { catCounts[cat] = 0; catStats[cat] = { pass: 0, fail: 0, skip: 0, error: 0, total: 0 }; }
+      if (!catCounts[cat]) {
+        catCounts[cat] = 0;
+        catStats[cat] = { pass: 0, fail: 0, skip: 0, error: 0, total: 0 };
+        _catBuckets[cat] = [];
+      }
       catCounts[cat]++;
       catStats[cat].total++;
+      _catBuckets[cat].push(row);
       const bucket = statusBucket(getRowStatus(row));
       if (bucket === 'PASS') catStats[cat].pass++;
       else if (bucket === 'FAIL') catStats[cat].fail++;
@@ -4755,9 +5030,19 @@
 
     if (sortedCats.length < 2) { tabsWrap.style.display = 'none'; statsStrip.style.display = 'none'; return; }
 
-    /* Build "All" tab */
-    const allStats = { pass: 0, fail: 0, skip: 0, error: 0, total: allRows.length };
-    Object.values(catStats).forEach(s => { allStats.pass += s.pass; allStats.fail += s.fail; allStats.skip += s.skip; allStats.error += s.error; });
+    /* Build "All" tab. allStats counts EVERY row, including uncategorized
+       ones — that way the "All" stats strip matches the cover-page stat
+       cards and the global filter pill counts exactly. */
+    const _allBuckets = (window._atlasCountBuckets
+      ? window._atlasCountBuckets(allRows)
+      : { PASS: 0, FAIL: 0, SKIP: 0, ERROR: 0 });
+    const allStats = {
+      pass: _allBuckets.PASS || 0,
+      fail: _allBuckets.FAIL || 0,
+      skip: _allBuckets.SKIP || 0,
+      error: _allBuckets.ERROR || 0,
+      total: allRows.length,
+    };
 
     function makeTab(key, label, count, passPct) {
       const btn = document.createElement('button');
@@ -4815,6 +5100,14 @@
       } else {
         window._atlasActiveTab = key;
         renderStats(catStats[key], CATEGORY_META[key]?.label || key);
+      }
+      // Refresh the status filter pills so their counts reflect the
+      // active tab's scope. Without this the pill claims a global count
+      // (e.g. "Non-Compliant 8") while the table shows only the active
+      // tab's matches (e.g. 3 rows) — the exact mismatch users called
+      // out as "tab shows 3 but only 2 visible".
+      if (window._atlasRefreshFilterPills) {
+        try { window._atlasRefreshFilterPills(); } catch (e) {}
       }
       applyFilters();
     });

@@ -18,6 +18,34 @@ logger = logging.getLogger(__name__)
 # Individual rules in these categories may still opt out via "tier": "extended".
 _STANDARD_CATEGORIES: frozenset[str] = frozenset({"platform", "gateway4"})
 
+# Categories eligible in SaaS mode — the gateway rule sets, narrowed to the
+# environment's gateway kind at filter time. Unlike Standard, a per-rule
+# "tier": "extended" flag does NOT exclude a rule here: that flag means
+# "needs infra access" (e.g. the GW4 DB-size checks IAG-008–011), and a
+# SaaS audit has gateway SSH.
+_SAAS_CATEGORIES: frozenset[str] = frozenset({"gateway4", "gateway5"})
+
+
+def _saas_categories() -> frozenset[str]:
+    """The SaaS-eligible rule categories, narrowed to the env's gateway kind.
+
+    A GW4 SaaS environment runs only gateway4 rules; a GW5 environment only
+    gateway5 — so the report never shows the other gateway's rules as
+    skipped. Falls back to both gateway categories when the kind cannot be
+    resolved (mirrors how _resolve_tier_for_filter fails open).
+    """
+    kind = ""
+    try:
+        from platform_atlas.core.config import get_config
+        kind = (get_config().saas_gateway_kind or "").strip().lower()
+    except Exception:
+        kind = ""
+    if kind == "gateway4":
+        return frozenset({"gateway4"})
+    if kind == "gateway5":
+        return frozenset({"gateway5"})
+    return _SAAS_CATEGORIES
+
 
 def _filter_rules_for_tier(rules_list: list[dict[str, Any]], tier: str) -> list[dict[str, Any]]:
     """
@@ -28,17 +56,24 @@ def _filter_rules_for_tier(rules_list: list[dict[str, Any]], tier: str) -> list[
     don't exist as far as the validation engine, report renderer, or UI
     are concerned — no SKIP rows, no greyed-out lines.
 
+    In SaaS mode, keep only the chosen gateway's category — and keep ALL
+    of its rules regardless of their per-rule tier flag, because SaaS has
+    the gateway SSH access those flags gate on.
+
     In Extended mode, the full list is returned unchanged.
     """
-    if tier != "standard":
-        return rules_list
-    out: list[dict[str, Any]] = []
-    for rule in rules_list:
-        category = rule.get("category", "")
-        rule_tier = rule.get("tier", "standard")
-        if category in _STANDARD_CATEGORIES and rule_tier != "extended":
-            out.append(rule)
-    return out
+    if tier == "standard":
+        out: list[dict[str, Any]] = []
+        for rule in rules_list:
+            category = rule.get("category", "")
+            rule_tier = rule.get("tier", "standard")
+            if category in _STANDARD_CATEGORIES and rule_tier != "extended":
+                out.append(rule)
+        return out
+    if tier == "saas":
+        categories = _saas_categories()
+        return [r for r in rules_list if r.get("category", "") in categories]
+    return rules_list
 
 
 def _resolve_tier_for_filter() -> str:
@@ -105,10 +140,11 @@ def load_rules(path: str | Path) -> Ruleset:
     tier = _resolve_tier_for_filter()
     raw_rules = data["rules"]
     filtered = _filter_rules_for_tier(raw_rules, tier)
-    if tier == "standard" and len(filtered) != len(raw_rules):
+    if len(filtered) != len(raw_rules):
         logger.info(
-            "Standard tier filter retained %d/%d rules from ruleset '%s'",
-            len(filtered), len(raw_rules), data.get("ruleset", {}).get("id", "?"),
+            "%s tier filter retained %d/%d rules from ruleset '%s'",
+            tier.capitalize(), len(filtered), len(raw_rules),
+            data.get("ruleset", {}).get("id", "?"),
         )
 
     _ruleset = Ruleset(
@@ -131,10 +167,11 @@ def load_rules_from_dict(data: dict) -> Ruleset:
     tier = _resolve_tier_for_filter()
     raw_rules = data["rules"]
     filtered = _filter_rules_for_tier(raw_rules, tier)
-    if tier == "standard" and len(filtered) != len(raw_rules):
+    if len(filtered) != len(raw_rules):
         logger.info(
-            "Standard tier filter retained %d/%d rules from ruleset '%s'",
-            len(filtered), len(raw_rules), data.get("ruleset", {}).get("id", "?"),
+            "%s tier filter retained %d/%d rules from ruleset '%s'",
+            tier.capitalize(), len(filtered), len(raw_rules),
+            data.get("ruleset", {}).get("id", "?"),
         )
 
     _ruleset = Ruleset(

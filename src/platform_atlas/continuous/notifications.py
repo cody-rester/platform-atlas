@@ -40,8 +40,6 @@ from dataclasses import dataclass, field, asdict
 from typing import Any
 from urllib.parse import urlparse
 
-import keyring
-import keyring.errors
 import requests
 
 from platform_atlas.core._version import __version__
@@ -175,21 +173,23 @@ def _validate_url_for_ssrf(url: str) -> None:
 #
 # What's where:
 #   env JSON  → id, type, name, enabled, created_at        (safe to share)
-#   keyring   → url, secret, headers                       (sensitive)
+#   secret store → url, secret, headers                    (sensitive)
 #
-# The keyring service is scoped per-env to ``platform-atlas/<env>`` so
-# each environment's notification secrets are fully isolated — same scope
-# the CredentialStore already uses for Platform OAuth secrets, Mongo URIs,
-# etc. Notifications use OS keyring directly (not the high-level
-# CredentialStore facade) because channels are dynamic (variable count,
-# arbitrary IDs) and don't fit the fixed CredentialKey enum.
+# The store service is scoped per-env to ``platform-atlas/<env>`` so each
+# environment's notification secrets are fully isolated — the same scope the
+# CredentialStore uses for Platform OAuth secrets, Mongo URIs, etc.
+# Notifications go through the low-level secret store (active_secret_store)
+# rather than the high-level CredentialStore facade because channels are
+# dynamic (variable count, arbitrary IDs) and don't fit the fixed
+# CredentialKey enum — but they share the same substrate, so they get the
+# same encrypted local-file fallback when the OS keyring is unavailable.
 #
-# Notifications always use OS keyring even when ``credential_backend`` is
-# set to Vault: Vault is read-only from Atlas, and the WebUI / CLI need to
-# write notification channels at runtime. If the OS keyring is genuinely
-# unusable (PlaintextKeyring on a headless host with no Secret Service /
-# KWallet), channels degrade gracefully — secrets stay in env JSON with a
-# one-time warning. That's no worse than the legacy behavior.
+# This holds even when ``credential_backend`` is Vault (Vault is read-only
+# from Atlas, and the WebUI / CLI need to write channels at runtime): secrets
+# go to the OS keyring, or to the encrypted local file when the keyring can't
+# be used. Env JSON only ever holds non-sensitive metadata; secrets land there
+# only as a last resort if the store write itself fails (rare — the file
+# fallback almost always succeeds), with a one-time warning.
 
 _METADATA_FIELDS: tuple[str, ...] = ("id", "type", "name", "enabled", "created_at")
 _KEYRING_KEY_PREFIX = "notification_secret_"
@@ -209,22 +209,13 @@ def _channel_keyring_key(channel_id: str) -> str:
     return f"{_KEYRING_KEY_PREFIX}{channel_id}"
 
 
-def _keyring_usable() -> bool:
-    """Whether the OS keyring is present and reports as a real (encrypted) backend."""
-    try:
-        from platform_atlas.core.credentials import verify_keyring_backend
-        _, is_functional, _ = verify_keyring_backend()
-        return is_functional
-    except Exception:  # noqa: BLE001 — credentials module may not be importable in odd test envs
-        return False
-
-
 def _save_channel_secrets(env: str, channel_id: str, payload: dict[str, Any]) -> bool:
-    """Persist URL/secret/headers to OS keyring under the env-scoped service.
+    """Persist URL/secret/headers to the active secret store (OS keyring, or the
+    encrypted local-file fallback) under the env-scoped service.
 
-    Returns True on success, False on any keyring failure. Empty payloads
-    (no url, secret, or headers) are treated as success so callers that
-    don't have anything sensitive to store don't get false negatives.
+    Returns True on success, False on any store write failure. Empty payloads
+    (no url, secret, or headers) are treated as success so callers that don't
+    have anything sensitive to store don't get false negatives.
     """
     if not env or not channel_id:
         return False
@@ -234,24 +225,26 @@ def _save_channel_secrets(env: str, channel_id: str, payload: dict[str, Any]) ->
     if not has_anything:
         return True
     try:
-        keyring.set_password(
+        from platform_atlas.core.credentials import active_secret_store
+        active_secret_store().set(
             _scoped_service(env),
             _channel_keyring_key(channel_id),
             json.dumps(payload, ensure_ascii=False),
         )
         return True
-    except keyring.errors.KeyringError as exc:
-        logger.debug("Keyring write failed for channel=%s/%s: %s", env, channel_id, exc)
+    except Exception as exc:  # noqa: BLE001 — keyring error, file write error, etc.
+        logger.debug("Secret-store write failed for channel=%s/%s: %s", env, channel_id, exc)
         return False
 
 
 def _load_channel_secrets(env: str, channel_id: str) -> dict[str, Any]:
-    """Read URL/secret/headers from OS keyring. Empty dict on any failure."""
+    """Read URL/secret/headers from the active secret store. Empty dict on any failure."""
     if not env or not channel_id:
         return {}
     try:
-        raw = keyring.get_password(_scoped_service(env), _channel_keyring_key(channel_id))
-    except keyring.errors.KeyringError as exc:
+        from platform_atlas.core.credentials import active_secret_store
+        raw = active_secret_store().get(_scoped_service(env), _channel_keyring_key(channel_id))
+    except Exception as exc:  # noqa: BLE001
         logger.debug("Could not load channel secrets for %s/%s: %s", env, channel_id, exc)
         return {}
     if not raw:
@@ -267,25 +260,24 @@ def _load_channel_secrets(env: str, channel_id: str) -> dict[str, Any]:
 
 
 def _delete_channel_secrets(env: str, channel_id: str) -> None:
-    """Best-effort delete of the keyring entry; never raises."""
+    """Best-effort delete of the secret-store entry; never raises."""
     if not env or not channel_id:
         return
     try:
-        keyring.delete_password(_scoped_service(env), _channel_keyring_key(channel_id))
-    except keyring.errors.PasswordDeleteError:
-        pass
-    except keyring.errors.KeyringError as exc:
+        from platform_atlas.core.credentials import active_secret_store
+        active_secret_store().delete(_scoped_service(env), _channel_keyring_key(channel_id))
+    except Exception as exc:  # noqa: BLE001
         logger.debug("Could not delete channel secrets for %s/%s: %s", env, channel_id, exc)
 
 
-def _warn_keyring_unavailable(env: str, channel_id: str) -> None:
+def _warn_secret_store_unavailable(env: str, channel_id: str) -> None:
     key = (env, channel_id)
     if key in _KEYRING_WARNED_KEYS:
         return
     _KEYRING_WARNED_KEYS.add(key)
     logger.warning(
-        "OS keyring unavailable for notification channel %s/%s — secrets remain in env JSON. "
-        "Install Secret Service / KWallet (Linux) or unlock Keychain (macOS) for secure storage.",
+        "Could not store notification secrets for channel %s/%s in the credential store "
+        "(OS keyring or encrypted local file) — they remain in the environment JSON for now.",
         env, channel_id,
     )
 
@@ -365,16 +357,16 @@ def list_channels(environment: str) -> list[NotificationChannel]:
                 secrets_payload = payload
                 migrated_any = True
                 logger.info(
-                    "Migrated notification channel %s/%s secrets: env JSON → OS keyring",
+                    "Migrated notification channel %s/%s secrets: env JSON → credential store",
                     environment, channel_id,
                 )
             else:
-                # Keyring unusable — keep legacy values inline so the channel
-                # still works this session. We re-attempt migration on the
-                # next list_channels call.
-                _warn_keyring_unavailable(environment, channel_id)
+                # Store write failed — keep legacy values inline so the channel
+                # still works this session. We re-attempt migration on the next
+                # list_channels call.
+                _warn_secret_store_unavailable(environment, channel_id)
                 secrets_payload = payload
-                cleaned_entry = dict(entry)  # preserve secrets in JSON until keyring works
+                cleaned_entry = dict(entry)  # preserve secrets in JSON until the store works
 
         merged = {
             **cleaned_entry,
@@ -409,20 +401,20 @@ def get_channel(environment: str, channel_id: str) -> NotificationChannel | None
 
 
 def add_channel(environment: str, channel: NotificationChannel) -> None:
-    """Append (or replace by id) ``channel`` — secrets to keyring, metadata to env JSON.
+    """Append (or replace by id) ``channel`` — secrets to the credential store, metadata to env JSON.
 
     Validates the URL against the SSRF blocklist before any persistence so
     the CLI and WebUI share one validator. Pass ATLAS_ALLOW_PRIVATE_WEBHOOKS=1
     to bypass the blocklist for legitimate internal targets.
 
     Secret persistence:
-      • OS keyring is preferred. If the write succeeds, env JSON contains
-        only metadata (id, type, name, enabled, created_at).
-      • If the keyring is genuinely unavailable (PlaintextKeyring etc.),
-        secrets fall back to env JSON with a one-time warning so the channel
-        still works on systems without a real keyring backend.
-      • If the keyring reports as usable but the write fails (transient
-        DBus / Keychain hiccup), raise — we never want to half-persist.
+      • Secrets go to the active secret store — the OS keyring, or the encrypted
+        local-file fallback (~/.atlas/credentials.enc) when the keyring can't be
+        used. On success, env JSON holds only metadata (id, type, name, enabled,
+        created_at).
+      • If the store write fails (a genuine error — the file fallback is almost
+        always writable), raise rather than silently downgrading secrets into
+        plaintext env JSON.
     """
     if not environment:
         raise ValueError("Cannot manage notification channels without an environment")
@@ -440,25 +432,18 @@ def add_channel(environment: str, channel: NotificationChannel) -> None:
         "secret": channel.secret,
         "headers": dict(channel.headers or {}),
     }
-    keyring_ok = _save_channel_secrets(environment, channel.id, secrets_payload)
-    if not keyring_ok and _keyring_usable():
-        # Keyring reports as a real backend yet the write failed — that's
-        # not a "no keyring on this host" situation. Bubble up so the
-        # operator sees the actual error instead of silently downgrading.
+    if not _save_channel_secrets(environment, channel.id, secrets_payload):
+        # The active secret store (OS keyring, or the encrypted local-file
+        # fallback) could not store the secret — a genuine write error, not a
+        # "no secure store on this host" case (the file fallback always is one).
+        # Raise rather than silently downgrade secrets into plaintext env JSON.
         raise ValueError(
-            f"Could not save channel '{channel.id}' secrets to OS keyring. "
-            "Verify your keyring backend is reachable (Keychain / Secret Service)."
+            f"Could not save channel '{channel.id}' secrets to the credential store. "
+            "Verify the OS keyring is reachable, or that ~/.atlas is writable for the "
+            "encrypted local file store."
         )
 
     metadata = _metadata_only(channel.to_dict())
-    if not keyring_ok:
-        _warn_keyring_unavailable(environment, channel.id)
-        # Fallback: persist secrets in env JSON (legacy mode). The channel
-        # still functions; subsequent list_channels calls will re-attempt
-        # migration each time the keyring becomes usable.
-        metadata["url"] = channel.url
-        metadata["secret"] = channel.secret
-        metadata["headers"] = dict(channel.headers or {})
 
     existing = _read_channels_raw(environment)
     replaced = False
@@ -472,9 +457,9 @@ def add_channel(environment: str, channel: NotificationChannel) -> None:
     _write_channels_raw(environment, existing)
 
     logger.info(
-        "Notification channel %s (env=%s, type=%s, secrets_in_keyring=%s)",
+        "Notification channel %s (env=%s, type=%s)",
         "updated" if replaced else "added",
-        environment, channel.type, keyring_ok,
+        environment, channel.type,
     )
 
 

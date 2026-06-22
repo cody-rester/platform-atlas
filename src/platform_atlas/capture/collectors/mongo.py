@@ -119,6 +119,74 @@ def encode_mongo_uri(uri: str) -> str:
         parsed.fragment,
     ))
 
+def encode_mongo_uri_ha2(uri: str) -> str:
+    """URL-encode credentials in a MongoDB URI, safe for HA2 replica-set seed lists.
+
+    HA2 (high-availability) deployments point Atlas at a replica set, whose URI
+    carries a *seed list* — multiple comma-separated ``host:port`` pairs::
+
+        mongodb://user:pass@h1:27017,h2:27017,h3:27017/admin?replicaSet=rs0
+
+    :func:`encode_mongo_uri` relies on ``urllib.parse.urlparse``, which cannot
+    parse a seed list: reading ``.port`` on the multi-host authority makes urllib
+    try to cast ``27017,h2:27017,h3:27017`` to an int and raises ``ValueError``
+    before pymongo is ever reached.
+
+    This function splits the URI by hand, percent-encodes **only** the
+    credentials, and reattaches the host portion (the seed list) verbatim — it
+    never inspects ``host:port``. Anything that is not the genuinely-affected
+    case (credentials present *and* a real multi-host seed list) is delegated to
+    :func:`encode_mongo_uri` unchanged, so behavior is identical outside the bug.
+
+    Gated to HA2 deployments only (see :meth:`MongoCollector.from_config`); every
+    other deployment mode keeps using :func:`encode_mongo_uri` exactly as before.
+    Raw reserved characters (``/`` ``?`` ``#``) in a password are unsupported here
+    just as they are today — the MongoDB URI spec requires them pre-encoded.
+    """
+    if not uri:
+        raise URIParseError("MongoDB URI cannot be empty")
+
+    scheme, sep, remainder = uri.partition("://")
+    if not sep or scheme not in ("mongodb", "mongodb+srv"):
+        # Defer scheme/format errors to the canonical implementation so the
+        # raised message stays identical to the non-HA path.
+        return encode_mongo_uri(uri)
+
+    # Authority spans from the end of "://" up to the first '/', '?' or '#'
+    # (RFC 3986) — the same boundary urllib uses. Everything from there on
+    # (path, query, fragment) is preserved verbatim.
+    authority = remainder
+    tail = ""
+    for i, ch in enumerate(remainder):
+        if ch in "/?#":
+            authority, tail = remainder[:i], remainder[i:]
+            break
+
+    # Separate credentials from the host portion on the LAST '@' — any '@' in a
+    # raw password sits to the left of it (mirrors urllib's rpartition).
+    userinfo, at, hostpart = authority.rpartition("@")
+
+    # Not the affected case: no credentials, or a single host. The canonical
+    # encoder handles both correctly (and short-circuits when there are no
+    # credentials), so hand off untouched.
+    if not at or "," not in hostpart:
+        return encode_mongo_uri(uri)
+
+    # A username cannot legally contain an unescaped ':', so split on the first
+    # one; the remainder is the (possibly special-char-laden) password.
+    username, _, password = userinfo.partition(":")
+    if not username:
+        # Mirror encode_mongo_uri's "no username -> return as-is" short-circuit.
+        return encode_mongo_uri(uri)
+
+    encoded_username = quote_plus(username)
+    if password:
+        credentials = f"{encoded_username}:{quote_plus(password)}"
+    else:
+        credentials = encoded_username
+
+    return f"{scheme}://{credentials}@{hostpart}{tail}"
+
 def extract_database_from_uri(uri: str) -> str | None:
     """Extract the database name from a MongoDB URI"""
     try:
@@ -146,13 +214,20 @@ class MongoCollector:
             *,
             settings: MongoSettings | None = None,
             database: str | None = None,
+            ha2: bool = False,
     ) -> None:
-        """Initialize the collector with a MongoDB URI"""
+        """Initialize the collector with a MongoDB URI.
+
+        ``ha2`` selects the seed-list-safe credential encoder used for HA2
+        (replica-set) deployments. It defaults to False so every other
+        deployment mode keeps the exact :func:`encode_mongo_uri` path it has
+        always used. :meth:`from_config` sets it from ``Config.is_ha2``.
+        """
         require_extended(
             "MongoCollector",
             hint="MongoDB collection requires Extended Mode.",
         )
-        self._uri = encode_mongo_uri(uri)
+        self._uri = encode_mongo_uri_ha2(uri) if ha2 else encode_mongo_uri(uri)
         self._settings = settings or MongoSettings()
         self._client: MongoClient | None = None
         self._db: Database | None = None
@@ -180,7 +255,9 @@ class MongoCollector:
                 max_query_time_ms=timeout_ms,
                 max_network_timeout_s=timeout_ms // 1000 + 15,
             )
-        return cls(uri, settings=settings)
+        # HA2 (replica-set) deployments need the seed-list-safe URI encoder;
+        # is_ha2 fails safe to False for every other mode, preserving behavior.
+        return cls(uri, settings=settings, ha2=config.is_ha2)
 
     @property
     def is_connected(self) -> bool:
@@ -213,6 +290,20 @@ class MongoCollector:
         """Human-friendly string for logs and Rich output"""
         db = self._database_name or "default"
         return f"MongoCollector({db})"
+
+    def _endpoint_label(self) -> str:
+        """``host:port`` for the configured URI, with credentials stripped.
+
+        Used only in connection-error messages so a skipped rule can report
+        *where* MongoDB was unreachable without ever echoing the password.
+        """
+        try:
+            parsed = urlparse(self._uri or "")
+            host = parsed.hostname or "unknown-host"
+            port = parsed.port or 27017
+            return f"{host}:{port}"
+        except Exception:  # best-effort label, never fatal
+            return "the configured MongoDB server"
 
     # Connection Management
     def connect(self) -> None:
@@ -273,18 +364,18 @@ class MongoCollector:
             # Error code 18 is authentication failure
             if e.code == 18:
                 raise AuthenticationError(
-                    "MongoDB authentication failed. Check credentials."
+                    f"MongoDB authentication failed at {self._endpoint_label()}. Check credentials."
                 ) from e
             raise MongoCollectorError(f"MongoDB operation failed: {e}") from e
         except ServerSelectionTimeoutError as e:
             self._close_client()
             raise MongoConnectionNotEstablishedError(
-                "Could not connect to MongoDB server. Check URI and network."
+                f"Could not connect to MongoDB at {self._endpoint_label()}. Check URI and network."
             ) from e
         except ConnectionFailure as e:
             self._close_client()
             raise MongoConnectionNotEstablishedError(
-                f"MongoDB connection failed: {e}"
+                f"MongoDB connection to {self._endpoint_label()} failed: {e}"
             ) from e
 
     def close(self) -> None:

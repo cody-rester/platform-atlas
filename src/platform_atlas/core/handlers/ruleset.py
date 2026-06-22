@@ -409,6 +409,106 @@ def handle_ruleset_update(args: Namespace) -> int:
     return 0
 
 
+@registry.register("ruleset", "sync", description="Sync bundled rulesets and profiles into ~/.atlas")
+def handle_ruleset_sync(args: Namespace) -> int:
+    """Sync bundled rulesets and profiles from the installed package into ~/.atlas.
+
+    Default: the same version-aware sync that runs at startup — copies new and
+    strictly-newer bundled files and never downgrades a locally-newer ruleset.
+
+    ``--force``: full wipe + re-sync. Deletes every local ruleset and profile
+    first (including user-created files and rulesets downloaded via
+    ``ruleset update``), then copies the bundled set fresh. Destructive and
+    non-recoverable; prompts for confirmation unless ``--yes`` is given.
+    """
+    from platform_atlas.core import init_env
+    from platform_atlas.core.init_setup import QSTYLE
+
+    if not getattr(args, "force", False):
+        # Gentle path — identical to the automatic startup sync.
+        init_env.sync_bundled_files()
+        console.print(
+            f"  [{theme.success}]✓[/{theme.success}] Bundled rulesets and profiles are up to date."
+        )
+        return 0
+
+    # ── Force path: full wipe + re-sync ───────────────────────────────────────
+    plan = init_env.plan_force_resync()
+    lost = plan.lost_rulesets + plan.lost_profiles
+
+    console.print()
+    console.print("  [bold]Force re-sync from bundled source[/bold]")
+    console.print(f"  [dim]{init_env.PROJECT_RULESETS}[/dim]")
+    console.print(f"  [dim]  → {init_env.ATLAS_RULESETS_DIR}[/dim]")
+    console.print()
+    console.print(
+        f"  Deletes [bold]{len(plan.local_rulesets)}[/bold] local ruleset file(s) and "
+        f"[bold]{len(plan.local_profiles)}[/bold] profile(s), then copies "
+        f"[bold]{len(plan.source_rulesets)}[/bold] ruleset file(s) and "
+        f"[bold]{len(plan.source_profiles)}[/bold] profile(s) from source."
+    )
+
+    if lost:
+        console.print()
+        console.print(
+            f"  [bold {theme.error}]⚠ {len(lost)} local-only file(s) will be permanently deleted[/bold {theme.error}]"
+        )
+        console.print(
+            "  [dim]These are not in the bundled source (custom files or downloaded "
+            "updates) and there is no backup:[/dim]"
+        )
+        for name in lost:
+            console.print(f"      [{theme.error}]✗[/{theme.error}] {name}")
+    console.print()
+
+    if not getattr(args, "yes", False):
+        # questionary returns None on Ctrl-C — must re-raise as KeyboardInterrupt.
+        confirm = questionary.confirm(
+            "Permanently delete the local copies and re-sync from source?",
+            default=False,
+            style=QSTYLE,
+        ).ask()
+        if confirm is None:
+            raise KeyboardInterrupt
+        if not confirm:
+            console.print(f"  [{theme.text_dim}]Cancelled — nothing was changed.[/{theme.text_dim}]")
+            return 1
+
+    result = init_env.force_resync_from_source()
+    console.print(
+        f"  [{theme.success}]✓[/{theme.success}] Re-synced [bold]{result.total}[/bold] file(s) from source."
+    )
+
+    # Reload the active ruleset/profile so the fresh files take effect immediately
+    # and settings.json never points at a file the wipe removed.
+    manager = get_ruleset_manager()
+    active_id = manager.get_active_ruleset_id()
+    active_profile = manager.get_active_profile_id()
+    if active_id:
+        try:
+            manager.set_active_ruleset(active_id, active_profile)
+            msg = f"Reloaded active ruleset [bold]{active_id}[/bold]"
+            if active_profile:
+                msg += f" with profile [bold]{active_profile}[/bold]"
+            console.print(f"  [{theme.success}]✓[/{theme.success}] {msg}")
+        except FileNotFoundError:
+            # The wipe removed the active ruleset and/or profile. Fall back to the
+            # ruleset alone, then to clearing — never leave a dangling pointer.
+            try:
+                manager.set_active_ruleset(active_id, None)
+                console.print(
+                    f"  [{theme.warning}]⚠[/{theme.warning}] Active profile not found after re-sync — "
+                    f"reloaded [bold]{active_id}[/bold] with no profile."
+                )
+            except FileNotFoundError:
+                manager.clear_active_ruleset()
+                console.print(
+                    f"  [{theme.warning}]⚠[/{theme.warning}] Active ruleset [bold]{active_id}[/bold] "
+                    f"no longer exists after re-sync — cleared it."
+                )
+    return 0
+
+
 # ── List / active / load / etc. ──────────────────────────────────────────────
 
 @registry.register("ruleset", "list", description="List available rulesets")
@@ -471,14 +571,20 @@ def handle_load_ruleset(args: Namespace) -> int:
     profile_id = getattr(args, "profile", None)
 
     try:
-        get_ruleset_manager().set_active_ruleset(ruleset_id, profile_id)
+        manager = get_ruleset_manager()
+        # Visibility guards: legacy (2023.x) rulesets/profiles only for
+        # legacy-marked environments; SaaS profiles only under SaaS.
+        manager.ensure_ruleset_allowed(ruleset_id)
+        if profile_id:
+            manager.ensure_profile_allowed(profile_id)
+        manager.set_active_ruleset(ruleset_id, profile_id)
         #console.print(f"[{theme.success}]✓[/{theme.success}] Activated: [bold]{ruleset_id}[/bold]")
         msg = f"Activated: [bold]{ruleset_id}[/bold]"
         if profile_id:
             msg += f" with profile [bold]{profile_id}[/bold]"
         console.print(f"[{theme.success}]✓[/{theme.success}] {msg}")
         return 0
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         console.print(f"[{theme.error}]✘[/{theme.error}] {e}")
         return 1
 
@@ -521,10 +627,13 @@ def handle_set_profile(args: Namespace) -> int:
         return 1
 
     try:
+        # Visibility guards: legacy (2023.x) profiles only for legacy-marked
+        # environments; SaaS profiles only under SaaS, and vice versa.
+        manager.ensure_profile_allowed(profile_id)
         manager.set_active_ruleset(ruleset_id, profile_id)
         console.print(f"[{theme.success}]✓[/{theme.success}] Profile set: [bold]{profile_id}[/bold]")
         return 0
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         console.print(f"[{theme.error}]✘[/{theme.error}] {e}")
         return 1
 
@@ -757,7 +866,12 @@ def handle_ruleset_setup(args: Namespace) -> int:
         label = f"{rs.id}  —  {rs.name} v{rs.version} ({rs.rule_count} rules){suffix}"
         ruleset_choices.append(questionary.Choice(title=label, value=file_id))
 
-    default_ruleset = active_ruleset if active_ruleset else rulesets[0].file_path.stem
+    # The active ruleset may be hidden from the (tier/legacy-filtered)
+    # choices — e.g. a 2023 ruleset still active on a non-legacy env.
+    # questionary raises ValueError on a default outside the choices, so
+    # clamp to what is actually offered.
+    ruleset_values = [c.value for c in ruleset_choices]
+    default_ruleset = active_ruleset if active_ruleset in ruleset_values else ruleset_values[0]
     selected_ruleset = questionary.select(
         "Select ruleset:",
         choices=ruleset_choices,
@@ -772,19 +886,23 @@ def handle_ruleset_setup(args: Namespace) -> int:
     # ── Step 2: Select profile ──
     profiles = manager.discover_profiles()
 
-    _NO_PROFILE = "__none__"
+    # No "None" choice on purpose — an audit always runs with a profile.
+    # Only when no profile is visible at all does the ruleset activate bare.
     selected_profile = None
     if profiles:
-        profile_choices = [
-            questionary.Choice(title="None (no profile)", value=_NO_PROFILE),
-        ]
+        profile_choices = []
         for p in profiles:
             file_id = p.file_path.stem
             suffix = " (active)" if file_id == active_profile else ""
             label = f"{p.id}  —  {p.name} ({p.override_count} overrides){suffix}"
             profile_choices.append(questionary.Choice(title=label, value=file_id))
 
-        default_profile = active_profile if active_profile else _NO_PROFILE
+        # Same clamp as the ruleset default above: the active profile may
+        # be hidden from the filtered choices (e.g. a platform profile
+        # while a SaaS environment is active) — fall back to the first
+        # offered profile.
+        profile_values = [c.value for c in profile_choices]
+        default_profile = active_profile if active_profile in profile_values else profile_values[0]
         result = questionary.select(
             "Select profile:",
             choices=profile_choices,
@@ -796,7 +914,7 @@ def handle_ruleset_setup(args: Namespace) -> int:
             console.print(f"  [{theme.text_dim}]Cancelled[/{theme.text_dim}]")
             return 1
 
-        selected_profile = None if result == _NO_PROFILE else result
+        selected_profile = result
 
     # ── Apply ──
     try:

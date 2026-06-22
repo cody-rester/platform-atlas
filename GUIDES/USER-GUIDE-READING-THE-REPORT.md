@@ -8,40 +8,56 @@ If you haven't run an audit yet, see the companion guide: [User Guide: Installat
 
 ## What the Report Is
 
-`session run report` generates **three** linked HTML reports in a single pass — every session
-produces all three. They share a header navigation bar so you can switch between them in the
-browser without leaving the page:
+`session run report` generates the linked HTML reports in a single pass. They share a header
+navigation bar so you can switch between them in the browser without leaving the page. **The
+set of reports depends on the tier:** Extended produces all three (03 + 04 + 05); Standard
+produces 03 + 05 (no `04_operational.html`); SaaS produces a **single merged `03_report.html`**
+only (compliance plus an in-page Architecture Overview — no 04/05). All tiers also write
+`06_webui_viewmodel.json`, the machine-readable data backing the WebUI report view.
 
 | File | What it covers |
 |---|---|
-| `03_report.html` | **Compliance** — overall score, results table, extended validation. The compliance report is what this guide focuses on. |
-| `04_operational.html` | **Operational** — platform / webserver / MongoDB log analysis, plus optional MongoDB aggregation pipelines. Covers operational hygiene, not configuration compliance. |
-| `05_arch.html` | **Architecture & Maintenance** — adapter states, Redis ACL coverage, index status, IAG paths, and the architecture overview from `architecture-form.html`. |
+| `03_report.html` | **Compliance** — overall score, results table, extended validation. The compliance report is what this guide focuses on. Under SaaS this single file also carries the Architecture Overview. |
+| `04_operational.html` | **Operational** — platform / webserver / MongoDB log analysis, plus optional MongoDB aggregation pipelines. Covers operational hygiene, not configuration compliance. *(Extended only — not produced under Standard or SaaS.)* |
+| `05_arch.html` | **Architecture & Maintenance** — adapter states, Redis ACL coverage, index status, IAG paths, and the architecture overview from `architecture-form.html`. *(Extended and Standard; under SaaS this content is merged into `03_report.html`.)* |
+| `06_webui_viewmodel.json` | Machine-readable viewmodel of the report data (all tiers); powers the WebUI report view. |
 
-All three are self-contained HTML files — no internet connection, no special software. Open
-them in any modern browser. They live alongside the session metadata at:
+Architecture warnings (cross-DC latency, single-node deployment, cross-region Mongo) live in
+the architecture section; they don't apply to SaaS, whose merged report carries an Architecture
+Overview without those warnings.
+
+Each report is a self-contained HTML file — no internet connection, no special software. Open
+it in any modern browser. They live alongside the session metadata at:
 
 ```
 ~/.atlas/sessions/<session-name>/
 ```
 
-The compliance report opens automatically when generation finishes; the other two are linked
-in its header.
+The compliance report opens automatically when generation finishes; any companion reports for
+the tier are linked in its header.
 
 The report captures a point-in-time snapshot of your IAP deployment's configuration health.
 It does not make any changes to your environment — it only reports on what was found.
 Running a new audit and generating a new report is always safe.
 
+> **Preview:** `session run report --unified` additionally writes a single-file
+> `unified_report.html` that combines Compliance / Operational / Architecture as top-bar tabs.
+> It is purely additive — it never overwrites `03`/`04`/`05`.
+
 ### Tier banner
 
-Reports generated in v1.7+ show a **TIER** chip in the header — Standard or Extended.
+Reports generated in v1.7+ show a **TIER** chip in the header — Standard, Extended, or SaaS.
 
-- **Standard** runs the application-layer subset (~54 rules) over Platform OAuth only. Rules
+- **Standard** runs the application-layer subset (~56 rules) over Platform OAuth only. Rules
   that need MongoDB / Redis / SSH simply aren't part of the Standard ruleset, so you won't see
   them as SKIPs and there is **no partial-capture obelisk (†)** in Standard reports — a
   limited module set is the full expected capture in Standard, not a deficiency.
-- **Extended** runs the full ~107-rule ruleset. Anything that couldn't be reached during
+- **Extended** runs the full ~122-rule ruleset. Anything that couldn't be reached during
   capture appears as SKIP (see below).
+- **SaaS** is a single-gateway audit (one Gateway 4 *or* Gateway 5 per environment, SSH as
+  needed) with **no Platform / MongoDB / Redis** at all. It carries a pink **"Gateway Audit"**
+  badge, produces a single merged report (compliance + Architecture Overview), and runs **no
+  AVC and no architecture warnings**.
 
 If you `session diff` two sessions captured under different tiers, the diff report shows a
 banner explaining that the comparison spans tiers and the score gap may simply reflect
@@ -59,6 +75,11 @@ areas:
 2. **Results Table** — every rule that was evaluated, with its status and message
 3. **Extended Validation** — pattern-based checks that go beyond single-value rules
 4. **Log Analysis** — a breakdown of platform log error groups and frequencies (full content lives in `04_operational.html`)
+
+The exact section set varies by tier. **Standard** omits the infrastructure categories
+(MongoDB / Redis and the SSH-based checks) it never captures. **SaaS** renders a single merged
+report — compliance results for the one audited gateway plus an in-page Architecture Overview,
+with **no Extended Validation (AVC)** and no architecture warnings.
 
 Read the report top-to-bottom on first review. The score gives you the headline. The results
 table tells you exactly what passed and what didn't. Extended validation surfaces patterns
@@ -88,11 +109,15 @@ The score is broken down by category below the headline number:
 
 A healthy production deployment should target 90%+ on all categories. Scores below 80% in any single category warrant immediate review.
 
+**Credential safety:** any credentialed connection string captured during the audit is masked
+in the report's displayed values — `scheme://user:pass@host` is shown as `scheme://*****:*****@host`.
+
 ---
 
 ## Rule Statuses
 
-Every row in the results table has one of four statuses:
+Every row in the results table has one of these statuses: **PASS**, **FAIL**, **SKIP**,
+**ERROR**, or **SUPPRESSED**.
 
 ### PASS
 
@@ -114,9 +139,15 @@ The rule could not be evaluated because the data wasn't available. This happens 
 
 A SKIP is not a PASS. It means "we couldn't check this." If you see many SKIPs in a category, investigate why data collection failed for that section. Common causes: the service was down during capture, SSH authentication failed, or a config file was in a non-standard location.
 
+As of 2.0, each SKIP carries a *kind* — **unreachable**, **no_data**, or **conditional** — and the report shows a callout explaining **why** (for example, `couldn't connect: host:port reason`). Rules belonging to a subsystem that failed to connect during capture are now resurfaced as such "couldn't connect" skips rather than silently disappearing. The rule modal states the specific reason.
+
 ### ERROR
 
 The rule encountered a problem during evaluation itself — for example, a data type mismatch or a malformed path. ERRORs are rare and usually indicate either a version mismatch between the ruleset and the captured data, or a data collection issue that produced unexpected output. Report ERRORs to your Itential contact along with the session export.
+
+### SUPPRESSED
+
+Shown with an amber cue. The rule was deliberately suppressed for this environment by an operator using `ruleset skip-rule`. A SUPPRESSED row carries a justification reason, displayed both in the table and in the rule modal. Like SKIPs, suppressed rules are excluded from the compliance score. (Added in 1.8.0.)
 
 ---
 

@@ -4,7 +4,7 @@ A rule is classified as **SSH-primary** when its primary `path` resolves to data
 only be captured via SSH (not the Platform OAuth API, pymongo, redis-py, or ipsdk). This
 excludes rules where SSH appears only as an `alt_path` fallback.
 
-**30 of 107 rules are SSH-primary**, organized by collection mechanism below.
+**32 of 122 rules are SSH-primary**, organized by collection mechanism below.
 
 > **Kubernetes note:** None of these rules use `alt_path` to point at a Kubernetes path.
 > Where a Kubernetes mechanism is listed, the `KubernetesCollector` populates the **same
@@ -29,10 +29,15 @@ excludes rules where SSH appears only as an `alt_path` fallback.
 
 ---
 
-## Group 2 — Gateway5: Environment Variables via `printenv` over SSH
+## Group 2 — Gateway5: Environment Variables
 
 **Category:** `gateway5`
-**SSH Mechanism:** `Gateway5Collector.collect_env()` runs `printenv` over SSH and filters `GATEWAY_*` environment variables.
+**SSH Mechanism:** `Gateway5Collector.collect_env()` runs `printenv` over SSH and filters `GATEWAY_*`
+environment variables. `printenv` is the primary source, but it is not the only one: these same
+`gateway5.variables.*` values can also be parsed from a local Docker Compose / Helm file
+(`parse_gateway5_yaml`, for containerized gateways with no SSH `printenv` reachable), and the server
+`gateway.conf` (INI) can be read over SSH and mapped to the same settings — surfaced on each rule's
+`alt_path` (`gateway5.config_file.*`).
 **Kubernetes Mechanism:** `KubernetesCollector.collect_gateway5()` reads the IAG5 Helm `values.yaml`
 (`applicationSettings`, `serverSettings`, `runnerSettings`) and maps them to the same
 `gateway5.variables.*` paths. Inline `env:` overrides in the Helm values are also captured.
@@ -60,6 +65,8 @@ excludes rules where SSH appears only as an `alt_path` fallback.
 | IAG-032 | Gateway Runner Announcement Address | Validate gateway runner announcement address |
 | IAG-033 | Gateway Server Distributed Execution | Validate gateway server distributed execution flag |
 | IAG-034 | Gateway Server Certificate File | Validate if gateway server certificate file is set |
+| IAG-035 | Gateway Venv Pruner Sweep Interval | Validate the Python venv pruner sweep interval |
+| IAG-036 | Gateway Venv Pruner Retention Period | Validate the Python venv pruner retention period |
 
 ---
 
@@ -73,7 +80,7 @@ is currently implemented for these checks.
 
 | Rule # | Name | Description |
 |---|---|---|
-| IAG-030 | Gateway Version Check | Validate Gateway5 version via `iagctl version` |
+| IAG-030 | Gateway Version Check | Validate Gateway5 version via `iagctl version` (critical; requires version ≥ 5.4) |
 | IAG-031 | Gateway Custom Registries | Validate gateway custom registries via `iagctl get registries` |
 
 ---
@@ -97,16 +104,17 @@ file sizes with `stat`, and runs `python3 --version`.
 | Group | Category | Rules | SSH Mechanism | Kubernetes Mechanism |
 |---|---|---|---|---|
 | Gateway4 service/DB checks | `gateway4` | IAG-008 to IAG-011 | `stat` commands, systemd unit file parsing | None |
-| Gateway5 environment variables | `gateway5` | IAG-012 to IAG-029, IAG-032 to IAG-034 | `printenv` over SSH | IAG5 Helm `values.yaml` via `KubernetesCollector.collect_gateway5()` |
+| Gateway5 environment variables | `gateway5` | IAG-012 to IAG-029, IAG-032 to IAG-036 | `printenv` over SSH (also Docker Compose / Helm file parse, or server `gateway.conf` via `alt_path`) | IAG5 Helm `values.yaml` via `KubernetesCollector.collect_gateway5()` |
 | Gateway5 `iagctl` checks | `gateway5` | IAG-030, IAG-031 | `iagctl version` / `iagctl get registries` over SSH | None |
 | Platform filesystem checks | `platform` | PLAT-027, PLAT-038, PLAT-040 | `platform.properties` parse, `stat`, `python3 --version` | PLAT-027 only — IAP Helm `values.yaml` `env:` block |
-| **Total** | | **30 rules** | | |
+| **Total** | | **32 rules** | | |
 
 ---
 
-> **What about the other 77 rules?** They obtain their primary data via the Platform OAuth API
+> **What about the other 90 rules?** They obtain their primary data via the Platform OAuth API
 > (`platform.*`), pymongo (`mongo.*`), redis-py (`redis.*`), or the ipsdk Gateway4 API
 > (`gateway4.runtime_config.*`, `gateway4.api_status.*`). SSH may still appear as an
 > `alt_path` fallback for some of those rules, but it is not the primary collection method.
-> The four KBS rules (`KBS-001` to `KBS-004`) use the Kubernetes collector (Helm
-> `values.yaml` / `kubectl`) as their primary source and are also not SSH-based.
+> The fifteen KBS rules (`KBS-001` to `KBS-015`) — the full `kubernetes` category — use the
+> Kubernetes collector (Helm `values.yaml` / `kubectl`) as their primary source and are also
+> not SSH-based.

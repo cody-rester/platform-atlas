@@ -104,8 +104,8 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--tier',
         dest='tier_override',
-        choices=['standard', 'extended'],
-        help='Override the active tier for this command (standard | extended)'
+        choices=['standard', 'extended', 'saas'],
+        help='Override the active tier for this command (standard | extended | saas)'
     )
 
     parser.add_argument(
@@ -562,7 +562,8 @@ def _add_tier_commands(subparsers):
         description=(
             'Manage Platform Atlas\'s mode tier:\n'
             '  • Standard — Platform OAuth + optional IAG4 (5-minute setup)\n'
-            '  • Extended — Full audit including SSH, MongoDB, Redis, Kubernetes'
+            '  • Extended — Full audit including SSH, MongoDB, Redis, Kubernetes\n'
+            '  • SaaS     — Single-gateway audit (GW4 or GW5); chosen per-environment at create time'
         ),
     )
 
@@ -590,8 +591,8 @@ def _add_tier_commands(subparsers):
     set_parser.add_argument(
         'tier_value',
         nargs='?',
-        choices=['standard', 'extended'],
-        help='Target tier (interactive picker if omitted)',
+        choices=['standard', 'extended', 'saas'],
+        help='Target tier (interactive picker if omitted; saas is per-environment only)',
     )
 
     tier_subparsers.add_parser(
@@ -663,7 +664,7 @@ def _add_session_commands(subparsers):
     )
     create.add_argument(
         '--tier',
-        choices=['standard', 'extended'],
+        choices=['standard', 'extended', 'saas'],
         dest='tier',
         help='Bind the session to a tier (defaults to the active config tier)'
     )
@@ -778,6 +779,14 @@ def _add_session_commands(subparsers):
         help='Disable fix instructions from the knowledge base in the report detail modals'
     )
     run.add_argument(
+        '--unified',
+        action='store_true',
+        help='Also generate a single combined report: one standalone '
+             'unified_report.html with Compliance, Operational, and Architecture '
+             'as tabbed pages in the top bar (HTML only). Written alongside the '
+             'classic report files without overwriting them.'
+    )
+    run.add_argument(
         '--debug-raw-capture',
         action='store_true',
         help='Also write 01_raw_capture.json — the full reshaped capture before '
@@ -867,16 +876,17 @@ def _add_session_commands(subparsers):
         'export',
         help='Export session as ZIP for delivery',
         formatter_class=AtlasHelpFormatter,
-        description='Package session data for customer delivery'
+        description='Package a session (reports + report.json + metadata) into an '
+                    'organization-named archive to attach to an Itential ER ticket'
     )
     export.add_argument(
         'session_name',
         nargs='?',
-        help='Session name (uses active session if not specified)'
+        help='Session name (prompts for the active or a recent session if omitted)'
     )
     export.add_argument(
         '--output',
-        help='Output file path (default: current directory)'
+        help='Output file path (default: ATLAS-<org>-<session>-<date> in current directory)'
     )
     export.add_argument(
         '--format',
@@ -887,14 +897,14 @@ def _add_session_commands(subparsers):
     export.add_argument(
         '--include-debug',
         action='store_true',
-        help='Include debug logs and raw data'
+        help='Also bundle troubleshooting files (session.log, 01_capture.json, debug.log)'
     )
     export.add_argument(
         '--no-redact',
         dest='redact',
         action='store_false',
         default=True,
-        help='Include raw capture data in export'
+        help='Alias for --include-debug (kept for backward compatibility)'
     )
 
     # session delete
@@ -1248,6 +1258,33 @@ def _add_ruleset_commands(subparsers):
         ),
     )
 
+    # ruleset sync
+    sync = ruleset_subparsers.add_parser(
+        'sync',
+        help='Sync bundled rulesets and profiles into ~/.atlas (use --force to reset)',
+        formatter_class=AtlasHelpFormatter,
+        description=(
+            'Copy bundled rulesets and profiles from the installed Atlas package '
+            'into ~/.atlas. By default this runs the same version-aware sync as '
+            'startup: new and strictly-newer files are copied and locally-newer '
+            'rulesets are preserved. With --force, every local ruleset and profile '
+            'is deleted first — including custom files and rulesets downloaded via '
+            '"ruleset update" — and the bundled set is copied fresh. --force is '
+            'destructive, takes no backup, and prompts for confirmation unless '
+            '--yes is given.'
+        ),
+    )
+    sync.add_argument(
+        '--force',
+        action='store_true',
+        help='Full wipe: delete all local rulesets/profiles, then re-copy from source (destructive, no backup)',
+    )
+    sync.add_argument(
+        '-y', '--yes',
+        action='store_true',
+        help='Skip the confirmation prompt (non-interactive use)',
+    )
+
 # =================================================
 # CONFIG Command Group
 # =================================================
@@ -1297,6 +1334,20 @@ def _add_config_commands(subparsers):
         help='View and update stored credentials',
         formatter_class=AtlasHelpFormatter,
         description='Manage credentials'
+    )
+    cred_store_group = credentials.add_mutually_exclusive_group()
+    cred_store_group.add_argument(
+        '--use-file-store',
+        dest='cred_use_file_store',
+        action='store_true',
+        help='Switch this environment to the encrypted local file credential '
+             'backend, then exit'
+    )
+    cred_store_group.add_argument(
+        '--use-keyring',
+        dest='cred_use_keyring',
+        action='store_true',
+        help='Switch this environment to the OS keyring credential backend, then exit'
     )
 
     # config theme
@@ -1468,6 +1519,26 @@ def _add_env_commands(subparsers):
         'env_name',
         nargs='?',
         help='Environment name to edit (edits active environment if not specified)'
+    )
+
+    # env architecture
+    arch = env_subparsers.add_parser(
+        'architecture',
+        help="Collect or edit an environment's architecture information",
+        formatter_class=AtlasHelpFormatter,
+        description='Open the architecture form (HTML or CLI prompts) to record deployment '
+                    'architecture details for an environment. Answers are saved per-environment '
+                    'and included in the audit report. Run this anytime, outside of a capture.'
+    )
+    arch.add_argument(
+        'env_name',
+        nargs='?',
+        help='Environment name (uses the active environment if not specified)'
+    )
+    arch.add_argument(
+        '--force',
+        action='store_true',
+        help='Re-walk every section, even ones already answered'
     )
 
 # =================================================

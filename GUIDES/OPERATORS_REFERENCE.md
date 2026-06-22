@@ -17,8 +17,8 @@ Many operators coerce their inputs before comparing. Understanding coercion beha
 |---|---|---|
 | `coerce_int` | `int`, whole `float`, digit strings | Rejects `bool`, empty strings, non-whole floats |
 | `coerce_bool` | `bool`, `0`/`1`, common string forms (`"yes"`, `"true"`, `"on"`, etc.) | Case-insensitive for strings |
-| `extract_int` | `int`, strings with a leading number (`"512mb"`, `"2g"`) | Strips trailing non-digit characters |
-| `parse_version` | PEP 440 strings, or strings containing a dotted version (`"TLSv1.2"`) | Falls back to regex extraction |
+| `extract_int` | `int`, strings with a leading number (`"512mb"`, `"2g"`) | Captures the leading run of digits; the string must start with a digit (e.g. `512mb`→`512`). A non-digit prefix raises. |
+| `parse_version` | PEP 440 strings, or strings containing a dotted version (`"TLSv1.2"`) | Falls back to any string containing a run of digits/dots (`re.search`), e.g. `TLSv1.2`→`1.2`, `7`→`7`. |
 | `_normalize_list` | Any single value or list | Wraps scalars in a list, then stringifies every element |
 
 ---
@@ -499,7 +499,7 @@ expected: ["yes", "1"]
 
 | Actual | Result |
 |---|---|
-| `[True, 1]` | ✅ (normalized to `["1", "True"]` vs `["1", "yes"]` — ❌ actually) |
+| `[True, 1]` | ❌ (normalizes to `["1", "True"]`, not `["1", "yes"]`) |
 | `["yes", "1"]` | ✅ |
 
 > **Tip:** Be careful with `mixed_list eq` — normalization converts values with `str()`, so `True` becomes `"True"`, not `"yes"`. If you need boolean-aware equality, consider individual `bool eq` checks instead.

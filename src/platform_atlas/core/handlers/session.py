@@ -37,7 +37,7 @@ from platform_atlas.core.session_manager import (
 # ATLAS Management
 from platform_atlas.core.ruleset_manager import get_ruleset_manager
 from platform_atlas.core.paths import (
-    REPORT_TEMPLATE, OPERATIONAL_TEMPLATE, ARCH_TEMPLATE,
+    REPORT_TEMPLATE, OPERATIONAL_TEMPLATE, ARCH_TEMPLATE, UNIFIED_REPORT_TEMPLATE,
     DIFF_TEMPLATE, ATLAS_HOME_DIFF,
 )
 from platform_atlas.core.init_setup import QSTYLE
@@ -183,7 +183,17 @@ def _pick_ruleset(preselect: str | None = None) -> str | None:
         label = f"{rs.id}{suffix}  (v{rs.version} — {rs.rule_count} rules)"
         choices.append(questionary.Choice(title=label, value=rs.id))
 
-    default = preselect if preselect in [r.id for r in available] else (active_id or available[0].id)
+    # Clamp the default to the offered choices — the preselect (a session's
+    # saved binding) or the active ruleset may be hidden from the filtered
+    # listing (e.g. a 2023 ruleset on a non-legacy environment), and
+    # questionary raises ValueError on a default outside the choices.
+    valid_ids = [r.id for r in available]
+    if preselect in valid_ids:
+        default = preselect
+    elif active_id in valid_ids:
+        default = active_id
+    else:
+        default = valid_ids[0]
 
     selected = questionary.select(
         "Select ruleset:",
@@ -197,8 +207,11 @@ def _pick_ruleset(preselect: str | None = None) -> str | None:
 
 def _pick_profile(preselect: str | None = None) -> str | None:
     """
-    Interactive profile picker. Returns profile ID or None if canceled.
-    The user can also choose 'No profile' to use ruleset defaults.
+    Interactive profile picker. Returns profile ID, or None when cancelled
+    (or when no profile is visible at all — callers treat that as a cancel).
+
+    There is deliberately no "no profile" choice — an audit always runs
+    with a profile.
     """
     rm = get_ruleset_manager()
     available = rm.discover_profiles()
@@ -221,12 +234,17 @@ def _pick_profile(preselect: str | None = None) -> str | None:
         label = f"{p.id}{suffix}  ({p.description or f'{p.override_count} overrides'})"
         choices.append(questionary.Choice(title=label, value=p.id))
 
-    choices.append(questionary.Choice(
-        title="── No profile (use ruleset defaults)",
-        value="_none",
-    ))
-
-    default = preselect if preselect in [p.id for p in available] else (active_id or (available[0].id if available else "_none"))
+    # Clamp the default to the offered choices — the preselect (a session's
+    # saved binding) or the active profile may be hidden from the filtered
+    # listing (e.g. a platform profile while a SaaS environment is active),
+    # and questionary raises ValueError on a default outside the choices.
+    valid_ids = [p.id for p in available]
+    if preselect in valid_ids:
+        default = preselect
+    elif active_id in valid_ids:
+        default = active_id
+    else:
+        default = valid_ids[0]
 
     selected = questionary.select(
         "Select profile:",
@@ -234,11 +252,6 @@ def _pick_profile(preselect: str | None = None) -> str | None:
         default=default,
         style=QSTYLE,
     ).ask()
-
-    if selected is None:
-        return None
-    if selected == "_none":
-        return ""
 
     return selected
 
@@ -280,9 +293,14 @@ def _show_session_status(session, *, show_bindings: bool = True) -> None:
         org = meta.organization_name
         if org:
             console.print(f"    Organization: [bold]{org}[/bold]")
-        # Tier badge — distinguish Standard (blue) from Extended (orange)
+        # Tier badge — Standard (blue) / Extended (orange) / SaaS (pink)
         session_tier = getattr(meta, "tier", "") or "standard"
-        tier_color = theme.primary if session_tier == "standard" else theme.accent
+        if session_tier == "saas":
+            tier_color = theme.tier_saas
+        elif session_tier == "standard":
+            tier_color = theme.primary
+        else:
+            tier_color = theme.accent
         console.print(
             f"    Mode: [{tier_color} bold]{session_tier.upper()}[/{tier_color} bold]"
         )
@@ -667,6 +685,18 @@ def handle_session_run_capture(args: Namespace) -> int:
             # ── Confirm before capture ────────────────────────────────
             headless = getattr(args, "headless", False)
 
+            # Architecture answers are managed OUTSIDE the capture flow now
+            # (a pre-capture notice below, or `env architecture`). Resolve the
+            # env once — scoped to the env this session was created against,
+            # never the (possibly different) currently-active env.
+            arch_env = session.metadata.environment or ""
+            skip_arch = getattr(args, "skip_architecture", False)
+
+            # MongoDB operational pipelines are also chosen up front (below) and
+            # executed after capture, so nothing interrupts the capture itself.
+            _run_operational = False
+            _operational_pipelines: list[str] | None = None
+
             # ── ControlMaster socket preflight ───────────────────────
             # Runs before the confirm prompt so a missing socket is caught early,
             # even in headless mode where there is no interactive gate.
@@ -725,15 +755,75 @@ def handle_session_run_capture(args: Namespace) -> int:
                 console.print(f"  [{theme.text_dim}]Ruleset[/{theme.text_dim}]       [{theme.secondary}]{rm.get_active_ruleset_id()}[/{theme.secondary}]")
                 console.print(f"  [{theme.text_dim}]Profile[/{theme.text_dim}]       [{theme.accent}]{rm.get_active_profile_id()}[/{theme.accent}]")
                 _session_tier = (getattr(meta, "tier", "") or "standard").lower()
-                _tier_color = theme.primary if _session_tier == "standard" else theme.accent
-                _tier_note = ("Platform only — no SSH/Mongo/Redis"
-                              if _session_tier == "standard" else "Full infrastructure audit")
+                if _session_tier == "saas":
+                    _tier_color = theme.tier_saas
+                    _tier_note = "Single gateway audit — no Platform/Mongo/Redis"
+                elif _session_tier == "standard":
+                    _tier_color = theme.primary
+                    _tier_note = "Platform only — no SSH/Mongo/Redis"
+                else:
+                    _tier_color = theme.accent
+                    _tier_note = "Full infrastructure audit"
                 console.print(
                     f"  [{theme.text_dim}]Mode[/{theme.text_dim}]          "
                     f"[{_tier_color} bold]{_session_tier.upper()}[/{_tier_color} bold]  "
                     f"[{theme.text_dim}]{_tier_note}[/{theme.text_dim}]"
                 )
                 console.print()
+
+                # ── Architecture form notice (managed outside capture) ──
+                # The interview no longer interrupts the capture flow. If this
+                # env's form isn't finished, offer to do it now; either way
+                # capture proceeds afterward. Extended + SaaS (gateway-scoped);
+                # never Standard.
+                if not skip_arch and not ctx().is_standard:
+                    from platform_atlas.capture.collectors.manual import (
+                        architecture_status,
+                        run_architecture_collection,
+                    )
+                    _arch_state, _arch_done, _arch_total = architecture_status(arch_env)
+                    if _arch_state != "complete":
+                        _env_label = arch_env or "default"
+                        if _arch_state == "empty":
+                            _arch_msg = (
+                                f"No architecture information has been collected for "
+                                f"environment '{_env_label}' yet."
+                            )
+                        else:
+                            _arch_msg = (
+                                f"The architecture form for '{_env_label}' is incomplete "
+                                f"({_arch_done} of {_arch_total} sections)."
+                            )
+                        _arch_cmd = "platform-atlas env architecture" + (f" {arch_env}" if arch_env else "")
+                        ui.hint_panel(
+                            f"[{theme.text_dim}]{_arch_msg}\n"
+                            f"Manage it anytime with [bold]{_arch_cmd}[/bold].[/{theme.text_dim}]",
+                            title="Architecture information",
+                            style=theme.accent,
+                        )
+                        _fill_now = questionary.confirm(
+                            "Fill out the architecture form now?",
+                            default=(_arch_state == "empty"),
+                        ).ask()
+                        if _fill_now is None:
+                            raise KeyboardInterrupt
+                        if _fill_now:
+                            try:
+                                run_architecture_collection(environment=arch_env)
+                            except KeyboardInterrupt:
+                                console.print(
+                                    f"\n[{theme.warning}]Architecture form paused — "
+                                    f"continuing with capture.[/{theme.warning}]"
+                                )
+                    console.print()
+
+                # ── Optional: MongoDB operational pipelines (asked up front) ──
+                # Capture the user's choice now; the pipelines themselves run
+                # after capture so the capture is never interrupted. Mirrors the
+                # WebUI, where all inputs are gathered before the run. Extended
+                # tier only (Standard and SaaS have no MongoDB collector).
+                if ctx().is_extended:
+                    _run_operational, _operational_pipelines = _prompt_operational_choice()
 
                 proceed = questionary.confirm(
                     "Ready to start capture?",
@@ -987,78 +1077,35 @@ def handle_session_run_capture(args: Namespace) -> int:
                     session.update_status(SessionStatus.FAILED)
                     return 1
 
-            # ── Common path: arch questions, save, metadata, done ────────────────────
+            # ── Common path: attach architecture, save, metadata, done ──
 
-            # Architecture Validation Questions
-            skip_arch = hasattr(args, 'skip_architecture') and args.skip_architecture
-
-            # Architecture answers are stored per environment under
-            # ``~/.atlas/architecture/<env>.json``. Scope to the env this
-            # session was created against — never the (possibly different)
-            # currently-active env.
-            arch_env = session.metadata.environment or ""
-
-            if not skip_arch:
-                from platform_atlas.capture.collectors.manual import (
-                    run_architecture_collection,
-                    load_architecture_progress
-                )
-
-                existing_arch = load_architecture_progress(arch_env)
-                if existing_arch:
-                    captured_data.setdefault("checks", {})["architecture_validation"] = existing_arch["architecture_validation"]
-                    console.print(
-                        f"  [{theme.text_dim}]Architecture data loaded from previous "
-                        f"collection for env '{arch_env or '_default'}' — skipping questions.[/{theme.text_dim}]"
-                    )
+            # Architecture answers are collected outside capture now (the
+            # pre-capture notice above, or `env architecture`). Here we only
+            # attach whatever is saved for this env — complete or partial — so
+            # the report reflects exactly what the user has entered. Skipped in
+            # Standard tier, where architecture review does not apply.
+            if not ctx().is_standard:
+                from platform_atlas.capture.collectors.manual import load_architecture_data
+                arch_data = load_architecture_data(arch_env)
+                if arch_data:
+                    captured_data.setdefault("checks", {})["architecture_validation"] = arch_data
                     logger.info(
-                        "Architecture validation reused for env=%s (%d sections)",
-                        arch_env or "_default",
-                        len(existing_arch["architecture_validation"])
-                    )
-                else:
-                    try:
-                        arch_data = run_architecture_collection(environment=arch_env)
-                        captured_data.setdefault("checks", {})["architecture_validation"] = arch_data["architecture_validation"]
-                        logger.info(
-                            "Architecture validation collected for env=%s (%d sections)",
-                            arch_env or "_default",
-                            len(arch_data["architecture_validation"])
-                        )
-                    except KeyboardInterrupt:
-                        console.print(
-                            f"\n[{theme.warning}]Architecture questions paused[/{theme.warning}]"
-                        )
-                        # Partial progress is already saved by the collector
-                        # Pull in whatever sections completed before the interrupt
-                        partial = load_architecture_progress(arch_env)
-                        if partial:
-                            captured_data.setdefault("checks", {})["architecture_validation"] = partial["architecture_validation"]
-            else:
-                # Try loading from completed architecture progress file first
-                from platform_atlas.capture.collectors.manual import (
-                    load_architecture_progress
-                )
-                arch_from_progress = load_architecture_progress(arch_env)
-
-                if arch_from_progress:
-                    captured_data.setdefault("checks", {})["architecture_validation"] = arch_from_progress["architecture_validation"]
-                    console.print(
-                        f"[{theme.text_dim}]Using architecture data from "
-                        f"previous collection for env '{arch_env or '_default'}'.[/{theme.text_dim}]"
+                        "Architecture data attached for env=%s (%d sections)",
+                        arch_env or "_default", len(arch_data),
                     )
                 elif session.capture_file.exists():
-                    # Fall back to pulling from a previous capture file
+                    # Fall back to architecture from this session's prior capture.
                     try:
                         import json as _json
                         existing = _json.loads(
                             session.capture_file.read_text(encoding="utf-8")
                         )
-                        if "architecture_validation" in existing.get("checks", {}):
-                            captured_data.setdefault("checks", {})["architecture_validation"] = existing["checks"]["architecture_validation"]
-                            console.print(
-                                f"[{theme.text_dim}]Using architecture data from "
-                                f"previous capture.[/{theme.text_dim}]"
+                        prior = existing.get("checks", {}).get("architecture_validation")
+                        if prior:
+                            captured_data.setdefault("checks", {})["architecture_validation"] = prior
+                            logger.debug(
+                                "Reused architecture data from prior capture for env=%s",
+                                arch_env or "_default",
                             )
                     except Exception:
                         logger.debug("No previous architecture data to reuse")
@@ -1100,13 +1147,23 @@ def handle_session_run_capture(args: Namespace) -> int:
             if _capture_checkpoint is not None:
                 _capture_checkpoint.clear()
 
-            console.print(f"\n[{theme.success}]✓[/{theme.success}] Capture complete")
+            # Configuration capture is saved. If the user opted into operational
+            # pipelines they run next, so don't announce "complete" yet — it
+            # reads as contradictory when more work immediately follows.
+            if _run_operational:
+                console.print(f"\n[{theme.success}]✓[/{theme.success}] Configuration capture saved")
+            else:
+                console.print(f"\n[{theme.success}]✓[/{theme.success}] Capture complete")
             console.print(f"  Saved to: {session.capture_file}")
 
             # ── Optional: MongoDB Operational Pipelines ──────────────────────
-            # Standard tier has no MongoDB collector — skip the prompt entirely.
-            if not headless and not ctx().is_standard:
-                _prompt_operational_collection(session)
+            # The choice was made up front (before capture started); run the
+            # selected pipelines now so the capture itself finished without any
+            # interruption. ``_run_operational`` is only set in interactive,
+            # Extended-tier runs, so headless/Standard naturally skip this.
+            if _run_operational:
+                _collect_operational_pipelines(session, pipeline_names=_operational_pipelines)
+                console.print(f"\n[{theme.success}]✓[/{theme.success}] Capture complete")
 
             console.print()
             ui.next_step("platform-atlas session run validate")
@@ -1280,9 +1337,96 @@ def handle_session_run_validate(args: Namespace) -> int:
         console.print(f"[red]✗[/red] {e.message}")
         return 1
 
+def _emit_report_summary(session, df, output_path, *, session_tier: str, args: Namespace,
+                         unified: bool = False) -> None:
+    """Finalize a report run: mark complete, print the score panel + file
+    paths, and open the report in a browser.
+
+    Shared by the classic (03/04/05) path and the ``--unified`` single-file
+    path so both surfaces stay consistent. When ``unified`` is True the file
+    listing collapses to one entry and the "opened" message drops the
+    "compliance" qualifier (the single file holds all three reports).
+    """
+    session.mark_stage_complete(SessionStage.REPORT)
+    _cleanup_logs_file(session)
+
+    # ── Score summary ────────────────────────────────────────────────
+    # Reuse the report's own calculation so the printed score matches the
+    # report exactly: pass rate over EVALUATED rules (skipped excluded),
+    # identical to report_renderer's ``{{PASS_PERCENT}}`` (= int(pass_percent)).
+    from platform_atlas.reporting.report_renderer import calculate_stats
+    stats     = calculate_stats(df)
+    total     = stats["total"]
+    passed    = stats["pass_count"]
+    failed    = stats["fail_count"]
+    skipped   = stats["skip_count"]
+    evaluated = passed + failed + stats["error_count"]
+    pct       = int(stats["pass_percent"])
+
+    if pct >= 90:
+        score_color = theme.success
+    elif pct >= 70:
+        score_color = theme.warning
+    else:
+        score_color = theme.error
+
+    from rich import box as _box
+    from rich.table import Table as _Table
+    score_table = _Table(box=_box.SIMPLE, show_header=False, pad_edge=False)
+    score_table.add_column(style=theme.text_dim, min_width=10)
+    score_table.add_column(justify="right", min_width=6)
+    score_table.add_row("Pass",    f"[{theme.success}]{passed}[/{theme.success}]")
+    score_table.add_row("Fail",    f"[{theme.error}]{failed}[/{theme.error}]")
+    if skipped:
+        score_table.add_row("Skip", f"[{theme.text_dim}]{skipped}[/{theme.text_dim}]")
+    score_table.add_row("Total",   str(total))
+    if skipped:
+        # Score denominator is the evaluated set, so surface it explicitly.
+        score_table.add_row("Evaluated", str(evaluated))
+    score_table.add_row("Score",   f"[bold {score_color}]{pct}%[/bold {score_color}]")
+
+    from rich.panel import Panel as _Panel
+    console.print()
+    console.print(_Panel(
+        score_table,
+        title=f"[bold {theme.primary_glow}]Audit Score[/bold {theme.primary_glow}]",
+        border_style=score_color,
+        box=_box.ROUNDED,
+        expand=False,
+    ))
+
+    # ── Report file paths (SCP-friendly) ────────────────────────────
+    console.print(f"\n[{theme.primary_glow}]Report files[/{theme.primary_glow}]")
+    if unified:
+        report_files = [("Report", output_path.absolute())]
+    else:
+        report_files = [("Compliance", output_path.absolute())]
+        if session_tier != "standard":
+            report_files.append(("Operational", session.operational_file.absolute()))
+        report_files.append(("Architecture", session.arch_file.absolute()))
+
+    for label, path in report_files:
+        if path.exists():
+            console.print(f"  [{theme.text_dim}]{label:<14}[/{theme.text_dim}]  {path}")
+
+    if not (hasattr(args, 'no_open') and args.no_open):
+        import webbrowser
+        webbrowser.open(output_path.as_uri())
+        _what = "report" if unified else "compliance report"
+        console.print(f"\n  [{theme.text_dim}]Opened {_what} in browser[/{theme.text_dim}]")
+    console.print()
+    ui.next_step("platform-atlas", label="Audit Complete — View Dashboard")
+
+
 @registry.register("session", "run", "report", description="Generate all reports from validation results")
 def handle_session_run_report(args: Namespace) -> int:
-    """Generate 03_report.html, 04_operational.html, and 05_arch.html"""
+    """Generate 03_report.html, 04_operational.html, and 05_arch.html.
+
+    Tier-aware: Standard skips 04 and renders 05 as a tier notice; SaaS
+    produces a SINGLE merged 03_report.html (compliance + Architecture
+    Overview) and skips 04/05 entirely; Extended generates all three.
+    The 06 WebUI viewmodel is written for every tier.
+    """
     try:
         manager = get_session_manager()
 
@@ -1379,6 +1523,78 @@ def handle_session_run_report(args: Namespace) -> int:
             # session tier is immutable once captured.
             session_tier = getattr(session.metadata, "tier", None) or df.attrs.get("tier") or "extended"
 
+            # ── Unified single-file report (opt-in --unified) ───────────────
+            # One standalone HTML — Compliance + Operational + Architecture as
+            # top-bar pages — rendered from the same viewmodel that powers the
+            # WebUI's unified report, so the numbers stay in lockstep. Written
+            # as its own ``unified_report.html`` ALONGSIDE the classic outputs:
+            # it never overwrites 03/04/05 (or an existing 06 viewmodel).
+            if getattr(args, "unified", False):
+                import json as _json
+                from platform_atlas.reporting.webui_viewmodel import build_webui_viewmodel
+                from platform_atlas.reporting.unified_renderer import render_unified_report
+                from platform_atlas.reporting.operational_engine import OperationalReport
+
+                output_path = (
+                    Path(args.output) if getattr(args, 'output', None)
+                    else session.directory / "unified_report.html"
+                )
+
+                # MongoDB pipelines (Extended only) feed the Operational page.
+                unified_mongo = None
+                if session_tier not in ("standard", "saas") and session.operational_data_file.exists():
+                    unified_mongo = OperationalReport.from_json(session.operational_data_file)
+
+                viewmodel = build_webui_viewmodel(
+                    df,
+                    extended_results=extended_results,
+                    architecture_data=architecture_data,
+                    operational_report=unified_mongo,
+                    session_name=session.name,
+                    modules_ran=session.metadata.modules_ran,
+                    tier=session_tier,
+                    platform_uri=config.platform_uri,
+                )
+                # --no-fixes parity: strip the knowledgebase fix steps.
+                if getattr(args, "no_fixes", False):
+                    viewmodel.get("compliance", {})["fixes"] = {}
+
+                render_unified_report(viewmodel, UNIFIED_REPORT_TEMPLATE, output_path=output_path)
+
+                # Persist the 06 viewmodel (WebUI contract) ONLY if absent — a
+                # prior classic run's viewmodel is left untouched. The WebUI
+                # rebuilds on demand when it is missing, so a unified-only run
+                # still works without writing over any existing output.
+                if not session.webui_viewmodel_file.exists():
+                    session.webui_viewmodel_file.write_text(
+                        _json.dumps(viewmodel, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+
+                console.print(
+                    f"  [{theme.success}]✓[/{theme.success}] Unified report → {output_path.name}  "
+                    f"[{theme.text_dim}](Compliance · Operational · Architecture)[/{theme.text_dim}]"
+                )
+
+                from rich import box as _ubox
+                from rich.panel import Panel as _UPanel
+                console.print()
+                console.print(_UPanel(
+                    "The unified report is a [bold]preview[/bold] of where Platform Atlas reporting "
+                    "is heading — it's subject to change and showcases the report improvements "
+                    "we're building.\n"
+                    f"[{theme.text_dim}]Your standard reports (03/04/05) are left untouched.[/{theme.text_dim}]",
+                    title=f"[bold {theme.primary_glow}]✨ Report Preview[/bold {theme.primary_glow}]",
+                    border_style=theme.primary,
+                    box=_ubox.ROUNDED,
+                    expand=False,
+                ))
+
+                _emit_report_summary(
+                    session, df, output_path,
+                    session_tier=session_tier, args=args, unified=True,
+                )
+                return 0
+
             # ── 1. 03_report.html — Compliance ──────────────────────────────
             from platform_atlas.reporting.report_renderer import render_html_report
             output_path = Path(args.output) if getattr(args, 'output', None) else session.report_file
@@ -1387,7 +1603,7 @@ def handle_session_run_report(args: Namespace) -> int:
                 df,
                 REPORT_TEMPLATE,
                 output_path=output_path,
-                title="Platform Health Report",
+                title="Gateway Health Report" if session_tier == "saas" else "Platform Health Report",
                 subtitle=session.name,
                 organization_name=organization_name,
                 ruleset_version=f"{ruleset_ver} ({ruleset_profile})" if ruleset_profile else ruleset_ver,
@@ -1395,6 +1611,7 @@ def handle_session_run_report(args: Namespace) -> int:
                 modules_ran=session.metadata.modules_ran,
                 knowledgebase=knowledgebase,
                 extended_results=extended_results,
+                architecture_data=architecture_data,
                 tier=session_tier,
             )
             console.print(f"  [{theme.success}]✓[/{theme.success}] Compliance report  → {output_path.name}")
@@ -1409,6 +1626,11 @@ def handle_session_run_report(args: Namespace) -> int:
                 console.print(
                     f"  [{theme.text_dim}]–[/{theme.text_dim}] "
                     f"Operational report skipped (Standard tier — logs and MongoDB pipelines require Extended)"
+                )
+            elif session_tier == "saas":
+                console.print(
+                    f"  [{theme.text_dim}]–[/{theme.text_dim}] "
+                    f"Operational report skipped (SaaS tier — no Platform/MongoDB data in a gateway audit)"
                 )
             else:
                 from platform_atlas.reporting.report_renderer import generate_log_sections_html
@@ -1443,19 +1665,28 @@ def handle_session_run_report(args: Namespace) -> int:
                 console.print(f"  [{theme.success}]✓[/{theme.success}] Operational report  → {session.operational_file.name}")
 
             # ── 3. 05_arch.html — Architecture & Maintenance ─────────────────
-            from platform_atlas.reporting.arch_renderer import render_arch_report
+            # SaaS gets no separate 05 file: its Architecture Overview is
+            # merged into 03 above, and the Additional Validation checks
+            # don't apply to a gateway-only audit.
+            if session_tier == "saas":
+                console.print(
+                    f"  [{theme.text_dim}]–[/{theme.text_dim}] "
+                    f"Architecture merged into {output_path.name} (SaaS tier — single-report audit)"
+                )
+            else:
+                from platform_atlas.reporting.arch_renderer import render_arch_report
 
-            render_arch_report(
-                extended_results,
-                architecture_data,
-                template_path=ARCH_TEMPLATE,
-                output_path=session.arch_file,
-                title="Architecture & Maintenance",
-                subtitle=session.name,
-                organization_name=organization_name,
-                tier=session_tier,
-            )
-            console.print(f"  [{theme.success}]✓[/{theme.success}] Architecture report → {session.arch_file.name}")
+                render_arch_report(
+                    extended_results,
+                    architecture_data,
+                    template_path=ARCH_TEMPLATE,
+                    output_path=session.arch_file,
+                    title="Architecture & Maintenance",
+                    subtitle=session.name,
+                    organization_name=organization_name,
+                    tier=session_tier,
+                )
+                console.print(f"  [{theme.success}]✓[/{theme.success}] Architecture report → {session.arch_file.name}")
 
             # ── 4. 06_webui_viewmodel.json — WebUI tabbed experience ────────
             # Typed JSON contract consumed by the WebUI's unified report view.
@@ -1483,64 +1714,10 @@ def handle_session_run_report(args: Namespace) -> int:
                     f"WebUI will rebuild on first request"
                 )
 
-            session.mark_stage_complete(SessionStage.REPORT)
-            _cleanup_logs_file(session)
-
-            # ── Score summary ────────────────────────────────────────────────
-            total   = len(df)
-            passed  = int((df["status"] == "PASS").sum())
-            failed  = int((df["status"] == "FAIL").sum())
-            skipped = int((df["status"] == "SKIP").sum())
-            pct     = round(passed / total * 100) if total else 0
-
-            if pct >= 90:
-                score_color = theme.success
-            elif pct >= 70:
-                score_color = theme.warning
-            else:
-                score_color = theme.error
-
-            from rich import box as _box
-            from rich.table import Table as _Table
-            score_table = _Table(box=_box.SIMPLE, show_header=False, pad_edge=False)
-            score_table.add_column(style=theme.text_dim, min_width=10)
-            score_table.add_column(justify="right", min_width=6)
-            score_table.add_row("Pass",    f"[{theme.success}]{passed}[/{theme.success}]")
-            score_table.add_row("Fail",    f"[{theme.error}]{failed}[/{theme.error}]")
-            if skipped:
-                score_table.add_row("Skip", f"[{theme.text_dim}]{skipped}[/{theme.text_dim}]")
-            score_table.add_row("Total",   str(total))
-            score_table.add_row("Score",   f"[bold {score_color}]{pct}%[/bold {score_color}]")
-
-            from rich.panel import Panel as _Panel
-            console.print()
-            console.print(_Panel(
-                score_table,
-                title=f"[bold {theme.primary_glow}]Audit Score[/bold {theme.primary_glow}]",
-                border_style=score_color,
-                box=_box.ROUNDED,
-                expand=False,
-            ))
-
-            # ── Report file paths (SCP-friendly) ────────────────────────────
-            console.print(f"\n[{theme.primary_glow}]Report files[/{theme.primary_glow}]")
-            report_files = [
-                ("Compliance",   output_path.absolute()),
-            ]
-            if session_tier != "standard":
-                report_files.append(("Operational", session.operational_file.absolute()))
-            report_files.append(("Architecture", session.arch_file.absolute()))
-
-            for label, path in report_files:
-                if path.exists():
-                    console.print(f"  [{theme.text_dim}]{label:<14}[/{theme.text_dim}]  {path}")
-
-            if not (hasattr(args, 'no_open') and args.no_open):
-                import webbrowser
-                webbrowser.open(output_path.as_uri())
-                console.print(f"\n  [{theme.text_dim}]Opened compliance report in browser[/{theme.text_dim}]")
-            console.print()
-            ui.next_step("platform-atlas", label="Audit Complete — View Dashboard")
+            _emit_report_summary(
+                session, df, output_path,
+                session_tier=session_tier, args=args,
+            )
             return 0
 
         finally:
@@ -1841,46 +2018,260 @@ def handle_session_switch(args: Namespace) -> int:
 
 @registry.register("session", "export", description="Export session for delivery")
 def handle_session_export(args: Namespace) -> int:
-    """Export session for delivery"""
+    """Export a session as a delivery archive for an Itential ER ticket."""
     try:
         manager = get_session_manager()
 
-        # Get session
-        if args.session_name:
-            session = manager.get(args.session_name)
-        else:
-            session = manager.get_active()
+        session = _resolve_export_session(manager, args)
+        if session is None:
+            return 1  # cancelled, or nothing to export
 
-        # Determine output path
+        # --include-debug is the single gate for troubleshooting files
+        # (session.log, 01_capture.json, debug.log). --no-redact is kept as a
+        # silent alias for back-compat and folded in here.
+        include_debug = (
+            bool(getattr(args, "include_debug", False))
+            or not getattr(args, "redact", True)
+        )
+
+        # Organization-aware archive naming: ATLAS-<org>-<session>-<date>.
+        # Used for both the archive filename and the folder inside it.
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d")
+        org_slug = _slugify(session.metadata.organization_name) or "Unknown-Org"
+        base_name = f"ATLAS-{org_slug}-{session.name}-{timestamp}"
+
         if args.output:
             output_path = Path(args.output)
         else:
-            # Default: ATLAS-<session>-<date>.zip in current directory
-            from datetime import datetime
-            timestamp = datetime.now().strftime("%Y%m%d")
-            filename = f"ATLAS-{session.name}-{timestamp}.{args.format}"
-            output_path = Path(filename)
+            output_path = Path(f"{base_name}.{args.format}")
 
-        # Export
-        console.print(f"[{theme.primary}]Exporting session:[/{theme.primary}] {session.name}\n")
+        console.print(f"\n[{theme.primary}]Exporting session:[/{theme.primary}] {session.name}")
 
-        exported = manager.export(
-            session.name,
-            output_path,
-            archive_format=args.format,
-            include_debug=args.include_debug,
-            redact=args.redact
+        # Generate report.json (same structured output as 'report --format
+        # json') into a short-lived temp dir, then hand it to the packager.
+        import tempfile
+        with tempfile.TemporaryDirectory() as gen_dir:
+            report_json_path = _generate_report_json(session, Path(gen_dir))
+            splash_path = _generate_report_splash(
+                session, Path(gen_dir), manager.EXPORT_SUBDIR
+            )
+            exported = manager.export(
+                session.name,
+                output_path,
+                archive_format=args.format,
+                include_debug=include_debug,
+                report_json_path=report_json_path,
+                arc_dir_name=base_name,
+                splash_path=splash_path,
+            )
+            report_json_included = report_json_path is not None
+
+        _print_export_summary(
+            session,
+            exported,
+            include_debug=include_debug,
+            report_json_included=report_json_included,
         )
-
-        size_mb = exported.stat().st_size / (1024 * 1024)
-        console.print(f"[{theme.success}]✓[/{theme.success}] Exported to: {exported}")
-        console.print(f"  Size: {size_mb:.2f} MB")
-
         return 0
 
     except (SessionError, NoActiveSessionError) as e:
         console.print(f"[red]✗[/red] {e.message}")
         return 1
+
+
+def _slugify(text: str) -> str:
+    """Sanitize a string for safe use in filenames and archive folder names."""
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "-", (text or "").strip())
+    return cleaned.strip("-")
+
+
+def _resolve_export_session(manager, args):
+    """Resolve which session to export.
+
+    - Explicit name (``session export my-session``) → that session directly,
+      even if it's too old to appear in the recent list.
+    - Otherwise, interactively confirm the active session; on 'no' (or when
+      there is no active session) offer the 10 most recent to pick from with
+      arrow-key navigation.
+    - Non-interactive shells fall back to the active session.
+
+    Returns the resolved ``Session``, or ``None`` if the user cancelled.
+    """
+    if args.session_name:
+        return manager.get(args.session_name)
+
+    import sys as _sys
+    import os as _os
+    is_tty = _os.isatty(_sys.stdin.fileno()) if hasattr(_sys.stdin, "fileno") else False
+
+    active_name = manager.get_active_session_name()
+
+    if not is_tty:
+        # No prompt available — use the active session (raises if none).
+        return manager.get_active()
+
+    # Confirm the current/active session first.
+    if active_name and Confirm.ask(
+        f"Export the current session '[{theme.primary}]{active_name}[/{theme.primary}]'?",
+        default=True,
+        console=console,
+    ):
+        return manager.get(active_name)
+
+    # No active session, or the user declined → pick from the 10 most recent.
+    recent = manager.list(limit=10)
+    if not recent:
+        console.print(f"\n  [{theme.warning}]No sessions found.[/{theme.warning}]\n")
+        return None
+
+    choices = [
+        questionary.Choice(
+            title=f"{s.name}  ({s.metadata.status.value}, {s.metadata.created_at:%Y-%m-%d})",
+            value=s.name,
+        )
+        for s in recent
+    ]
+    selected = questionary.select(
+        "Select a session to export:",
+        choices=choices,
+        style=QSTYLE,
+    ).ask()
+
+    if selected is None:  # Ctrl-C / Esc — questionary returns None
+        console.print(f"  [{theme.text_dim}]Cancelled[/{theme.text_dim}]")
+        return None
+    return manager.get(selected)
+
+
+def _generate_report_json(session, dest_dir: Path):
+    """Generate ``report.json`` (identical to ``report --format json``) into
+    ``dest_dir`` for bundling.
+
+    Returns the path, or ``None`` when the session has no validation results
+    to render (partial failure stays a successful export).
+    """
+    if not session.validation_file.exists():
+        logger.info(
+            "No validation results for '%s' — report.json omitted from export",
+            session.name,
+        )
+        return None
+    try:
+        import pandas as pd
+        df = pd.read_parquet(session.validation_file)
+        _rehydrate_attrs(df, session)
+        extended_results = _load_extended_results(df, session)
+        architecture_data = _load_architecture_data(
+            session.metadata.environment, session.capture_file
+        )
+        from platform_atlas.reporting.reporting_engine import export_json_report
+        out_path = dest_dir / "report.json"
+        export_json_report(
+            df,
+            out_path,
+            extended_results=extended_results,
+            architecture_data=architecture_data,
+            session_name=session.name,
+            modules_ran=session.metadata.modules_ran,
+        )
+        return out_path
+    except Exception as e:
+        logger.warning("Failed to generate report.json for export: %s", e)
+        return None
+
+
+def _generate_report_splash(session, dest_dir: Path, subdir: str):
+    """Render the export splash / cover page (``REPORT.html``) into ``dest_dir``.
+
+    The splash becomes the top-level landing page of the exported archive; its
+    "Enter Report" link points into ``subdir/03_report.html``. Returns the
+    path, or ``None`` when the session has no compliance report to link to
+    (a capture-only export skips the splash — ``export()`` guards on this too,
+    so a failure here stays a successful export).
+    """
+    if not session.report_file.exists():
+        return None
+    try:
+        from platform_atlas.reporting.report_renderer import render_splash_page
+        from platform_atlas.core.paths import REPORT_SPLASH_TEMPLATE
+        from platform_atlas.core._version import __version__
+        meta = session.metadata
+        out_path = dest_dir / "REPORT.html"
+        render_splash_page(
+            REPORT_SPLASH_TEMPLATE,
+            out_path,
+            organization_name=meta.organization_name or "Unknown Organization",
+            session_name=session.name,
+            tier=getattr(meta, "tier", "extended") or "extended",
+            report_link=f"{subdir}/03_report.html",
+            atlas_version=meta.atlas_version or __version__,
+            timestamp=meta.created_at.strftime("%Y-%m-%d %H:%M UTC"),
+        )
+        return out_path
+    except Exception as e:
+        logger.warning("Failed to generate splash page for export: %s", e)
+        return None
+
+
+def _print_export_summary(session, exported: Path, *,
+                          include_debug: bool, report_json_included: bool) -> None:
+    """Render the post-export Rich panel with delivery guidance."""
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich import box
+
+    size_mb = exported.stat().st_size / (1024 * 1024)
+    dash = f"[{theme.text_ghost}]—[/{theme.text_ghost}]"
+    org = session.metadata.organization_name or dash
+    env = session.metadata.environment or dash
+
+    # Accurate contents summary, derived from what actually exists / was bundled.
+    contents = []
+    if session.report_file.exists():
+        contents.append("Compliance")
+    if session.operational_file.exists():
+        contents.append("Operational")
+    if session.arch_file.exists():
+        contents.append("Architecture")
+    if report_json_included:
+        contents.append("report.json")
+    contents.append("metadata")
+    if include_debug:
+        contents.append("debug (logs + raw capture)")
+
+    detail = Table(box=box.SIMPLE, show_header=False, pad_edge=False)
+    detail.add_column(style=theme.text_dim, min_width=13)
+    detail.add_column(overflow="fold")
+    detail.add_row("Organization", org)
+    detail.add_row("Session", session.name)
+    detail.add_row("Environment", env)
+    detail.add_row("Contents", " · ".join(contents))
+    detail.add_row("Archive", str(exported.absolute()))
+    detail.add_row("Size", f"{size_mb:.2f} MB")
+    # Point the user at the splash cover page that fronts the bundle.
+    if session.report_file.exists():
+        detail.add_row("Open", "REPORT.html (cover page, inside the archive)")
+
+    body = Table.grid(padding=0)
+    body.add_row(detail)
+    body.add_row("")
+    body.add_row(
+        f"[bold {theme.primary_glow}]Attach this archive to your Itential "
+        f"Enablement Request (ER) ticket[/bold {theme.primary_glow}]"
+    )
+    body.add_row(
+        f"[{theme.text_dim}]so the Itential team can review your audit results.[/{theme.text_dim}]"
+    )
+
+    console.print()
+    console.print(Panel(
+        body,
+        title=f"[bold {theme.success}]✓ Session Exported[/bold {theme.success}]",
+        border_style=theme.success,
+        box=box.ROUNDED,
+        expand=False,
+    ))
 
 @registry.register("session", "delete", description="Delete an audit session")
 def handle_session_delete(args: Namespace) -> int:
@@ -1948,14 +2339,23 @@ def handle_session_diff(args: Namespace) -> int:
 
         # Interactive picker when no arguments provided
         if baseline_name is None or latest_name is None:
-            sessions = manager.list()
+            # Only fully-reported sessions are eligible. A diff compares
+            # validation results, so created / captured / validated-only
+            # sessions can't be diffed — listing them just clutters the picker.
+            sessions = [s for s in manager.list() if s.metadata.report_completed]
             if len(sessions) < 2:
-                console.print(f"\n  [{theme.warning}]Need at least 2 sessions to compare.[/{theme.warning}]\n")
+                console.print(
+                    f"\n  [{theme.warning}]Need at least 2 reported sessions to compare.[/{theme.warning}]"
+                )
+                console.print(
+                    f"  [{theme.text_dim}]Only sessions that have completed capture, validation, "
+                    f"and reporting can be diffed.[/{theme.text_dim}]\n"
+                )
                 return 1
 
             choices = [
                 questionary.Choice(
-                    title=f"{s.name}  ({s.metadata.status.value})",
+                    title=f"{s.name}  ({s.metadata.environment or '—'} · {s.metadata.created_at:%Y-%m-%d})",
                     value=s.name,
                 )
                 for s in sessions
@@ -2435,10 +2835,16 @@ def handle_session_prune(args: Namespace) -> int:
 # Shared Helpers
 # =================================================
 
-def _prompt_operational_collection(session) -> None:
-    """
-    After capture: ask the user if they want to run MongoDB operational
-    pipelines now. Shows a colored callout panel to draw attention.
+def _prompt_operational_choice() -> tuple[bool, list[str] | None]:
+    """Ask up front whether (and which) MongoDB operational pipelines to run.
+
+    This is the user-input half only — the pipelines themselves run later,
+    after capture completes, via :func:`_collect_operational_pipelines`, so the
+    capture is never interrupted. Returns ``(should_run, pipeline_names)``:
+
+    - ``(False, None)`` — user declined; nothing to run.
+    - ``(True, None)``  — run every pipeline in ``~/.atlas/pipelines/``.
+    - ``(True, [names])`` — run only the selected pipelines.
     """
     from rich.panel import Panel
     from platform_atlas.capture.utils import discover_pipelines
@@ -2449,14 +2855,15 @@ def _prompt_operational_collection(session) -> None:
         f"[bold white]Optional: MongoDB Operational Pipelines[/bold white]\n\n"
         f"Atlas can run MongoDB aggregation pipelines against your environment "
         f"to collect operational metrics (top workflows, adapter activity, error rates, etc.).\n\n"
-        f"[{theme.text_dim}]This requires a live MongoDB connection and may take 30–60 seconds.[/{theme.text_dim}]",
+        f"[{theme.text_dim}]This requires a live MongoDB connection and may take 30–60 seconds. "
+        f"You choose now; the pipelines run after capture completes.[/{theme.text_dim}]",
         title=f"[bold {theme.primary}]Operational Report Data Collection[/bold {theme.primary}]",
         border_style=theme.primary,
         padding=(1, 2),
     ))
 
     run_now = questionary.confirm(
-        "Run MongoDB operational pipelines now?",
+        "Collect MongoDB operational pipelines for this capture?",
         default=False,
     ).ask()
 
@@ -2467,15 +2874,14 @@ def _prompt_operational_collection(session) -> None:
             f"  [{theme.text_dim}]Skipped — the Operational Report will be generated "
             f"without MongoDB data.[/{theme.text_dim}]"
         )
-        return
+        return (False, None)
 
     # Discover pipelines so the user can choose which ones to run.
     available = discover_pipelines(ATLAS_PIPELINES_DIR)
 
-    # With 0 or 1 pipeline there's nothing meaningful to choose between — just run.
+    # With 0 or 1 pipeline there's nothing meaningful to choose between — run all.
     if len(available) <= 1:
-        _collect_operational_pipelines(session)
-        return
+        return (True, None)
 
     console.print()
     mode = questionary.select(
@@ -2497,8 +2903,7 @@ def _prompt_operational_collection(session) -> None:
         raise KeyboardInterrupt
 
     if mode == "all":
-        _collect_operational_pipelines(session)
-        return
+        return (True, None)
 
     # Build a checkbox list — all pre-checked so the user only needs to
     # uncheck the ones they want to skip.
@@ -2524,9 +2929,9 @@ def _prompt_operational_collection(session) -> None:
         console.print(
             f"  [{theme.text_dim}]No pipelines selected — skipped.[/{theme.text_dim}]"
         )
-        return
+        return (False, None)
 
-    _collect_operational_pipelines(session, pipeline_names=selected)
+    return (True, selected)
 
 
 def _collect_operational_pipelines(
@@ -2535,44 +2940,119 @@ def _collect_operational_pipelines(
 ) -> None:
     """Run MongoDB aggregation pipelines and save results to 04_operational.json.
 
-    When ``pipeline_names`` is provided only those pipelines are executed;
-    pass ``None`` to run every pipeline in ~/.atlas/pipelines/.
+    Progress runs under a single live spinner and the outcome is rendered in a
+    Rich panel, so the operational step reads as a framed part of the capture
+    flow rather than loose lines. When ``pipeline_names`` is provided only those
+    pipelines are executed; pass ``None`` to run every pipeline in
+    ~/.atlas/pipelines/.
     """
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich import box
     from platform_atlas.capture.collectors.mongo import MongoCollector
     from platform_atlas.reporting.operational_engine import run_operational_pipelines
 
+    title = f"[bold {theme.primary}]MongoDB Operational Pipelines[/bold {theme.primary}]"
+
+    def _notice_panel(message: str, *, border: str) -> None:
+        console.print()
+        console.print(Panel(
+            message, title=title, border_style=border,
+            box=box.ROUNDED, padding=(1, 2), expand=False,
+        ))
+
     collector = MongoCollector.from_config()
     if collector is None:
-        console.print(
-            f"  [{theme.warning}]⚠[/{theme.warning}] No MongoDB URI configured — "
-            f"skipping operational pipeline collection."
+        _notice_panel(
+            f"[{theme.warning}]No MongoDB URI configured — skipping operational "
+            f"pipeline collection.[/{theme.warning}]",
+            border=theme.warning,
         )
         return
 
     scope = f"{len(pipeline_names)} selected" if pipeline_names else "all"
-    console.print(f"\n  [{theme.primary}]Running MongoDB operational pipelines ({scope})…[/{theme.primary}]")
     try:
-        with collector:
-            report = run_operational_pipelines(collector, pipeline_names=pipeline_names)
-
-        if report.pipeline_count == 0:
-            console.print(
-                f"  [{theme.warning}]⚠[/{theme.warning}] No pipeline files found in "
-                f"~/.atlas/pipelines/"
-            )
-            return
-
-        report.to_json(session.operational_data_file)
-        console.print(
-            f"  [{theme.success}]✓[/{theme.success}] Operational data collected: "
-            f"{report.success_count}/{report.pipeline_count} pipelines succeeded "
-            f"({report.total_rows} rows)"
-        )
+        # Suppress the engine's own per-pipeline streaming (use_console=False)
+        # and surface progress through one live spinner instead, so everything
+        # lands as a single framed step.
+        with console.status(
+            f"[{theme.primary}]Running MongoDB operational pipelines ({scope})…[/{theme.primary}]",
+            spinner="dots",
+        ) as status:
+            def _on_start(idx: int, total: int, pipeline) -> None:
+                status.update(
+                    f"[{theme.primary}]Operational pipelines[/{theme.primary}]  "
+                    f"[{theme.text_dim}]({idx}/{total})[/{theme.text_dim}]  "
+                    f"[bold]{pipeline.name}[/bold] "
+                    f"[{theme.text_dim}]→ {pipeline.collection}[/{theme.text_dim}]"
+                )
+            with collector:
+                report = run_operational_pipelines(
+                    collector,
+                    pipeline_names=pipeline_names,
+                    use_console=False,
+                    on_pipeline_start=_on_start,
+                )
     except Exception as e:
         logger.debug("Operational pipeline collection failed: %s", e, exc_info=True)
-        console.print(
-            f"  [{theme.warning}]⚠[/{theme.warning}] Operational pipeline collection failed: {e}"
+        _notice_panel(
+            f"[{theme.warning}]Operational pipeline collection failed: {e}[/{theme.warning}]",
+            border=theme.warning,
         )
+        return
+
+    if report.pipeline_count == 0:
+        _notice_panel(
+            f"[{theme.warning}]No pipeline files found in ~/.atlas/pipelines/[/{theme.warning}]",
+            border=theme.warning,
+        )
+        return
+
+    report.to_json(session.operational_data_file)
+
+    # Per-pipeline results table, rendered inside the panel.
+    table = Table(box=box.SIMPLE, show_header=True, pad_edge=False, expand=False)
+    table.add_column("Pipeline")
+    table.add_column("Collection", style=theme.text_dim)
+    table.add_column("Rows", justify="right")
+    table.add_column("Status")
+    for r in report.results:
+        if r.succeeded:
+            rows_cell = f"{r.row_count:,}"
+            status_cell = (
+                f"[{theme.success}]✓[/{theme.success}] "
+                f"[{theme.text_dim}]{r.duration_ms / 1000:.1f}s[/{theme.text_dim}]"
+            )
+        else:
+            rows_cell = f"[{theme.text_ghost}]—[/{theme.text_ghost}]"
+            status_cell = (
+                f"[{theme.error}]✗[/{theme.error}] "
+                f"[{theme.text_dim}]{r.error or 'failed'}[/{theme.text_dim}]"
+            )
+        table.add_row(r.name, r.collection, rows_cell, status_cell)
+
+    all_ok = report.success_count == report.pipeline_count and not report.cancelled
+    summary_color = theme.success if all_ok else theme.warning
+    summary = (
+        f"[{summary_color}]{report.success_count}/{report.pipeline_count} "
+        f"pipelines succeeded[/{summary_color}]"
+        f"  [{theme.text_dim}]·[/{theme.text_dim}]  {report.total_rows:,} rows"
+    )
+    if report.cancelled:
+        summary += f"  [{theme.warning}](cancelled — partial results kept)[/{theme.warning}]"
+
+    body = Table.grid(padding=0)
+    body.add_row(table)
+    body.add_row("")
+    body.add_row(summary)
+    body.add_row(f"[{theme.text_dim}]Saved to: {session.operational_data_file}[/{theme.text_dim}]")
+
+    console.print()
+    console.print(Panel(
+        body, title=title,
+        border_style=theme.success if report.success_count else theme.warning,
+        box=box.ROUNDED, padding=(1, 2), expand=False,
+    ))
 
 
 def _load_extended_results(df, session) -> list:

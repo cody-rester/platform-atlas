@@ -47,16 +47,6 @@ logger = logging.getLogger(__name__)
 #   values.yaml:          ITENTIAL_MONGO_URL: "mongodb://..."
 #   platform.properties:  mongo_url=mongodb://...
 
-# IAG5 serverSettings/applicationSettings keys → GATEWAY_* env var names
-_IAG5_TO_GATEWAY_ENV: dict[str, str] = {
-    # applicationSettings
-    "logLevel": "GATEWAY_LOG_LEVEL",
-    "storeBackend": "GATEWAY_STORE_BACKEND",
-    # serverSettings
-    "connectEnabled": "GATEWAY_CONNECT_ENABLED",
-    "connectInsecureEnabled": "GATEWAY_CONNECT_INSECURE_TLS",
-}
-
 
 def _coerce_value(val: str) -> Any:
     """Coerce a string value to its natural Python type."""
@@ -383,89 +373,20 @@ class KubernetesCollector:
 
     def collect_gateway5(self) -> dict[str, Any]:
         """
-        Extract Gateway5 configuration from IAG5 values.yaml.
+        Extract Gateway5 configuration from the loaded IAG5 values.yaml.
 
-        Maps to the same capture path as the SSH Gateway5 collector
-        (CAPTURE_STRUCTURE["gateway5"] → "gateway5").
+        Delegates to :func:`parse_gateway5_yaml` (shared with the SSH and
+        file-based Gateway5 collectors) so every source understands the same
+        Compose/Helm shapes and emits an identical capture structure.
+        Maps to CAPTURE_STRUCTURE["gateway5"] → "gateway5".
         """
-        from platform_atlas.capture.collectors.gateway5 import _CollectedVars
+        from platform_atlas.capture.collectors.gateway5 import parse_gateway5_yaml
 
         if not self._iag5_values:
             return {}
 
-        values = self._iag5_values
-        collected = _CollectedVars()
-        collected.seed()
-
-        # applicationSettings → GATEWAY_* env vars
-        app_settings = values.get("applicationSettings", {})
-        for yaml_key, env_name in _IAG5_TO_GATEWAY_ENV.items():
-            val = app_settings.get(yaml_key)
-            if val is not None:
-                collected.set_if_missing(env_name, str(val), "helm_values")
-
-        # Derive additional vars from settings structure
-        if app_settings.get("storeBackend"):
-            collected.set_if_missing(
-                "GATEWAY_STORE_BACKEND",
-                str(app_settings["storeBackend"]),
-                "helm_values",
-            )
-
-        if app_settings.get("logLevel"):
-            collected.set_if_missing(
-                "GATEWAY_LOG_LEVEL",
-                str(app_settings["logLevel"]),
-                "helm_values",
-            )
-
-        # serverSettings
-        server_settings = values.get("serverSettings", {})
-        if server_settings.get("connectEnabled") is not None:
-            collected.set_if_missing(
-                "GATEWAY_CONNECT_ENABLED",
-                str(server_settings["connectEnabled"]).lower(),
-                "helm_values",
-            )
-
-        if server_settings.get("connectInsecureEnabled") is not None:
-            collected.set_if_missing(
-                "GATEWAY_CONNECT_INSECURE_TLS",
-                str(server_settings["connectInsecureEnabled"]).lower(),
-                "helm_values",
-            )
-
-        # Check for HA configuration
-        runner_settings = values.get("runnerSettings", {})
-        if runner_settings.get("replicaCount", 0) > 0:
-            collected.set_if_missing(
-                "GATEWAY_SERVER_DISTRIBUTED_EXECUTION",
-                "true",
-                "helm_values",
-            )
-
-        # TLS from top-level useTLS
-        if values.get("useTLS") is not None:
-            tls_val = str(values["useTLS"]).lower()
-            collected.set_if_missing("GATEWAY_SERVER_USE_TLS", tls_val, "helm_values")
-            collected.set_if_missing("GATEWAY_CLIENT_USE_TLS", tls_val, "helm_values")
-            collected.set_if_missing("GATEWAY_RUNNER_USE_TLS", tls_val, "helm_values")
-
-        # Inline env overrides from serverSettings.env and applicationSettings.env
-        for env_source in [
-            server_settings.get("env", {}),
-            runner_settings.get("env", {}),
-            app_settings.get("env", {}),
-        ]:
-            if isinstance(env_source, dict):
-                for key, val in env_source.items():
-                    if isinstance(key, str) and key.startswith("GATEWAY_"):
-                        collected.set_if_missing(key, str(val), "helm_env_override")
-
-        if not collected.resolved:
-            return {}
-
-        return collected.to_dict()
+        collected = parse_gateway5_yaml(self._iag5_values)
+        return collected.to_dict() if collected.resolved else {}
 
     def collect_kubernetes_helm(self) -> dict[str, Any]:
         """

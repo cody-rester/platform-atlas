@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 import shlex
 
-from platform_atlas.core.context import require_extended
+from platform_atlas.core.context import require_infra
 from platform_atlas.core.preflight import CheckResult
 from platform_atlas.capture.collectors.systemd_discovery import discover_gateway
 from platform_atlas.core.transport import Transport, LocalTransport
@@ -29,10 +29,10 @@ class Gateway4Collector:
                  config_path: Path | None = None,
                  transport: Transport | None = None
     ):
-        require_extended(
+        require_infra(
             "Gateway4Collector",
-            hint="The SSH-based Gateway4 collector requires Extended Mode "
-                 "(use Gateway4ApiCollector for API-based collection in Standard).",
+            hint="The SSH-based Gateway4 collector is unavailable in Standard "
+                 "Mode (use Gateway4ApiCollector for API-based collection).",
         )
         self._transport = transport or LocalTransport()
 
