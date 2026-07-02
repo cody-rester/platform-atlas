@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.1.1] - 2026-07-02
+
+### Fixed
+
+- **`session run report` crash on unconfigured deployment** — raised `ConfigError` on machines without a `deployment` section in config (e.g. fresh installs where capture found nothing). Report generation no longer requires a configured topology.
+- **`support-bundle` crash on Extended tier without a deployment configured** — pre-collection summary crashed with the same `ConfigError` before any data was collected. SSH host rows are now omitted gracefully when topology is unavailable.
+- **Operational report silently omitted for pre-1.7 sessions** — sessions created before the Standard/Extended split lacked a `tier` field and resolved incorrectly to Standard, skipping the operational report. These sessions now correctly fall back to Extended.
+- **`preflight` showed a misleading "Credential Backend failed" error on unconfigured deployments** — a missing deployment section raised `ConfigError` inside a broad credential-error catch. It now shows a clear "no deployment configured" message instead.
+- **`config doctor` blocked when no environments are configured** — the partial-setup guard intercepted the command before it could run, preventing users from diagnosing setup issues. `config doctor` is now exempt from the guard.
+
+---
+
 ## [2.1.0] - 2026-06-23
 
 ### Added
