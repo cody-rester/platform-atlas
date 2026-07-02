@@ -129,7 +129,11 @@ class SessionMetadata():
     # Tier — bound at session creation, immutable afterward (like ruleset).
     # The session-switch flow restores this atomically alongside env/ruleset
     # so capture/validation/report semantics stay internally consistent.
-    tier: str = "standard"
+    # Empty string (not "standard") so the report handler's fallback chain
+    # (`meta.tier or df.attrs.get("tier") or "extended"`) correctly resolves
+    # pre-tier sessions (created before 1.7) to "extended" rather than
+    # short-circuiting on the truthy default.
+    tier: str = ""
 
     # Stage tracking
     capture_completed: bool = False

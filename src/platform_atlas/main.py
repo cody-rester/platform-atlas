@@ -256,6 +256,7 @@ def main() -> int:
             ("env", "list"),
             ("config", "init"),
             ("config", "show"),
+            ("config", "doctor"),
         ):
             console.print(
                 "\n[bold yellow]Partial setup detected — no environments configured.[/bold yellow]"

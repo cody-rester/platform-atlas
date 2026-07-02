@@ -1753,7 +1753,10 @@ def handle_session_run_report(args: Namespace) -> int:
             # session tier is immutable once captured.
             session_tier = getattr(session.metadata, "tier", None) or df.attrs.get("tier") or "extended"
 
-            _topo = getattr(config, "topology", None)
+            try:
+                _topo = config.topology
+            except Exception:
+                _topo = None
             _topo_mode = _topo.mode.value if _topo and getattr(_topo, "mode", None) else ""
 
             # ── Unified single-file report (opt-in --unified) ───────────────
