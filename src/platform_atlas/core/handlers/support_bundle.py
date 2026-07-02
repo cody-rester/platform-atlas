@@ -306,7 +306,11 @@ def _describe_connections(config, tier: str) -> list[tuple[str, str]]:
             rows.append(("Platform API", url))
 
     if tier == "extended":
-        for t in (config.targets or []):
+        try:
+            _ext_targets = config.targets or ()
+        except Exception:
+            _ext_targets = ()
+        for t in _ext_targets:
             if t.get("transport") in ("ssh", "paramiko"):
                 host = t.get("host") or t.get("name")
                 if host:
@@ -318,7 +322,11 @@ def _describe_connections(config, tier: str) -> list[tuple[str, str]]:
         if gateway4_uri:
             rows.append(("Gateway API", gateway4_uri))
         else:
-            for t in (config.targets or []):
+            try:
+                _saas_targets = config.targets or ()
+            except Exception:
+                _saas_targets = ()
+            for t in _saas_targets:
                 if t.get("transport") in ("ssh", "paramiko"):
                     host = t.get("host") or t.get("name")
                     if host:

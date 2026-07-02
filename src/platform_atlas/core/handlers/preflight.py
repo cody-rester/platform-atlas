@@ -14,7 +14,7 @@ from platform_atlas.core import ui
 # ATLAS Management
 from platform_atlas.core.registry import registry
 from platform_atlas.core.preflight import run_preflight
-from platform_atlas.core.exceptions import CredentialError
+from platform_atlas.core.exceptions import ConfigError, CredentialError
 
 theme = ui.theme
 console = Console()
@@ -37,6 +37,12 @@ def handle_preflight(args: Namespace) -> int:
 
         logger.debug("Preflight: %d targets, scope=%s",
                     len(targets), getattr(config, "capture_scope", "unknown"))
+    except ConfigError:
+        console.print(
+            f"\n    [{theme.warning}]⚠ No deployment configured.[/{theme.warning}] "
+            f"[{theme.text_dim}]Run 'platform-atlas env create' to set up your environment.[/{theme.text_dim}]\n"
+        )
+        return 1
     except Exception as e:
         console.print(
             f"\n    [bold {theme.error}]Credential Backend failed:[/bold {theme.error}] {e}"
