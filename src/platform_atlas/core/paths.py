@@ -48,6 +48,11 @@ ATLAS_CREDENTIALS_SALT = ATLAS_HOME / ".keysalt"             # per-install KDF s
 ATLAS_ARCHITECTURE_DIR = ATLAS_HOME / "architecture"
 ATLAS_ARCHITECTURE_FILE = ATLAS_HOME / "architecture.json"  # legacy / migration only
 
+# Per-environment validation baseline — a COPY of one session's validation
+# results, pinned so it survives that session being deleted or overwritten.
+# See core/baseline_store.py.
+ATLAS_BASELINES_DIR = ATLAS_HOME / "baselines"
+
 # Atlas Rules Schema
 ATLAS_RULE_SCHEMA_FILE = ATLAS_RULESETS_DIR / "rules.schema.json"
 
@@ -70,6 +75,11 @@ REPORT_JSON_SCHEMA = PROJECT_ROOT / "reporting" / "assets" / "schemas" / "report
 # Atlas Log File
 ATLAS_LOG_FILE = ATLAS_HOME / "atlas.log"
 
+# Dedicated SSH transcript log. Only written when debug is enabled in config —
+# captures paramiko's full negotiation (auth methods, kex, banner) separately
+# from atlas.log so it's easy to hand a single focused file to support.
+ATLAS_SSH_DEBUG_LOG = ATLAS_HOME / "ssh-debug.log"
+
 # Ruleset update state — written when the user declines an available update,
 # deleted when an update succeeds or the check shows everything is current.
 # WebUI reads this file to render the update-available banner (read-only).
@@ -80,10 +90,6 @@ PLATFORM6_PATH_ROOT = Path("/opt/itential/platform")
 PLATFORM6_LOG_PATH_ROOT = Path("/var/log/itential/platform")
 PLATFORM6_WEBSERVER_LOG_PATH = Path("/var/log/itential/platform/webserver.log")
 PLATFORM6_AGMANAGER_PRONGHORN = PLATFORM6_PATH_ROOT / "server" / "services" / "app-ag_manager" / "pronghorn.json"
-
-# IAP 2023.x Paths
-IAP_PATH_ROOT = Path("/opt/itential/current")
-IAP_AGMANAGER_PRONGHORN = IAP_PATH_ROOT / "node_modules" / "@itential" / "app-ag_manager"
 
 # Gateway4 Paths
 CONF_FILE_GATEWAY4 = "/etc/automation-gateway/properties.yml"

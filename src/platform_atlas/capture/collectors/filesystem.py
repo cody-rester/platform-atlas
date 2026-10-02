@@ -97,7 +97,6 @@ from platform_atlas.core.paths import (
     PLATFORM6_AGMANAGER_PRONGHORN,
     PLATFORM6_LOG_PATH_ROOT,
     PLATFORM6_WEBSERVER_LOG_PATH,
-    IAP_AGMANAGER_PRONGHORN,
     GATEWAY4_DB_MAIN,
     GATEWAY4_DB_AUDIT,
     GATEWAY4_DB_EXEC_HISTORY,
@@ -196,11 +195,7 @@ class FileSystemInfoCollector:
 
     def check_agmanager_size(self) -> int:
         """Check Filesize for pronghorn.json for AGManager"""
-        config = ctx().config
-        if config.legacy_profile:
-            agmanager_pronghorn = IAP_AGMANAGER_PRONGHORN
-        else:
-            agmanager_pronghorn = PLATFORM6_AGMANAGER_PRONGHORN
+        agmanager_pronghorn = PLATFORM6_AGMANAGER_PRONGHORN
 
         if not self._transport.is_exists(str(agmanager_pronghorn)):
             raise FileNotFoundError(f"AGManager pronghorn.json not found: {agmanager_pronghorn}")
@@ -854,9 +849,21 @@ class FileSystemInfoCollector:
             except ValueError as e:
                 raise ValueError(f"Parse error on line {lineno}: {e}")
 
+            # ACL user lines: keep every token a raw string (coercing "off"/"on"
+            # to bool hides the state flag) and always store a list of
+            # per-user token lists, matching the protocol ``ACL LIST`` shape.
+            # Password material is masked before it can be persisted.
+            if key == "user" and service_name in ("redis", "sentinel") and len(tokens) >= 1:
+                from platform_atlas.capture.collectors.redis import mask_acl_secrets
+                config.setdefault("user", [])
+                config["user"].extend(mask_acl_secrets([list(tokens)]))
+
             # Handle compound keys (eg: "client-output-buffer-limit normal 0 0 0")
-            if key in COMPOUND_CONFIG_KEYS and len(tokens) >= 1:
+            elif key in COMPOUND_CONFIG_KEYS and len(tokens) >= 1:
                 sub_key = tokens[0]
+                # "slave" is the legacy alias of "replica" for buffer classes
+                if key == "client-output-buffer-limit" and sub_key == "slave":
+                    sub_key = "replica"
                 sub_values = self._normalize_tokens(tokens[1:])
 
                 # Initialize as dict if first occurrence

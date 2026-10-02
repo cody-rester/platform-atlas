@@ -251,7 +251,7 @@ def _compute_expected_ssh_modules(
         # gateway4_conf are excluded — their primary data comes from
         # protocol collectors (pymongo, redis-py, ipsdk).
 
-        if not config.legacy_profile and "platform" in collectors_requested:
+        if "platform" in collectors_requested:
             expected.extend([
                 "platform_conf", "agmanager_size", "python_version",
                 "platform_logs", "webserver_logs",
@@ -372,6 +372,18 @@ def _build_modules_saas(
     kind = (config.saas_gateway_kind or "").strip().lower()
     modules: dict[str, Callable] = {}
     ssh_fallbacks: dict[str, Callable] = {}
+
+    # ── Platform (limited OAuth pull) — SaaS anchor ────────────────
+    # SaaS is Platform-anchored now: a scoped pull (adapter/application
+    # endpoints only, no index sweep, never SSH) feeds the SAAS_AVC_GROUP
+    # checks. Registered on its own synthesized api target; the validation
+    # gate keeps everything outside the group from running.
+    if "platform" in collectors_requested:
+        pc = PlatformCollector.from_config(
+            metrics_debug=config.debug,
+            verify_ssl=config.verify_ssl,
+        )
+        modules["platform"] = pc.get_saas_platform_info
 
     # Narrow to the environment's gateway kind. GW4-only never runs gateway5
     # modules; GW5-only never runs gateway4 modules; gw4-gw5 runs both.
@@ -536,14 +548,14 @@ def build_modules_for_target(
                 iag5_values_yaml_defaults_path=getattr(config, "iag5_values_yaml_chart_defaults_path", "") or "",
             )
 
-            # Load the global IAG5 values.yaml only for the default node —
+            # Load the global IG5 values.yaml only for the default node —
             # an explicit-override node's own values_yaml_path is self-detected
-            # (IAP vs IAG5 shape) and doesn't combine with the global default.
+            # (IAP vs IG5 shape) and doesn't combine with the global default.
             if not _has_override and config.iag5_values_yaml_path:
                 try:
                     k8s.load_additional_values(config.iag5_values_yaml_path)
                 except Exception as e:
-                    logger.debug("Failed to load IAG5 values: %s", e)
+                    logger.debug("Failed to load IG5 values: %s", e)
 
             # ── Always-run K8s modules (no protocol equivalent) ────
             # System info comes from K8s resource specs — no SSH or protocol alternative
@@ -657,35 +669,34 @@ def build_modules_for_target(
                     if "gateway4" in collectors_requested:
                         ssh_fallbacks["gateway4_conf"] = fs.get_gateway4_conf
 
-                    if not config.legacy_profile: # Only run these checks on P6
-                        if "platform" in collectors_requested:
-                            modules["platform_conf"] = lambda: fs.get_unformatted_config(
-                                service_name="platform"
-                            )
+                    if "platform" in collectors_requested:
+                        modules["platform_conf"] = lambda: fs.get_unformatted_config(
+                            service_name="platform"
+                        )
 
-                            modules["agmanager_size"] = fs.check_agmanager_size
-                            modules["python_version"] = fs.get_python_version
-                            # Honor the env's log_path_override when set; the
-                            # collector falls back to PLATFORM6_LOG_PATH_ROOT
-                            # when log_dir is empty/None.
-                            _log_dir_override = (
-                                getattr(config, "log_path_override", "") or None
-                            )
-                            modules["platform_logs"] = functools.partial(
-                                fs.get_platform_logs,
-                                since=log_since,
-                                until=log_until,
-                                log_dir=_log_dir_override,
-                            )
-                            _webserver_log_override = (
-                                getattr(config, "webserver_log_path_override", "") or None
-                            )
-                            modules["webserver_logs"] = functools.partial(
-                                fs.get_webserver_logs,
-                                since=log_since,
-                                until=log_until,
-                                log_path=_webserver_log_override,
-                            )
+                        modules["agmanager_size"] = fs.check_agmanager_size
+                        modules["python_version"] = fs.get_python_version
+                        # Honor the env's log_path_override when set; the
+                        # collector falls back to PLATFORM6_LOG_PATH_ROOT
+                        # when log_dir is empty/None.
+                        _log_dir_override = (
+                            getattr(config, "log_path_override", "") or None
+                        )
+                        modules["platform_logs"] = functools.partial(
+                            fs.get_platform_logs,
+                            since=log_since,
+                            until=log_until,
+                            log_dir=_log_dir_override,
+                        )
+                        _webserver_log_override = (
+                            getattr(config, "webserver_log_path_override", "") or None
+                        )
+                        modules["webserver_logs"] = functools.partial(
+                            fs.get_webserver_logs,
+                            since=log_since,
+                            until=log_until,
+                            log_path=_webserver_log_override,
+                        )
 
                     # Only register gateway4-specific filesystem checks
                     # when gateway4 is in the node's module list
@@ -813,9 +824,11 @@ def build_preflight_checks(
     if is_standard:
         allowed_connectors = standard_connector_keys
     elif is_saas:
-        allowed_connectors = (
-            {"gateway4_api"} if saas_kind in ("gateway4", "gw4-gw5") else set()
-        )
+        # SaaS is Platform-anchored — always preflight Platform; add the GW4
+        # API connector when the environment audits a GW4. Never Mongo/Redis.
+        allowed_connectors = {"platform"}
+        if saas_kind in ("gateway4", "gw4-gw5"):
+            allowed_connectors = allowed_connectors | {"gateway4_api"}
     else:
         allowed_connectors = connector_keys
     if include is None or include & allowed_connectors:
